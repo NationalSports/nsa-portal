@@ -121,6 +121,7 @@ describe('normal visual art choices', () => {
   test('new choices preserve exact placement and require all blank color images', () => {
     const entries = rows.map((r) => ({ id: r.id, image_url: stock[r.id].image_front_url, decorations: [{ art_id: 'block', x: 47, y: 31, w: 36 }] }));
     const copies = visualLogoCopies(rows, rows, entries);
+    expect(copies.every((row) => row.active === true)).toBe(true);
     expect(copies[0].decorations).toEqual(entries[0].decorations);
     expect(copies[0].production_approved_at).toBeNull();
     expect(() => visualLogoCopies(rows, rows, entries.slice(1))).toThrow('every color');

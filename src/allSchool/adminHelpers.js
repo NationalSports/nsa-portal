@@ -115,7 +115,7 @@ export const visualLogoCopies = (copies, sources, entries) => {
   if (sources.length !== entries.length || sources.some((row) => !byId.get(row.id)?.image_url)) throw new Error('A blank garment image is needed for every color before adding another art choice.');
   return copies.map((copy, index) => {
     const entry = byId.get(sources[index].id);
-    return { ...copy, image_url: entry.image_url, image_back_url: entry.image_back_url || null,
+    return { ...copy, active: true, image_url: entry.image_url, image_back_url: entry.image_back_url || null,
       decorations: entry.decorations, production_approved_at: null, production_approved_by: null };
   });
 };

@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase';
 import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
 import LogoChoicePicker, { logoDesignRows } from './LogoChoicePicker';
+import { CartConfirmation, MobilePurchaseBar, selectionSummary } from './ShoppingFeedback';
 import { garmentFrame, normGarment } from '../lib/garmentFrame';
 import PersonalizationOverlay from '../lib/personalizationOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
@@ -96,7 +97,7 @@ function StoreStyles() {
         .sf-card .sf-img{transition:transform .35s ease}
         [data-kb-activate]:focus-visible{outline:3px solid var(--sf-ink,#16223F);outline-offset:3px}
         .sf-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.10);border-color:var(--sf-primary,#8C1D40) !important}
-        .sf-card:hover .sf-img{transform:scale(1.05)}
+        .sf-card:hover .sf-img{transform:none}
         .sf-design-arrows{position:absolute;left:8px;right:8px;top:48%;display:flex;justify-content:space-between;z-index:3;pointer-events:none}
         .sf-design-arrows button{pointer-events:auto;border:0;border-radius:50%;width:34px;height:34px;background:#fffE;color:#17213b;font-size:26px;line-height:1;cursor:pointer;box-shadow:0 2px 8px #0003}
         .sf-design-caption{font:700 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.8px;margin-top:8px;color:var(--sf-primary,#17213b)}
@@ -107,13 +108,13 @@ function StoreStyles() {
         .sf-design-choice-active{border-color:currentColor;box-shadow:0 0 0 1px currentColor}
         .sf-design-choice-check{position:absolute;right:-7px;top:-7px;border-radius:50%;width:22px;height:22px;display:grid;place-items:center;background:var(--logo-choice-color);color:white;border:2px solid white;z-index:2}
         .sf-design-choice-image{position:relative;display:grid;place-items:center;height:76px;border-radius:7px;background:linear-gradient(135deg,#edf0f4 50%,#bac3d0 50%);overflow:hidden;margin-bottom:7px}
-        .sf-design-choice-image>img{width:100%;height:100%;object-fit:contain}
+        .sf-design-choice-image>img:not([style]){width:100%;height:100%;object-fit:contain}
         .sf-design-choice-image>img.sf-logo-cutout{width:82%;height:82%;filter:drop-shadow(0 1px 1px #657080)}
         .sf-design-choice-name{display:block;overflow-wrap:anywhere;line-height:1.2}
         .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
         .sf-showcase .sf-card:hover{transform:translateY(-6px);box-shadow:0 22px 48px rgba(22,34,63,.16)}
-        .sf-showcase .sf-card .sf-img{transform:scale(1.001)}
-        .sf-showcase .sf-card:hover .sf-img{transform:scale(1.025)}
+        .sf-showcase .sf-card .sf-img{transform:none}
+        .sf-showcase .sf-card:hover .sf-img{transform:none}
         .sf-showcase .sf-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:26px}
         .sf-navitem:hover{color:${NEUTRAL.ink} !important}
         .sf-search:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
@@ -509,13 +510,13 @@ async function loadShowcasePresentation(store) {
           });
           if (res.ok) {
             const data = await res.json();
-            return { mode: data.mode === 'showcase' ? 'showcase' : 'standard', assets: data.assets || {}, preview: true };
+            return { mode: data.mode === 'showcase' ? 'showcase' : 'standard', assets: data.assets || {}, details: data.details || {}, preview: true };
           }
         } catch (_) { /* unauthorized/failed preview safely falls back to the published presentation */ }
       }
     }
     const published = await publicRequest;
-    return { mode: published.mode === 'showcase' ? 'showcase' : 'standard', assets: published.assets || {}, preview: false };
+    return { mode: published.mode === 'showcase' ? 'showcase' : 'standard', assets: published.assets || {}, details: published.details || {}, preview: false };
   } catch (_) {
     return fallback;
   }
@@ -533,6 +534,7 @@ function applyShowcaseImages(products, presentation) {
       image_front_url: showcaseUrl,
       showcase_image_url: showcaseUrl,
       showcase_active: true,
+      showcase_detail_images: presentation.details?.[product.webstore_product_id] || [],
       // The approved image is a baked final composition. Suppress the live DOM
       // decoration overlay so team art is not drawn a second time.
       decorations: [],
@@ -1574,7 +1576,7 @@ function compMeta(c, wpById, compInfo) {
 }
 const buildWpById = (products) => { const m = {}; (products || []).forEach((p) => { m[p.webstore_product_id] = p; }); return m; };
 
-function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
+export function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
   const designRows = logoDesignRows(colorRows);
   const [designIndex, setDesignIndex] = useState(0);
   const cardRow = store.org_type === 'all_school' && designRows.length > 1 ? designRows[designIndex % designRows.length] : p;
@@ -1594,12 +1596,12 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const showBadge = !vs || b.text !== 'In stock';
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${cardRow.webstore_product_id}`);
   return (
-    <div className="sf-card" {...kbActivate(go)} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : cardRow.image_front_url
-            ? <div style={{ position: 'absolute', inset: 0 }}>
+            ? <div className="sf-card-mock" style={{ position: 'absolute', inset: '4%' }}>
                 {/* WYSIWYG: render the garment the SAME way the item-editor placement stage
                     does — raw photo, object-fit:contain, full 4:5 box, no inset — so a logo
                     lands on the exact spot the rep placed it. (normGarment/cover reframed the
@@ -1616,15 +1618,15 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         </span>}
         {/* Category label — bottom-right (varsity moves it above the name instead) */}
         {!vs && catLabel && <span style={{ position: 'absolute', bottom: 10, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: theme.subText, zIndex: 2 }}>{catLabel}</span>}
-        {designRows.length > 1 && store.org_type === 'all_school' && <div className="sf-design-arrows" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <button type="button" aria-label="Previous logo design" onClick={(e) => { e.stopPropagation(); setDesignIndex((i) => (i - 1 + designRows.length) % designRows.length); }}>‹</button>
-          <button type="button" aria-label="Next logo design" onClick={(e) => { e.stopPropagation(); setDesignIndex((i) => (i + 1) % designRows.length); }}>›</button>
-        </div>}
+
       </div>
       <div style={{ padding: vs ? '16px 16px 18px' : '14px 15px 16px' }}>
         {vs && catLabel && <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1.8, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>{catLabel}</div>}
-        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: vs ? 800 : 700, fontSize: vs ? 19 : 18, letterSpacing: 0.3, lineHeight: 1.12, color: vs ? theme.band : theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
-        {designRows.length > 1 && store.org_type === 'all_school' && <div className="sf-design-caption">{cardRow.school_design_label || `Logo ${designIndex + 1}`} · {designRows.length} logo designs</div>}
+        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: vs ? 800 : 700, fontSize: vs ? 19 : 18, letterSpacing: 0.3, lineHeight: 1.12, color: vs ? theme.band : theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}><a href={`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${cardRow.webstore_product_id}`} onClick={(e) => { e.preventDefault(); e.stopPropagation(); go(); }} style={{ color: 'inherit', textDecoration: 'none' }}>{p.name}</a></div>
+        {designRows.length > 1 && store.org_type === 'all_school' && <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <LogoChoicePicker compact rows={designRows} selected={cardRow} color={theme.primary} labelStyle={{ fontSize: 12, fontWeight: 700 }}
+            onSelect={(row) => setDesignIndex(designRows.findIndex((design) => design.webstore_product_id === row.webstore_product_id))} />
+        </div>}
         {!isBundle && <ColorDots rows={colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === (cardRow.variant_group_id || cardRow.webstore_product_id))} theme={theme} />}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: vs ? 10 : 12 }}>
           <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: vs ? theme.band : theme.primary }}>{money(priceOf(cardRow))}</span>
@@ -1752,7 +1754,7 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], selectedProductId = null, isOpen, onAdd, player = null, onCat = null }) {
+export function ProductPage({ store, theme, product: rep, colorRows = [], selectedProductId = null, isOpen, onAdd, player = null, onCat = null }) {
   const initialColorId = colorRows.some((row) => row.webstore_product_id === selectedProductId) ? selectedProductId : rep?.webstore_product_id || null;
   const [colorId, setColorId] = useState(initialColorId);
   const [size, setSize] = useState(null);
@@ -1761,9 +1763,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
   const [pname, setPname] = useState('');
   const [addOnValues, setAddOnValues] = useState({});
   const [qty, setQty] = useState(1);
-  const [added, setAdded] = useState(false);
+  const [added, setAdded] = useState(null);
+  const sizeSection = useRef(null);
+  const detailsSection = useRef(null);
   // Reset the picked color / size when navigating to a different product.
-  useEffect(() => { setColorId(initialColorId); setSize(null); setImg('front'); setAddOnValues({}); }, [initialColorId]);
+  useEffect(() => { setColorId(initialColorId); setSize(null); setImg('front'); setAddOnValues({}); setAdded(null); }, [initialColorId]);
   // Prefill personalization from the player's roster link — jersey number is the
   // high-value bit; name is prefilled too but stays editable.
   useEffect(() => {
@@ -1857,6 +1861,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
   const isPersonalized = !!p.takes_number || !!p.takes_name || selectedAddOns.length > 0;
   const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
   const addToCart = () => {
+    if (!canAdd) return;
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
       name: p.name, color: p.color || null, variant_label: [p.variant_label, p.school_design_label].filter(Boolean).join(' · ') || null, image: ((isFitGroup ? rep : p).image_front_url) || null, size: size || null,
@@ -1869,7 +1874,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
       qty: isPersonalized ? 1 : qty,
     });
-    setAdded(true); setTimeout(() => setAdded(false), 1500);
+    setAdded({ product: { ...p, image_front_url: (isFitGroup ? rep : p).image_front_url }, size,
+      qty: isPersonalized ? 1 : qty, price: money(total * (isPersonalized ? 1 : qty)),
+      name: p.takes_name ? pname.trim() : '', number: p.takes_number ? num.trim() : '', options: optionDetailLabels(selectedAddOns) });
   };
   const sizes = sizesArr;
   const onHand = effOnHand(p);
@@ -1884,28 +1891,32 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
   // Fits share one image — keep the representative row's image no matter which
   // fit's size is selected (each fit is a different product with its own photo).
   const imgRow = isFitGroup ? rep : p;
-  const imgUrl = img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url;
+  const decorationDetails = imgRow.showcase_active && Array.isArray(imgRow.showcase_detail_images) ? imgRow.showcase_detail_images : [];
+  const activeDetail = decorationDetails.find((detail) => `detail:${detail.id}` === img);
+  const imgUrl = activeDetail?.url || (img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url);
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const label = { fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.4, color: theme.ink, marginBottom: 10 };
   const proof = store.org_type === 'all_school' ? ['Official school decoration included', 'Made to order for your school', storeDeliveryEstimate(store)] : ['Custom team decoration included', 'adidas & Under Armour quality', 'Ships to the team when the store closes'];
   return (
-    <div style={{ paddingTop: 24 }}>
+    <div className="sf-purchase-page" style={{ paddingTop: 24 }}>
       {theme.varsity
         ? <VsCrumbs store={store} theme={theme} category={[p.store_category, p.category].filter(Boolean)[0] || ''} name={p.name} onCat={onCat} />
         : <BackLink store={store} theme={theme} />}
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
-          <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={p.name} style={{ width: '100%', height: '100%', objectFit: gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
+          <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: activeDetail ? '1' : '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={activeDetail ? `${p.name} — ${p.color || ''} — ${activeDetail.label}` : p.name} style={{ width: '100%', height: '100%', objectFit: activeDetail ? 'contain' : gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
             {img === 'back' && <PersoMock takesNumber={p.takes_number && (store.org_type !== 'all_school' || !!num.trim())} takesName={p.takes_name && (store.org_type !== 'all_school' || !!pname.trim())} decorations={p.decorations} sampleName={store.org_type === 'all_school' ? pname.trim() : 'PLAYER'} sampleNumber={store.org_type === 'all_school' ? num.trim() : '00'} preserveCase={store.org_type === 'all_school'} />}
           </div>
           {store.org_type === 'all_school' && img === 'back' && isPerso && <p style={{ fontSize: 12, color: theme.subText, textAlign: 'center', margin: '10px 0 0' }}>Name and number placement preview. Check your entered text before ordering.</p>}
-          {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
+          {(hasBackDeco || isPerso || decorationDetails.length > 0) && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+            {(hasBackDeco || isPerso ? ['front', 'back'] : ['front']).map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
+            {decorationDetails.map((detail) => <button key={detail.id} onClick={() => setImg(`detail:${detail.id}`)} aria-pressed={activeDetail?.id === detail.id} style={thumbBtn(theme, activeDetail?.id === detail.id)}><img src={detail.url} alt="" style={{width:40,height:40,objectFit:'contain',display:'block',margin:'0 auto 4px'}} />{detail.label}</button>)}
           </div>}
+          {activeDetail && <p style={{fontSize:12,color:theme.subText,textAlign:'center'}}>Rendered decoration preview. Actual fabric and stitching may vary.</p>}
         </div>
-        <div style={{ paddingTop: 4 }}>
+        <div ref={detailsSection} style={{ paddingTop: 4 }}>
           <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{[p.store_category, p.category].filter(Boolean)[0] || 'Team Gear'}</div>
           <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(32px,4vw,48px)', margin: '0 0 12px', letterSpacing: 0.2, lineHeight: 0.96, textTransform: 'uppercase', color: theme.varsity ? theme.band : theme.ink }}>{p.name}</h1>
           {theme.varsity && <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, margin: '0 0 20px' }} />}
@@ -1914,12 +1925,12 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
           {store.org_type === 'all_school' && <LogoChoicePicker rows={colorRows.length ? colorRows : [rep]} selected={p} color={theme.primary} labelStyle={label}
-            onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg('front'); }} />}
+            onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg((view) => view.startsWith('detail:') ? view : 'front'); }} />}
           {!isFitGroup && activeColorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
             <div style={label}>Color{p.color ? ` — ${p.color}` : ''}</div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {activeColorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
-                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg('front'); }}
+                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg((view) => view.startsWith('detail:') ? view : 'front'); }}
                   style={{ width: 32, height: 32, borderRadius: '50%', cursor: 'pointer', padding: 0, background: c.image_front_url ? `center/cover url(${c.image_front_url})` : swatchColor(c.color), border: 'none', boxShadow: on ? `0 0 0 2px #fff, 0 0 0 4px ${theme.primary}` : `0 0 0 1px ${theme.line}` }} />
               ); })}
             </div>
@@ -1927,6 +1938,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
 
           {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
+          <div ref={sizeSection} tabIndex={-1} style={{ scrollMarginTop: 160 }}>
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
               <div style={label}>Select fit &amp; size</div>
@@ -1951,6 +1963,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(p, sizes)}</div>
           </div>)}
 
+          </div>
+
           {(p.takes_number || p.takes_name) && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
               {p.takes_number && <div>
@@ -1968,6 +1982,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
           <AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} />
 
           {(upNow > 0 || addOnExtra > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
+          <div className="sf-selection-summary" aria-live="polite"><small>Your selection</small>{selectionSummary(p, size) || p.name}{needSize && !size && <span> · Select a size</span>}</div>
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
             {!isPersonalized && (
               <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${theme.line}`, borderRadius: 4, overflow: 'hidden', height: 50 }}>
@@ -1984,7 +1999,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
                 style={{ ...cta(theme), flex: '1 1 150px', width: 'auto', minWidth: 150, background: 'transparent', color: theme.band, border: `2px solid ${theme.band}` }}>Keep Shopping</button>
             )}
           </div>
-          <div role="status">{added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}</div>
+
 
           <div style={{ marginTop: 24, display: 'grid', gap: 10, borderTop: `1px solid ${theme.line}`, paddingTop: 20 }}>
             {proof.map((pt) => <div key={pt} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 14.5, color: theme.subText }}>
@@ -1996,6 +2011,16 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
           </div>
         </div>
       </div>
+      {<MobilePurchaseBar price={money(total * (isPersonalized ? 1 : qty))} summary={selectionSummary(p, size)} color={theme.primary}
+        action={!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : needSize && !size ? 'Select size' : canAdd ? 'Add to cart' : 'Complete options'}
+        disabled={!isOpen || soldOutNoSize} onAction={() => {
+          if (canAdd) { addToCart(); return; }
+          const section = needSize && !size ? sizeSection.current : detailsSection.current;
+          section?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+          if (needSize && !size) section?.focus({ preventScroll: true });
+          else section?.querySelector('input, select')?.focus({ preventScroll: true });
+        }} />}
+      <CartConfirmation item={added} color={theme.primary} onClose={() => setAdded(null)} onCheckout={() => navTo('/shop/' + store.slug + '/checkout')} />
     </div>
   );
 }

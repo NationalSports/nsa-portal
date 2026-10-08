@@ -23,7 +23,7 @@ import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { matchingClientLine, resolveOutgoingLineIds } from './orderLineIdentity';
+import { matchingClientLine, resolveOutgoingLineIds, healDuplicateLineIds, newOrderLineId } from './orderLineIdentity';
 import { rowsByKey } from './rowLookup';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
@@ -1398,7 +1398,13 @@ const _dbSaveEstimate = (est,opts) => _saveDocument('estimates',est,opts?.exactA
 // Among same-SKU candidates prefer a known matching color, then the closest index; a candidate whose
 // color is known and DIFFERENT is never used (navy's PO line on the red row would mislead receiving).
 // Returns the items[] index, or -1 when no current item can safely take the row.
-const _matchRestoreItem=(oi,items)=>{
+// `holds` (optional) asks whether an item already carries the row being restored. The line that
+// still has the row's line_id AND carries it is that same line, whatever its color now — a rep who
+// recolors a line keeps its PO on it. Without this the recolored line failed the color rule, the
+// guard rebuilt the old-color line as a second copy, and the save was rejected for repeating the
+// line_id (SO-2456 "110M White → Charcoal/ White", SO-2773 "ST350 TrueNavy → White").
+const _matchRestoreItem=(oi,items,holds)=>{
+  if(oi.line_id&&holds){const same=items.findIndex(it=>it&&it.line_id===oi.line_id&&holds(it));if(same>=0)return same}
   const _norm=c=>String(c||'').trim().toLowerCase();
   const pos=items[oi.item_index];
   // Positional fast-path is subject to the same color rule as the fallback search: a known
@@ -1562,7 +1568,7 @@ const _dbSaveSOInner = async (so) => {
     savePlan.base_version=so._obBaseVersion??so._version??null;
     if(_remintedFrom){const fresh=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});if(fresh.error)throw new Error(fresh.error.message);saveToken=fresh.data;}
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,line_id,item_index,sku,color,product_id').eq('so_id',so.id));
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,line_id,item_index,sku,color,product_id,sizes').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -1576,6 +1582,19 @@ const _dbSaveSOInner = async (so) => {
     }
     const _oldSoItems=_oldItemsResp.data||[];
     const oldItemIds=_oldSoItems.map(i=>i.id);
+    // A payload carrying the same line_id twice can never commit (so_items_line_identity), so the
+    // outbox would retry it forever. Heal it before any guard counts or matches items — see
+    // healDuplicateLineIds. A dropped copy is redundant by construction, so it leaves live state
+    // right away too — otherwise the editor would keep showing (and re-sending) it, and the restore
+    // sync below would see a state one line longer than this payload.
+    if(Array.isArray(items)&&items.length){
+      const _heal=healDuplicateLineIds(items,_oldSoItems);
+      if(_heal.dropped.length||_heal.renumbered.length){
+        items.splice(0,items.length,..._heal.items);
+        console.warn('[DB] Healed duplicate line ids on',so.id,'— dropped',_heal.dropped.length,'restored copy(ies) of lines the order still holds, renumbered',_heal.renumbered.length);
+        if(_heal.dropped.length&&_restoredLinesSync){try{_restoredLinesSync(so.id,_heal.dropped.map(({index,item})=>({kind:'item_dropped',idx:index,line_id:item.line_id,sku:item.sku||null,color:item.color||null,sizes:item.sizes||{}})))}catch(e){console.warn('[DB] dropped-line state sync failed:',e)}}
+      }
+    }
     // Use distinct item_index count as the authoritative "how many items does this SO have" — raw row count
     // includes duplicate rows left by interrupted saves (insert-new succeeds, delete-old never runs) and would
     // incorrectly trip the shrink/mismatch guards. Distinct indexes = the real item count; duplicates don't add slots.
@@ -1869,8 +1888,8 @@ const _dbSaveSOInner = async (so) => {
           const{data:_decoRows,error:_decoErr}=await supabase.from('so_item_decorations').select('*').eq('so_item_id',oi.id);
           if(_decoErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— decoration read failed:',_decoErr.message);return -1}
           const decorations=(_decoRows||[]).slice().sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_di,so_item_id:_ds,deco_index:_dx,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
-          // Re-read the FULL row. `oi` comes from _oldSoItems, which is a 5-column projection
-          // (id,item_index,sku,color,product_id) selected for the delete/guard passes — reviving from
+          // Re-read the FULL row. `oi` comes from _oldSoItems, which is a narrow projection
+          // (id,line_id,item_index,sku,color,product_id,sizes) selected for the guard passes — reviving from
           // it rebuilt the garment as a husk carrying only sku+color, and since the revived object is
           // both re-inserted by this save and pushed into live React state, that husk REPLACED the real
           // line: name, sizes, costs, unit_sell and vendor all gone, and the editor then crashed reading
@@ -1886,6 +1905,9 @@ const _dbSaveSOInner = async (so) => {
           // sizes:{} — same normalization the loader does. The revived item is persisted by this save and
           // rendered by the editor, and every consumer treats item.sizes as a size→qty map.
           const revived={...itemRest,sizes:itemRest.sizes||{},decorations,po_lines:[],pick_lines:[]};
+          // The rebuilt line is a new line on this order: a line the payload still holds under this
+          // line_id keeps it, or the save would repeat the id (so_items_line_identity).
+          if(revived.line_id&&items.some(it=>it&&it.line_id===revived.line_id))revived.line_id=newOrderLineId();
           const idx=items.length;items.push(revived);_revivedByKey.set(_k,idx);_revived++;
           _revivedLabels.push([revived.sku,revived.color].filter(Boolean).join(' ')||('item '+oi.id));
           _restoredLines.push({idx,sku:revived.sku||null,color:revived.color||null,kind:'item',item:revived});
@@ -1903,7 +1925,7 @@ const _dbSaveSOInner = async (so) => {
           const oi=_oldById.get(row.so_item_id);
           // Match by original position first, falling back to SKU(+color) across all items so a
           // removed/reordered sibling line doesn't make this row unmatchable and block the save.
-          let _ti=oi?_matchRestoreItem(oi,items):-1;
+          let _ti=oi?_matchRestoreItem(oi,items,it=>(it.po_lines||[]).some(p=>p&&p.po_id===poId)):-1;
           let ci=_ti>=0?items[_ti]:null;
           // Last resort when no current item can take this row: rebuild the row's own item (above).
           // Only called on the paths that would otherwise count _unrestorable and block the save.
@@ -2564,7 +2586,7 @@ const _dbSaveArtFilesInner = async (so) => {
   }});
 };
 const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesInner,true);
-const _invCols=['id','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+const _invCols=['id','payment_revision','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
 const _invExtraCols=new Set(['idempotency_key','deposit_applied','credit_amount','qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);

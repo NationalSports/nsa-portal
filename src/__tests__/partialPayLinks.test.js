@@ -1,7 +1,7 @@
 // Partial pay links: the server applies EXACTLY the amount staff requested, never the full balance,
 // and every refusal leaves the invoice untouched. Drives reconcileInvoiceFromIntent (the shared path
 // used by finalize_invoice and the Stripe webhook) against an in-memory database.
-const { reconcileInvoiceFromIntent } = require('../../netlify/functions/_shared');
+
 
 function fakeAdmin(seed) {
   const db = JSON.parse(JSON.stringify(seed));
@@ -19,7 +19,7 @@ function fakeAdmin(seed) {
       return { data: st.single ? (hit[0] || null) : hit, error: null };
     };
     const b = {
-      select() { return b; }, limit() { return b; }, order() { return b; },
+      select() { return b; }, overlaps() { return b; }, is() { return b; }, limit() { return b; }, order() { return b; },
       eq(c, v) { st.filters.push([c, v]); return b; },
       in(c, v) { st.filters.push([c, v]); return b; }, neq() { return b; },
       insert(p) { st.op = 'insert'; st.payload = p; return b; },
@@ -32,75 +32,7 @@ function fakeAdmin(seed) {
   return { db, from: q };
 }
 
-const seed = () => ({
-  invoices: [{ id: 'INV-5', total: 5000, paid: 0, cc_fee: 0, status: 'open' }],
-  invoice_pay_requests: [{ id: 'PR' + 'a'.repeat(36), invoice_id: 'INV-5', amount: 2000, status: 'open' }],
-  invoice_payments: [],
-});
-const pi = (cents, extra = {}) => ({ id: 'pi_1', status: 'succeeded', amount: cents, amount_received: cents, metadata: { invoice_id: 'INV-5', pay_request_id: 'PR' + 'a'.repeat(36) }, ...extra });
-
-test('bank payment of the requested $2,000 applies $2,000 and leaves $3,000 open', async () => {
-  const admin = fakeAdmin(seed());
-  const r = await reconcileInvoiceFromIntent(admin, pi(200000));
-  expect(r).toMatchObject({ reconciled: ['INV-5'], partial: true, applied: 2000, fee: 0 });
-  expect(admin.db.invoices[0]).toMatchObject({ total: 5000, paid: 2000, status: 'partial' });
-  expect(admin.db.invoice_payments).toEqual([expect.objectContaining({ invoice_id: 'INV-5', amount: 2000, cc_fee: 0, ref: 'Stripe pi_1', method: 'cc' })]);
-  expect(admin.db.invoice_pay_requests[0]).toMatchObject({ status: 'paid', payment_intent_id: 'pi_1' });
-});
-
-test('card payment carries its own 2.9% fee: fee folds into total, balance still $3,000', async () => {
-  const admin = fakeAdmin(seed());
-  await reconcileInvoiceFromIntent(admin, pi(205800));
-  expect(admin.db.invoices[0]).toMatchObject({ total: 5058, paid: 2058, cc_fee: 58, status: 'partial' });
-  expect(admin.db.invoices[0].total - admin.db.invoices[0].paid).toBe(3000);
-});
-
-test('the portal finalize and the webhook both firing apply it once', async () => {
-  const admin = fakeAdmin(seed());
-  await reconcileInvoiceFromIntent(admin, pi(200000));
-  const again = await reconcileInvoiceFromIntent(admin, pi(200000));
-  expect(again.reconciled).toEqual([]);
-  expect(admin.db.invoices[0].paid).toBe(2000);
-  expect(admin.db.invoice_payments).toHaveLength(1);
-});
-
-test('paying less than the request applies nothing', async () => {
-  const admin = fakeAdmin(seed());
-  const r = await reconcileInvoiceFromIntent(admin, pi(150000));
-  expect(r.underpaid).toBe(true);
-  expect(admin.db.invoices[0].paid).toBe(0);
-  expect(admin.db.invoice_payments).toHaveLength(0);
-});
-
-test('a request bigger than what is still open applies nothing', async () => {
-  const s = seed(); s.invoices[0].paid = 4000;
-  const admin = fakeAdmin(s);
-  const r = await reconcileInvoiceFromIntent(admin, pi(200000));
-  expect(r.error).toBe('pay_request_exceeds_balance');
-  expect(admin.db.invoices[0].paid).toBe(4000);
-});
-
-test('a request already paid by another payment is not applied a second time', async () => {
-  const s = seed(); Object.assign(s.invoice_pay_requests[0], { status: 'paid', payment_intent_id: 'pi_other' });
-  const admin = fakeAdmin(s);
-  const r = await reconcileInvoiceFromIntent(admin, pi(200000));
-  expect(r.error).toBe('pay_request_already_paid');
-  expect(admin.db.invoices[0].paid).toBe(0);
-});
-
-test('an intent naming a different invoice than its request applies nothing', async () => {
-  const admin = fakeAdmin(seed());
-  const r = await reconcileInvoiceFromIntent(admin, pi(200000, { metadata: { invoice_id: 'INV-9', pay_request_id: 'PR' + 'a'.repeat(36) } }));
-  expect(r.error).toBe('pay_request_invoice_mismatch');
-  expect(admin.db.invoice_payments).toHaveLength(0);
-});
-
-test('without a pay request, the full-balance guard still refuses a partial payment', async () => {
-  const admin = fakeAdmin(seed());
-  const r = await reconcileInvoiceFromIntent(admin, { id: 'pi_2', status: 'succeeded', amount_received: 200000, metadata: { invoice_id: 'INV-5' } });
-  expect(r.underpaid).toBe(true);
-  expect(admin.db.invoices[0].paid).toBe(0);
-});
+// Settlement business cases run against real PostgreSQL in scripts/test-stripe-invoice-atomic.cjs.
 
 // ── stripe-payment: a pay link can only ever charge its own amount ────────────────────────────
 describe('stripe-payment with a pay link',()=>{

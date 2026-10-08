@@ -20,6 +20,12 @@
 # chunks that don't exist there, blanking the page).
 [context.production.environment]
   PUBLIC_URL = "https://nsa-portal.netlify.app"
+  REACT_APP_SO_EDIT_LEASES = "0"
+
+# Ownership is enabled only on the synthetic order in deploy previews.
+[context.deploy-preview.environment]
+  REACT_APP_SO_EDIT_LEASES = "1"
+  REACT_APP_SO_EDIT_PILOT_ORDER_ID = "SO-TEST-SAVE-20261008"
 
 # Team Shop launch gate — netlify/edge-functions/teamshop-gate.js. Declared here (NOT via
 # inline `export const config`) ON PURPOSE: config-file edge functions run BEFORE inline
@@ -64,7 +70,7 @@
   # _baggingShip + webstore-shipment-record share the shipping-label origin addresses
   # with the portal's label buttons (src/lib/shipFrom.js).
   # followup-sweep shares the "which schools block Brevo" rules with the portal (src/lib/emailRouting.js).
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js", "src/lib/sanmarPO.shared.js", "src/lib/ssOrder.shared.js", "src/lib/vendorOrderGuards.shared.js", "src/lib/vendorColorMatch.shared.js", "src/lib/vendorResolvers.shared.js", "src/lib/sizeNames.shared.js", "src/lib/showcaseSettings.js"]
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js", "src/lib/sanmarPO.shared.js", "src/lib/ssOrder.shared.js", "src/lib/vendorOrderGuards.shared.js", "src/lib/vendorColorMatch.shared.js", "src/lib/vendorResolvers.shared.js", "src/lib/sizeNames.shared.js", "src/lib/showcaseSettings.js", "src/lib/showcaseFamilies.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).

@@ -55,14 +55,14 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;
  grant select,insert,update,delete on all tables in schema public to authenticated,service_role;
  grant usage,select on all sequences in schema public to authenticated,service_role;
- insert into sales_orders(id) values('SO-LEASE');
+ insert into sales_orders(id) values('SO-TEST-SAVE-20261008'),('SO-NONPILOT');
  `);
- await db.exec(read('supabase/migrations/20261008075010_sales_order_edit_leases.sql'));
+ await db.exec(read('supabase/migrations/20261008194803_sales_order_edit_leases_pilot.sql'));
  const user=async n=>{await db.exec('reset role');await db.exec(`set "test.staff"='true';set "test.uid"='00000000-0000-4000-8000-${String(n).padStart(12,'0')}';set role authenticated;`)};
  const session=n=>'10000000-0000-4000-8000-'+String(n).padStart(12,'0');
- const lease=async(s,action,g=null)=>(await query('select public.sales_order_edit_lease($1,$2,$3,$4) result',['SO-LEASE',session(s),action,g]))[0].result;
- const assertLease=async(s,g)=>query('select private.assert_sales_order_edit_lease($1,$2)',['SO-LEASE',s?{session:session(s),generation:g}:null]);
- await user(1);const a=await lease(1,'acquire');assert.equal(a.owned,true);
+ const lease=async(s,action,g=null)=>(await query('select public.sales_order_edit_lease($1,$2,$3,$4) result',['SO-TEST-SAVE-20261008',session(s),action,g]))[0].result;
+ const assertLease=async(s,g)=>query('select private.assert_sales_order_edit_lease($1,$2)',['SO-TEST-SAVE-20261008',s?{session:session(s),generation:g}:null]);
+ await user(1);await assert.rejects(query('select public.sales_order_edit_lease($1,$2,$3,$4)',['SO-NONPILOT',session(1),'acquire',null]),/SO_EDIT_PILOT_ORDER_ONLY/);const a=await lease(1,'acquire');assert.equal(a.owned,true);
  assert.equal((await lease(2,'acquire')).owned,false,'same user second tab cannot also edit');
  await assert.rejects(assertLease(null),/SO_EDIT_LEASE_REQUIRED/);
  await assertLease(1,a.generation);
@@ -76,10 +76,10 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  assert.equal((await lease(5,'takeover',a.generation)).owned,false,'stale takeover confirmation cannot revoke newer owner');
  console.log('PASS admin takeover fences stale saves, renewals, releases and takeover requests');
  // Execute the actual installed full-save RPC, not just its assertion helper.
- const token=async()=>(await query("select sales_order_save_token('SO-LEASE') t"))[0].t;
- const plan={header:{id:'SO-LEASE',memo:'saved by owner',updated_at:new Date().toISOString()},base_version:0,write_header:true,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[]};
- const row=(await query("select _version from sales_orders where id='SO-LEASE'"))[0];plan.base_version=row._version;
- const save=async(p,t)=>(await query("select save_sales_order_atomic('SO-LEASE',$1,$2) result",[t,p]))[0].result;
+ const token=async()=>(await query("select sales_order_save_token('SO-TEST-SAVE-20261008') t"))[0].t;
+ const plan={header:{id:'SO-TEST-SAVE-20261008',memo:'saved by owner',updated_at:new Date().toISOString()},base_version:0,write_header:true,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[]};
+ const row=(await query("select _version from sales_orders where id='SO-TEST-SAVE-20261008'"))[0];plan.base_version=row._version;
+ const save=async(p,t)=>(await query("select save_sales_order_atomic('SO-TEST-SAVE-20261008',$1,$2) result",[t,p]))[0].result;
  await assert.rejects(save(plan,await token()),/SO_EDIT_LEASE_REQUIRED/);
  const t=await token();plan.edit_lease={session:session(4),generation:b.generation};
  const saved=await save(plan,t);assert.equal(saved.saved,true);assert.deepEqual(await save(plan,t),saved,'same-owner lost response retry is idempotent');
@@ -87,9 +87,9 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  const c=await lease(5,'takeover',b.generation);assert.equal(c.owned,true);
  await assert.rejects(save(plan,t),/SO_EDIT_LEASE_LOST/);
  // Narrow child-only artwork operation remains available while the order is leased.
- const art=await save({header:{id:'SO-LEASE'},write_header:false,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[]},await token());assert.equal(art.saved,true);
+ const art=await save({header:{id:'SO-TEST-SAVE-20261008'},write_header:false,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[]},await token());assert.equal(art.saved,true);
  console.log('PASS real full-save ownership enforcement, idempotent retry, revoked receipt rejection, targeted artwork path');
- await db.exec('reset role');await query("update private.sales_order_edit_leases set expires_at=now()-interval '1 second' where so_id='SO-LEASE'");
+ await db.exec('reset role');await query("update private.sales_order_edit_leases set expires_at=now()-interval '1 second' where so_id='SO-TEST-SAVE-20261008'");
  await user(3);await assert.rejects(assertLease(5,c.generation),/SO_EDIT_LEASE_LOST/);await assertLease(null);
  const d=await lease(5,'acquire');assert.ok(d.generation>c.generation);await assert.rejects(assertLease(5,c.generation),/SO_EDIT_LEASE_LOST/);
  console.log('PASS expiry releases legacy callers but never revives a fenced payload');

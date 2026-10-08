@@ -1,8 +1,8 @@
+import InventoryPurchasing from './allSchool/InventoryPurchasing';
 import { garmentInventoryRows } from './allSchool/garmentInventory';
-import { methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
+import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
 import { artworkItemName, recipeKey } from './lib/artworkReport';
-import ShowcaseImageReview from './ui/ShowcaseImageReview';
-import * as SHOWCASE from './lib/showcaseSettings';
+import ShowcaseFamilyList from './ui/ShowcaseFamilyList';
 import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
 import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
 import { validateShipping } from './lib/webstoreShippingRules.shared';
@@ -13,6 +13,7 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './all
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
 import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
 import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
 import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
@@ -2766,20 +2767,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
     const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
     if (insertError || inserted?.length !== copies.length) { flash('Logo option not saved: ' + (insertError?.message || 'Could not create every color')); loadDetail(sel); return false; }
-    flash(`Added ${newLabel} as an inactive logo option`); loadDetail(sel); return inserted[0].id;
+    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return inserted[0].id;
   }, [sel, detail, flash, loadDetail]);
   const updateSchoolLogoOption = useCallback(async (item, fields) => {
     if (sel?.org_type !== 'all_school' || !item?.id) return false;
     const key = item.variant_group_id || item.id;
     const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
     if (!rows.length) return false;
-    if (fields.active === true && rows.some((row) => methodSetupError(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]))) {
-      flash('Complete the mockup and inventory or embroidery-file setup for each color before publishing.'); return false;
-    }
-    if (fields.active === true) for (const row of rows) {
-      const resolved = resolveSchoolSetup(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]);
-      const link = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
-      if (link.error || !link.data?.length) { flash('Could not link decoration inventory.'); return false; }
+    if (fields.active === true && rows.some((row) => !hasSchoolMockup(row))) {
+      flash('Save the logo mockup for each color first.'); return false;
     }
     const { data, error } = await supabase.from('webstore_products').update(fields).eq('store_id', sel.id).in('id', rows.map((row) => row.id)).select('id');
     if (error || data?.length !== rows.length) { flash('Logo choice not saved: ' + (error?.message || 'Could not update every color')); loadDetail(sel); return false; }
@@ -2972,6 +2968,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError(candidate, fields.decorations);
       if (blocked) { flash(blocked); return false; }
     }
+    if (sel?.org_type === 'all_school' && (fields.decorations || fields.image_url)) {
+      const candidate = { ...(detail?.catalog || []).find((row) => row.id === id), ...fields };
+      if (hasSchoolMockup(candidate)) fields = { ...fields, active: true };
+    }
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) fields = { ...fields, production_approved_at: null, production_approved_by: null };
     const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
     if (error) { flash('Error: ' + error.message); return false; }
@@ -2987,6 +2987,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // shopper questions attached to that storefront card.
     const groupFields = sharedCardFields(fields);
     if (sel?.org_type === 'all_school') ['school_program_ids', 'school_shared', 'personalization_template', 'takes_name', 'transfer_codes', 'transfer_code'].forEach((key) => { if (Object.prototype.hasOwnProperty.call(fields, key)) groupFields[key] = fields[key]; });
+    if (sel?.org_type === 'all_school' && fields.active === true && fields.decorations) groupFields.active = true;
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) { groupFields.production_approved_at = null; groupFields.production_approved_by = null; }
     if (sel?.org_type === 'all_school' && fields.decorations && fields.transfer_codes) { if (fields.image_url === null) groupFields.image_url = null; if (fields.image_back_url === null) groupFields.image_back_url = null; }
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
@@ -3145,7 +3146,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (item) {
         const prev = Array.isArray(item.decorations) ? item.decorations : [];
         const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
-        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { active: true, production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
       }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
@@ -3172,7 +3173,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // instead of leaving the old art stacked underneath (a back logo still leaves the
       // front intact, since it only clears its own side).
       const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations: next }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
@@ -3225,7 +3226,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     let n = added, fails = 0;
     for (const { id, decorations } of entries) {
-      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
@@ -3238,7 +3239,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === itemId), decorations);
       if (blocked) { flash(blocked); return false; }
     }
-    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
+    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
@@ -4438,7 +4439,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
-        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
+        <StoreDetail onRefreshInventory={() => loadDetail(sel)} store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
@@ -6494,28 +6495,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-const SHOWCASE_STATUS = {
-  missing: { label: 'Missing', bg: '#f1f5f9', fg: '#64748b' },
-  queued: { label: 'Queued', bg: '#eff6ff', fg: '#1d4ed8' },
-  generating: { label: 'Generating', bg: '#eef2ff', fg: '#4338ca' },
-  review: { label: 'Needs review', bg: '#fff7ed', fg: '#c2410c' },
-  approved: { label: 'Approved', bg: '#ecfdf5', fg: '#047857' },
-  failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
-  canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
-};
-const SHOWCASE_PROMPT_VERSION = SHOWCASE.PROMPT_VERSION;
-
-function ShowcaseStatusBadge({ asset }) {
-  const key = asset?.status || 'missing';
-  const status = SHOWCASE_STATUS[key] || SHOWCASE_STATUS.missing;
-  const rejected = key === 'review' && asset?.approval_status === 'rejected';
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 999, padding: '4px 9px', background: status.bg, color: status.fg, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-    {(key === 'queued' || key === 'generating') && <span aria-hidden>◌</span>}{rejected ? 'Rejected' : status.label}
-  </span>;
-}
-
 function ShowcaseAppearanceTab({ store, onFlash }) {
-  const [reviewId, setReviewId] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [draftMode, setDraftMode] = useState('standard');
   const [busy, setBusy] = useState('');
@@ -6599,39 +6579,10 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   if (!snapshot && !error) return <div className="card"><div className="card-body" style={{ color: '#64748b' }}>Loading Store Appearance…</div></div>;
   const publishedMode = snapshot?.store?.published_presentation_mode || store.published_presentation_mode || 'standard';
   const items = snapshot?.items || [];
-  const counts = snapshot?.counts || {};
   const unpublished = publishedMode !== draftMode;
-  const generateAllCount = items.filter((item) => {
-    const asset = item.asset || {};
-    const status = asset.status || 'missing';
-    if (item.kind === 'bundle' || !item.standard_image_url) return false;
-    if (status === 'queued' || status === 'generating') return false;
-    if (asset.id && (asset.prompt_version !== SHOWCASE_PROMPT_VERSION || asset.needs_regeneration)) return true;
-    if (status === 'approved') return false;
-    return status !== 'review' || asset.approval_status === 'rejected';
-  }).length;
-
-  const generateAll = async () => {
-    if (!generateAllCount) return;
-    if (!window.confirm(`Generate ${generateAllCount} Showcase image${generateAllCount === 1 ? '' : 's'}? This queues background AI jobs and may incur usage charges.`)) return;
-    const data = await act('generate_all', 'generate_all');
-    if (!data) return;
-    const failed = Number(data.failed_count || 0);
-    onFlash?.(`Queued ${Number(data.queued_count || 0)} Showcase image${Number(data.queued_count || 0) === 1 ? '' : 's'}${failed ? ` · ${failed} failed to start` : ''}`);
-  };
-  const activeJobCount = items.filter(({ asset }) => asset?.status === 'queued' || asset?.status === 'generating').length;
-  const cancelAll = async () => {
-    if (!activeJobCount) return;
-    if (!window.confirm(`Cancel ${activeJobCount} active Showcase job${activeJobCount === 1 ? '' : 's'}? Queued jobs stop immediately; provider requests already in flight may still incur a charge.`)) return;
-    const data = await act('cancel_all', 'cancel_all');
-    if (data) onFlash?.(`Canceled ${Number(data.canceled_count || 0)} Showcase job${Number(data.canceled_count || 0) === 1 ? '' : 's'}`);
-  };
 
   return (
     <div>
-      {reviewId && items.find((item) => item.webstore_product_id === reviewId) && <ShowcaseImageReview
-        key={reviewId} item={items.find((item) => item.webstore_product_id === reviewId)} busy={!!busy} error={error} onClose={() => setReviewId(null)}
-        onAction={(action, extra = {}) => act(reviewId, action, { webstore_product_id: reviewId, ...extra })} />}
       <div className="card" style={{ marginBottom: 12, overflow: 'hidden' }}>
         <div style={{ padding: '18px 20px', borderBottom: '1px solid #e2e8f0', background: 'linear-gradient(120deg,#f8fafc,#fff)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -6676,83 +6627,12 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
         </div>
       </div>
 
-      {draftMode === 'showcase' && <div className="card">
-        <div style={{ padding: '15px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 15 }}>Showcase readiness</div>
-            <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Choose the decoration finish per item, then expand Before / After to approve the hero image or request a new one. Every generated image requires human approval before shoppers can see it.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
-              {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
-            </button>
-            {activeJobCount > 0 && <button className="btn btn-sm btn-secondary" type="button" disabled={!!busy} onClick={cancelAll} title="Stop all queued jobs and cancel running jobs at their next safe checkpoint">
-              {busy === 'cancel_all' ? 'Canceling…' : `Cancel All (${activeJobCount})`}
-            </button>}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {['approved', 'review', 'missing', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
-            </div>
-          </div>
-        </div>
-        <div style={{ padding: 12 }}>
-          {items.length === 0 && <div style={{ padding: 22, textAlign: 'center', color: '#64748b', fontSize: 12.5 }}>Add products to the Catalog before generating Showcase images.</div>}
-          {items.map((item) => {
-            const asset = item.asset || {};
-            const working = asset.status === 'queued' || asset.status === 'generating';
-            const itemBusy = busy === item.webstore_product_id;
-            const canReview = asset.status === 'review' && !!asset.showcase_image_url;
-            const isBundle = item.kind === 'bundle';
-            return <div key={item.webstore_product_id} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px,140px) minmax(180px,1fr) minmax(200px,auto)', gap: 12, alignItems: 'center', padding: 10, borderBottom: '1px solid #f1f5f9' }}>
-              <button type="button" onClick={() => setReviewId(item.webstore_product_id)} aria-label={`Expand before and after for ${item.name}`}
-                style={{ padding: 4, border: '1px solid #e2e8f0', borderRadius: 9, background: '#fff', cursor: 'pointer', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-                {[
-                  ['Before', asset.standard_image_url || item.standard_image_url],
-                  ['After', asset.showcase_image_url || asset.approved_showcase_image_url],
-                ].map(([label, url]) => <span key={label} style={{ minWidth: 0 }}>
-                  <span style={{ display: 'block', fontSize: 9, color: '#64748b', fontWeight: 800, marginBottom: 3 }}>{label}</span>
-                  {url ? <img src={url} alt={`${item.name} ${label}`} loading="lazy" style={{ width: '100%', height: 64, objectFit: 'contain', background: '#fff' }} />
-                    : <span style={{ display: 'grid', placeItems: 'center', height: 64, background: '#f8fafc', fontSize: 9, color: '#94a3b8' }}>{working ? 'Generating…' : 'No image'}</span>}
-                </span>)}
-              </button>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 750, fontSize: 12.5, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
-                  <ShowcaseStatusBadge asset={asset} />
-                </div>
-                <div style={{ marginTop: 3, color: '#94a3b8', fontSize: 10.5 }}>{item.sku || 'No SKU'}{item.color ? ` · ${item.color}` : ''}{item.brand ? ` · ${item.brand}` : ''}</div>
-                {!isBundle && <label style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 7, fontSize: 11, color: '#475569' }}>
-                  Hero decoration
-                  <select aria-label={`Hero decoration for ${item.name}`} value={asset.showcase_settings?.decoration_type || 'auto'} disabled={!!busy || working}
-                    onChange={(event) => act(item.webstore_product_id, 'save_settings', { webstore_product_id: item.webstore_product_id,
-                      showcase_settings: { ...(asset.showcase_settings || {}), decoration_type: event.target.value } })}
-                    style={{ fontSize: 11, border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', background: '#fff' }}>
-                    {SHOWCASE.DECORATION_FINISHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                  </select>
-                  {asset.needs_regeneration && <span style={{ color: '#b45309', fontSize: 10 }}>Generate to apply</span>}
-                </label>}
-                {asset.error_details && <div title={asset.error_details} style={{ marginTop: 4, color: '#b91c1c', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 560 }}>{asset.error_details}</div>}
-                {isBundle && <div style={{ marginTop: 4, color: '#64748b', fontSize: 10.5 }}>Package cards use approved component images; generate each component product.</div>}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setReviewId(item.webstore_product_id)}>Before / After ↗</button>
-                {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || !!busy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
-                {!isBundle && working && <button className="btn btn-sm btn-secondary" disabled={itemBusy} title="Stop this AI job at its next safe checkpoint" onClick={() => act(item.webstore_product_id, 'cancel', { webstore_product_id: item.webstore_product_id })}>{itemBusy ? 'Canceling…' : 'Cancel'}</button>}
-                {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={!!busy || asset.needs_regeneration} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
-                {canReview && <button className="btn btn-sm btn-secondary" disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'reject', { webstore_product_id: item.webstore_product_id })}>Reject</button>}
-                {!isBundle && asset.status !== 'missing' && <button className="btn btn-sm btn-secondary" disabled={itemBusy || working} title="Keep the Standard product image live for this item" onClick={() => act(item.webstore_product_id, 'fallback', { webstore_product_id: item.webstore_product_id })}>Use Standard</button>}
-              </div>
-            </div>;
-          })}
-        </div>
-        <div style={{ padding: '11px 18px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: 10.5 }}>
-          Safety rule: missing, failed, rejected, queued, and unapproved products always render their existing Standard image. Approved assets are versioned in permanent storage and never depend on temporary provider URLs.
-        </div>
-      </div>}
+      {draftMode === 'showcase' && <ShowcaseFamilyList items={items} busy={!!busy} error={error} act={act} />}
     </div>
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [catalogFocusId, setCatalogFocusId] = useState(null);
   useEffect(() => { if (tab !== 'catalog') setCatalogFocusId(null); }, [tab]);
   const [portalCopied, setPortalCopied] = useState(false);
@@ -6770,7 +6650,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
     const designId = row?.variant_group_id || row?.id;
     if (!styleId || !designId) return false;
     const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
-    if (!colors.length || colors.some((color) => color.active === false || methodSetupError(color, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]))) return false;
+    if (!colors.length || colors.some((color) => color.active === false || !hasSchoolMockup(color))) return false;
     return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
   };
   const roster = detail?.roster || [];
@@ -6830,7 +6710,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Categories' }] : []),
-    { id: 'catalog', label: `Catalog (${catalog.length})` },
+    { id: 'catalog', label: `Catalog (${s.org_type === 'all_school' ? catalogGroups(catalog, true, firstSchoolLogoByStyle).length : catalog.length})` },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
@@ -6995,7 +6875,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
-          {tab === 'inventory' && <InventoryTab artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
+          {tab === 'inventory' && <InventoryTab onRefreshInventory={onRefreshInventory} artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
@@ -7149,21 +7029,9 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  // Group color variants of the same garment into one card. Colors of a garment
-  // share variant_group_id (= the primary row's id); a null group id = standalone.
-  const groupKeyOf = (p) => p.variant_group_id || p.id;
-  const groups = [];
-  {
-    const byKey = new Map();
-    for (const p of ordered) { const k = groupKeyOf(p); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(p); }
-    // The leftmost color (lowest sort_order — rows are pre-sorted) is the primary: its image
-    // leads the catalog row and it's the default on the storefront. Reordering colors changes it.
-    for (const [k, rows] of byKey) { groups.push({ key: k, rep: rows[0], rows }); }
-    groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
-  }
+  const groups = catalogGroups(catalog, isAllSchool, firstSchoolLogoByStyle);
   const repsList = groups.map((g) => g.rep);
-  const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
+  const colorsForRep = (id) => catalogEditorRows(groups, id);
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
 
@@ -7207,12 +7075,12 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
   const _webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
-  const renderRep = ({ rep: p, rows: colorRows }) => {
+  const renderRep = ({ rep: p, rows: colorRows, designs }) => {
     const stock = stockByWp[p.id];
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-    const sel = editId === p.id;
+    const sel = editId === p.id || (isAllSchool && groups.find((g) => g.rep.id === p.id)?.allRows.some((row) => row.id === editId));
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
     const archived = p.active === false;
@@ -7241,7 +7109,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}{isAllSchool && designs?.length > 1 ? ` · ${designs.length} logo choices` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
       </div>
@@ -7249,7 +7117,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   };
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
-  useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  useEffect(() => { if (view === 'split' && repsList.length && !catalog.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
   // After a custom product is created + added, drop the rep straight into the full item
   // editor once the reloaded catalog contains it — so they never have to reopen it to
   // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
@@ -7461,7 +7329,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {(() => {
-              const p = repsList.find((x) => x.id === editId) || null;
+              const p = catalog.find((x) => x.id === editId) || null;
               if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
               const stock = stockByWp[p.id];
               const groupColors = colorsForRep(p.id);
@@ -7494,7 +7362,9 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
               <th style={th}>Order</th><th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
-              {groups.map(({ rep: p, rows: colorRows }, i) => {
+              {groups.map((group, i) => {
+                const p = group.allRows.find((row) => row.id === editId) || group.rep;
+                const colorRows = colorsForRep(p.id);
                 const stock = stockByWp[p.id];
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
@@ -7568,7 +7438,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
                       </div>
                     </div>
                   </td></tr>}
@@ -8711,7 +8581,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   if (saveRef) saveRef.current = save;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
-      {!setPageProp && (
+      {!saveRef && (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, position: 'sticky', top: 0, zIndex: 5, background: '#f6f7f9', paddingBottom: 12, borderBottom: '1px solid #e5e8ec' }}>
           {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" onClick={() => setPage('sizes')}>Next: Sizes →</button>}
           {!isBundle && page === 'sizes' && <button type="button" className="btn btn-secondary" onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
@@ -8719,7 +8589,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
         </div>
       )}
-      {!isBundle && !setPageProp && (
+      {!isBundle && !saveRef && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
           {[['details', '1 · Item setup'], ['sizes', '2 · Sizes & options'], ['art', '3 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
             <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
@@ -9053,13 +8923,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
-      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
+
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
+      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -12853,7 +12724,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. New choices stay hidden until reviewed and published.</p>}
+      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
@@ -13458,7 +13329,7 @@ function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catal
 // inventory (design transfers deducted per item; number transfers deducted
 // per digit, matched to the item's number size/color set). "Used" is computed
 // live from all non-cancelled orders.
-function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
+function InventoryTab({ onRefreshInventory, artwork = [], store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
   const [inventoryArt, setInventoryArt] = useState(null);
   const [inventorySearch, setInventorySearch] = useState('');
@@ -13504,6 +13375,7 @@ function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, tr
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {store?.org_type === 'all_school' && lowStock.length > 0 && <div role="alert" className="card" style={{ padding: 16, color: '#92400e' }}><b>Low decoration stock — {lowStock.length} item(s)</b><ul>{lowStock.map((t) => <li key={t.id}>{t.label || t.code}: {(Number(t.on_hand) || 0) - (onOrderUse[t.code] || 0)} available · alert below {t.low_stock_threshold ?? 10} · {Number(t.incoming) || 0} incoming{t.incoming_eta ? ` (ETA ${t.incoming_eta})` : ''}</li>)}</ul><span style={{ fontSize: 12 }}>Review replenishment before accepting more demand. Edit thresholds under Art &amp; print specs.</span></div>}
       {store?.org_type === 'all_school' && <DecorationAllocations storeId={store.id} transfers={transfers} />}
+      {store?.org_type === 'all_school' && <InventoryPurchasing onReceived={onRefreshInventory} storeId={store.id} catalog={catalog} transfers={transfers} />}
       {/* Garment stock */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>

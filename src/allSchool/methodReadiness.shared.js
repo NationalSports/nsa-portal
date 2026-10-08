@@ -1,3 +1,5 @@
+// A saved placement over a catalog garment is a mockup too; no flattened upload is required.
+const hasSchoolMockup = (item) => !!item?.image_url || (item?.decorations || []).some((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && !!d.art_url);
 const schoolArtwork = (arts) => [...new Set(arts.map((a) => a.id))].map((id) => { const matches = arts.filter((a) => a.id === id); return { ...Object.assign({}, ...matches.slice().reverse()), files: matches.flatMap((a) => a.files || []), prod_files: matches.flatMap((a) => a.prod_files || []) }; });
 const STOCK_METHODS = ['dtf', 'heat_press', 'heat_transfer', 'twill', 'patch', 'chenille', 'embroidered_patch', 'woven_patch', 'sublimation_patch', 'screen_print_transfer'];
 const stockCodeForArt = (id) => `store-art-${encodeURIComponent(String(id))}`;
@@ -25,11 +27,12 @@ function resolveSchoolSetup(item, transfers = [], art = []) {
 function methodSetupError(raw, transfers = [], art = []) {
   const item = resolveSchoolSetup(raw, transfers, art);
   if (!item.product_id || !item.sku) return 'Link the exact blank garment and SKU.';
-  if (!item.image_url) return 'Save the garment mockup in Art & colors.';
+  if (!hasSchoolMockup(item)) return 'Save the garment mockup in Art & colors.';
   for (const code of item.transfer_codes) {
     const stock = transfers.find((t) => t.code === code);
     if (!stock || !STOCK_METHODS.includes(stock.decoration_type || 'dtf')) return `Set up decoration inventory for ${stock?.label || code}.`;
     if (!stock.application_method) return `Choose the application method for ${stock.label || code} in Inventory.`;
+    if (stock.application_method !== 'heat_press' && !String(stock.application_instructions || '').trim()) return `Add application instructions for ${stock.label || code} in Inventory.`;
   }
   for (const d of item.decorations) {
     if (!d || ['perso_name', 'perso_number'].includes(d.kind)) continue;
@@ -64,4 +67,4 @@ function methodSetupError(raw, transfers = [], art = []) {
   }
   return '';
 }
-module.exports = { schoolArtwork, STOCK_METHODS, resolveSchoolSetup, methodSetupError };
+module.exports = { hasSchoolMockup, schoolArtwork, STOCK_METHODS, resolveSchoolSetup, methodSetupError };

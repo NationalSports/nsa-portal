@@ -1,0 +1,77 @@
+/* Scoped to the production-board job view; no changes to order editors or print renderers. */
+.modal.prod-job-modal { max-width: 1200px; max-height: 92dvh; overflow: auto; }
+.prod-job-modal > .modal-header { position: sticky; top: 0; z-index: 3; gap: 12px; flex-wrap: wrap; }
+.prod-job-modal > .modal-header > div { min-width: 0; }
+.prod-job-modal .prod-job-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prod-job-modal .prod-job-tools button { min-height: 44px; }
+.prod-job-modal .prod-job-tools .modal-close { min-width: 44px; }
+.pgw { padding: 18px; background: #f1f5f9; color: #172b4d; }
+.pgw *, .pgw-preview * { box-sizing: border-box; }
+.pgw button, .pgw-preview button { font: inherit; min-height: 44px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 12px; background: white; color: #172b4d; cursor: pointer; }
+.pgw button:focus-visible, .pgw-preview button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.pgw-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.pgw-toolbar > span { font-size: 14px; }
+.pgw-jump { display: flex; gap: 8px; flex-wrap: wrap; }
+.pgw-jump button { font-size: 14px; font-weight: 600; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+/* Each group is one decoration run; scroll-margin keeps a jumped-to card clear of the sticky modal header. */
+.pgw-group { margin-bottom: 28px; scroll-margin-top: 120px; }
+.pgw-group > .pgw-panel { margin-bottom: 16px; }
+.pgw-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 3px solid #1e3a5f; overflow-wrap: anywhere; }
+.pgw-group-heading span { font-size: 14px; color: #475569; }
+.pgw-group-heading > strong { white-space: nowrap; font-size: 18px; }
+.pgw .pgw-group-heading h3 { font-size: 18px; margin: 2px 0; }
+.pgw .pgw-group-chip { display: inline-block; font-size: 12px; font-weight: 700; color: white; background: #1e3a5f; border-radius: 4px; padding: 2px 8px; }
+.pgw h3 { margin: 0; font-size: 16px; font-weight: 700; }
+.pgw h4 { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
+.pgw .pgw-num { text-align: center; white-space: nowrap; }
+.pgw-sub { font-size: 13px; font-weight: 400; color: #64748b; }
+.pgw-size-table td { overflow-wrap: normal; }
+.pgw-size-table tfoot th, .pgw-size-table tfoot td { background: #f8fafc; font-weight: 700; }
+.pgw-used-by { margin: -6px 0 12px; font-size: 12px; font-weight: 600; color: #1e3a5f; overflow-wrap: anywhere; }
+.pgw-columns-single { grid-template-columns: minmax(0, 1fr) !important; }
+.pgw-roster-block + .pgw-roster-block { border-top: 3px solid #e2e8f0; }
+.pgw-roster-title { padding: 12px 14px 4px; font-size: 14px; overflow-wrap: anywhere; }
+.pgw-roster-title span { color: #475569; margin-left: 6px; }
+.pgw-roster-caption { padding: 12px 14px; font-size: 13px; color: #475569; }
+.pgw-columns { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.pgw-panel { border: 1px solid #dbe2eb; background: white; border-radius: 10px; min-width: 0; overflow: hidden; }
+.pgw-panel-heading { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 14px; border-bottom: 1px solid #e2e8f0; }
+.pgw-panel-heading strong { font-size: 14px; }
+.pgw-visuals { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; padding: 14px; }
+.pgw-reference { margin: 0 0 12px; min-width: 0; }
+.pgw button.pgw-image { display: flex; flex-direction: column; align-items: center; width: 100%; padding: 0; overflow: hidden; }
+.pgw-image img { width: 100%; height: 230px; object-fit: contain; padding: 8px; }
+.pgw-image span { padding: 8px; width: 100%; background: #f1f5f9; color: #334155; font-size: 12px; }
+.pgw-reference figcaption { font-size: 12px; color: #475569; padding-top: 6px; overflow-wrap: anywhere; }
+.pgw-empty { padding: 14px; margin: 0; font-size: 14px; color: #64748b; background: #f8fafc; overflow-wrap: anywhere; }
+.pgw-empty p { margin: 0 0 10px; }
+.pgw-notice { margin: 0; padding: 12px 14px; background: #fff7ed; color: #9a3412; font-size: 13px; overflow-wrap: anywhere; }
+/* Legacy spec content keeps its data/labels; raise small inline text for tablet reading. */
+.pgw-specs { overflow-wrap: anywhere; }
+.pgw-specs [style*="font-size"] { font-size: 14px !important; }
+.pgw-files { padding: 14px; border-top: 1px solid #e2e8f0; }
+.pgw-files button { margin: 0 8px 8px 0; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+.pgw-table-wrap { overflow-x: auto; }
+.pgw table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.pgw th, .pgw td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; overflow-wrap: anywhere; }
+.pgw thead th { font-size: 12px; background: #f1f5f9; color: #475569; }
+.pgw button.pgw-number-check { min-width: 44px; font-size: 18px; }
+.pgw-number-check[aria-pressed="true"] { background: #dcfce7; color: #166534; border-color: #86efac; }
+.pgw-preview { max-width: none; width: min(1200px, 96vw); height: 92dvh; max-height: 92dvh; padding: 0; border: 0; border-radius: 12px; background: #f8fafc; color: #172b4d; }
+.pgw-preview::backdrop { background: #0f172ae6; }
+.pgw-preview[open] { display: flex; flex-direction: column; }
+.pgw-preview-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px; background: white; border-bottom: 1px solid #e2e8f0; }
+.pgw-preview-header strong { overflow-wrap: anywhere; }
+.pgw-preview-header > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.pgw-preview-image { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; }
+.pgw-preview-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+@media (max-width: 760px) {
+  .pgw-columns { grid-template-columns: 1fr; }
+  .pgw { padding: 12px; }
+  .pgw-roster { grid-row: 1; }
+  .pgw-image img { height: 190px; }
+}
+@media (max-width: 420px) {
+  .pgw-visuals { grid-template-columns: 1fr; }
+  .pgw th, .pgw td { padding: 8px; }
+}

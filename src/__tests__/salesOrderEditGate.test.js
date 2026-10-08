@@ -33,3 +33,13 @@ test('takeover notification freezes mounted editor and blocks a retained callbac
 test('disabled rollout preserves the existing editor and makes no lease request',async()=>{
  await render({enabled:false});expect(latest.order).toBe(stale);expect(client.rpc).not.toHaveBeenCalled();
 });
+test('pilot preview leaves other orders on the existing editor',async()=>{
+ const old=process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID;
+ try{
+  process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID='SO-TEST-SAVE-20261008';
+  await render();expect(latest.order).toBe(stale);expect(client.rpc).not.toHaveBeenCalled();
+ }finally{
+  if(old===undefined)delete process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID;
+  else process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID=old;
+ }
+});

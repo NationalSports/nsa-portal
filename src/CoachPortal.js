@@ -1209,60 +1209,29 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // partway down the billing list would never see it otherwise.
   const _scrollToConfirmation=()=>{try{window.scrollTo({top:0,behavior:'smooth'})}catch{try{window.scrollTo(0,0)}catch{}}};
 
-  const handlePaymentSuccess=(result)=>{
-    // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
-    // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
-    // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
-    // buyer isn't falsely told the payment failed.
-    if(result.status==='processing'){
-      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,processing:true});
-      setShowPay(null);setInvView(null);setPayLoading(false);
-      _scrollToConfirmation();
-      return;
-    }
-    // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
-    // Partial pay link: apply exactly the requested amount (+ its card fee) — never the full balance.
-    if(result.payRequest&&result.invoices.length===1){
-      const reqAmt=Math.round((Number(result.payRequest.amount)||0)*100)/100,fee=Math.round((Number(result.fee)||0)*100)/100;
-      const reqUpdater=prev=>prev.map(inv=>{
-        if(inv.id!==result.invoices[0].id)return inv;
-        const newTotal=Math.round(((inv.total||0)+fee)*100)/100,newPaid=Math.round(((inv.paid||0)+reqAmt+fee)*100)/100;
-        const payment={amount:Math.round((reqAmt+fee)*100)/100,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-        return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal-0.005?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
-      });
-      setInvs(reqUpdater);if(onUpdateInvs)onUpdateInvs(reqUpdater);
-      if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
-      setPayReq(p=>p&&p.ok?{...p,ok:false,error:null,paid:true}:p);
-      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-      setPaySuccess({amount:reqAmt,fee,invoices:result.invoices,intentId:result.intentId});
-      setShowPay(null);setInvView(null);setPayLoading(false);_scrollToConfirmation();
-      return;
-    }
-    const paidInvIds=result.invoices.map(i=>i.id);
-    // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
-    // default 2.9%). The old code referenced an undefined CC_FEE_PORTAL here, which threw the moment
-    // a payment succeeded — so the invoice never got marked paid and the portal hit its error boundary.
-    const ccPct=(typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:0.029);
-    const updater=prev=>prev.map(inv=>{
-      if(!paidInvIds.includes(inv.id))return inv;
-      const bal=(inv.total||0)-(inv.paid||0);
-      const fee=Math.round(bal*ccPct*100)/100;
-      const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
-      const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
-      const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
-    });
-    setInvs(updater);
-    if(onUpdateInvs)onUpdateInvs(updater);// optimistic UI; the DB write below is what actually persists
-    // The public portal is anonymous and RLS-blocks direct invoice writes (the parent save above fails
-    // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
-    // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
-    if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+  const handlePaymentSuccess=async(result)=>{
     setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
+    const confirmation={amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId};
+    setPaySuccess({...confirmation,processing:result.status==='processing',reconciling:result.status!=='processing'});
     _scrollToConfirmation();
+    try{
+      const response=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true});
+      const saved=await response.json();
+      if(!response.ok||saved.error)throw new Error('Invoice reconciliation pending');
+      if(saved.status==='processing'){setPaySuccess({...confirmation,processing:true});return;}
+      if(!saved.ok)throw new Error('Payment is not settled');
+      // Server-confirmed totals only. The old optimistic writer invented a card fee
+      // for bank payments and could race settlement with a second financial write.
+      const byId=new Map((saved.invoices||[]).map(inv=>[inv.id,inv]));
+      setInvs(prev=>prev.map(inv=>byId.has(inv.id)?{...inv,...byId.get(inv.id)}:inv));
+      if(result.payRequest)setPayReq(p=>p?{...p,ok:false,error:null,paid:true}:p);
+      setPaySuccess(confirmation);
+    }catch(e){
+      // Stripe already accepted the payment. Never invite another charge just
+      // because saving its invoice status is delayed; the webhook retries it.
+      setPaySuccess({...confirmation,processing:result.status==='processing',reconciling:result.status!=='processing'});
+    }
   };
 
   // Email a full itemized receipt for the just-completed payment. Content is built server-side from
@@ -1303,24 +1272,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         if(!stripe)return;
         const{paymentIntent}=await stripe.retrievePaymentIntent(clientSecret);
         if(!paymentIntent)return;
-        if(paymentIntent.status==='succeeded'){
-          const ids=String(paymentIntent.metadata?.invoice_id||'').split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
-          const matched=custInvs.filter(inv=>ids.includes(inv.id));
-          const collected=(paymentIntent.amount||0)/100;
-          // A partial pay link must never be applied locally as the full balance — let the server
-          // (which knows the requested amount) settle it.
-          if(matched.length&&!_payReqToken()){
-            const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
-            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
-          }else{
-            // Invoices not loaded into this view — reconcile server-side directly, then confirm.
-            fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
-            setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-            setPaySuccess({amount:collected,fee:0,invoices:[],intentId:paymentIntent.id});
-          }
-        }else if(paymentIntent.status==='processing'){
-          setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-          setPaySuccess({amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],intentId:paymentIntent.id,processing:true});
+        if(['succeeded','processing'].includes(paymentIntent.status)){
+          await handlePaymentSuccess({intentId:paymentIntent.id,amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],status:paymentIntent.status});
         }
         // failed / requires_payment_method: the modal already showed an error before the redirect.
       }catch(e){/* best-effort; the webhook is the source of truth */}
@@ -2866,9 +2819,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             never rendered after a real payment. */}
         {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
-          <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
+          <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':paySuccess.reconciling?'Payment received — updating invoice':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#5A6075',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
+          <div style={{fontSize:12,color:'#5A6075',marginTop:4}}>{paySuccess.processing?'Bank payments take a few business days to clear. Your payment has been submitted; please do not pay again.':paySuccess.reconciling?'Your payment was received, but the invoice update needs confirmation. Please do not pay again; contact NSA if the balance stays open.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
           {paySuccess.intentId&&<div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+(paySuccess.processing?'#fde68a':'#bbf7d0')}}>
             <a href={'/.netlify/functions/receipt?payment_intent_id='+encodeURIComponent(paySuccess.intentId)} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700}}>📄 Download receipt</a>
             <div style={{marginTop:12,fontSize:12,color:'#475569',fontWeight:600}}>Or email a copy:</div>

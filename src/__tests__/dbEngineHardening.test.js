@@ -735,6 +735,122 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
   });
 });
 
+// ── SO-2456 / SO-2773 (2026-10): recoloring a line that has a PO must not repeat its line_id ──
+// The rep recolored a line carrying a PO (SO-2773 "ST350 TrueNavy → White", an API-placed order;
+// SO-2456 "110M White → Charcoal/ White", a billed drop-ship line). The PO restore pass matched DB
+// rows by sku+color only, so the recolored line looked missing; the guard rebuilt the old-color
+// line at the tail under the SAME line_id, and so_items_line_identity rejected every retry.
+describe('_dbSaveSOInner — recolored line with a PO keeps one identity (SO-2456 / SO-2773)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const reads = (dbItems, poRows, extra = {}) => ({
+    sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
+    so_items: [{ data: dbItems, error: null }, ...(extra.so_items || [])],
+    so_art_files: [{ data: [], error: null }],
+    so_item_decorations: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: poRows, error: null },
+      { data: poRows.map(r => ({ po_id: r.po_id })), error: null },
+      { data: poRows.map(r => ({ po_id: r.po_id })), error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+  });
+  const planned = (state, table) => (state.calls.find(c => c.table === table && c.planned) || { args: [[]] }).args[0];
+
+  test('SO-2773: the recolored line keeps its API order line — nothing is rebuilt', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = reads(
+      [
+        { id: 'oi-1', line_id: 'L-a230', item_index: 0, sku: 'A230', color: 'Navy', product_id: null, sizes: { L: 12 } },
+        { id: 'oi-2', line_id: 'L-st350', item_index: 1, sku: 'ST350', color: 'TrueNavy', product_id: null, sizes: { L: 10, M: 10 } },
+      ],
+      [{ id: 'po-1', so_item_id: 'oi-2', po_id: 'PO 60328 SDHBS', status: 'waiting', sizes: { L: 10, M: 10, api_order_id: 'NSA 4706' }, received: {}, billed: {}, shipments: [], tracking_numbers: [] }],
+    );
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO({
+      id: 'SO-RECOLOR-1', _decosHydrated: true, _deletedItemKeys: ['ST350|TrueNavy'],
+      items: [
+        { line_id: 'L-a230', sku: 'A230', color: 'Navy', sizes: { L: 12 } },
+        { line_id: 'L-st350', sku: 'ST350', color: 'White', sizes: { L: 10, M: 10 }, po_lines: [{ po_id: 'PO 60328 SDHBS', status: 'waiting', L: 10, M: 10, api_order_id: 'NSA 4706' }] },
+      ],
+    });
+
+    expect(result).toBe(true);
+    // No revive: the only so_items read is the old-items read (a revive re-reads the full row).
+    expect(__mockState.calls.filter(c => c.table === 'so_items' && c.method === 'select' && !c.planned)).toHaveLength(1);
+    const items = planned(__mockState, 'so_items');
+    expect(items.map(i => [i.line_id, i.color])).toEqual([['L-a230', 'Navy'], ['L-st350', 'White']]);
+    expect(planned(__mockState, 'so_item_po_lines').map(p => [p.po_id, p.so_item_id])).toEqual([['PO 60328 SDHBS', 'plan-item-1']]);
+  });
+
+  test('SO-2456: a payload already stuck with the revive copy saves — the copy is dropped from the plan and from live state', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    const billedRow = (id, so_item_id, n) => ({ id, so_item_id, po_id: 'PO 59412 AMAV', status: 'waiting', sizes: { Adjustable: n, drop_ship: true }, received: {}, billed: { Adjustable: n }, shipments: [], tracking_numbers: ['1ZK58W75YW11091081'] });
+    __mockState.responses = reads(
+      [
+        { id: 'oi-1', line_id: 'L-black', item_index: 0, sku: '110M', color: 'Black', product_id: null, sizes: { Adjustable: 5 } },
+        { id: 'oi-2', line_id: 'L-white', item_index: 1, sku: '110M', color: 'White', product_id: null, sizes: { Adjustable: 4 } },
+      ],
+      [billedRow('po-1', 'oi-1', 5), billedRow('po-2', 'oi-2', 4)],
+    );
+    const line = (n) => ({ po_id: 'PO 59412 AMAV', status: 'waiting', Adjustable: n, drop_ship: true, billed: { Adjustable: n }, tracking_numbers: ['1ZK58W75YW11091081'] });
+    const { _dbSaveSO, _setRestoredLinesSync } = require('../lib/dbEngine');
+    const synced = [];
+    _setRestoredLinesSync((soId, restores) => { synced.push(restores); });
+    const result = await _dbSaveSO({
+      id: 'SO-RECOLOR-2', _decosHydrated: true, _deletedItemKeys: ['110M|White'],
+      items: [
+        { line_id: 'L-black', sku: '110M', color: 'Black', product_id: null, sizes: { Adjustable: 5 }, po_lines: [line(5)] },
+        { line_id: 'L-white', sku: '110M', color: 'Charcoal/ White', product_id: null, sizes: { Adjustable: 4 }, po_lines: [line(4)] },
+        { line_id: 'L-white', sku: '110M', color: 'White', product_id: null, sizes: { Adjustable: 4 }, po_lines: [line(4)], decorations: [], pick_lines: [] },
+      ],
+    });
+    _setRestoredLinesSync(null);
+
+    expect(result).toBe(true);
+    const items = planned(__mockState, 'so_items');
+    expect(items.map(i => [i.line_id, i.color])).toEqual([['L-black', 'Black'], ['L-white', 'Charcoal/ White']]);
+    // One billed PO line per real line — the copy's duplicate billing is not written.
+    expect(planned(__mockState, 'so_item_po_lines').map(p => p.so_item_id)).toEqual(['plan-item-0', 'plan-item-1']);
+    expect(synced).toHaveLength(1);
+    expect(synced[0]).toEqual([{ kind: 'item_dropped', idx: 2, line_id: 'L-white', sku: '110M', color: 'White', sizes: { Adjustable: 4 } }]);
+  });
+
+  test('a rebuilt line never reuses a line_id the payload still holds', async () => {
+    // The recolored HAT does NOT carry the PO this time (the PO was placed from another tab), so the
+    // guard still rebuilds the White HAT to keep the PO — but as a new line with its own id.
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = reads(
+      [
+        { id: 'oi-1', line_id: 'L-tee', item_index: 0, sku: 'TEE', color: 'Red', product_id: null, sizes: { M: 1 } },
+        { id: 'oi-2', line_id: 'L-hat', item_index: 1, sku: 'HAT', color: 'White', product_id: null, sizes: { OSFA: 3 } },
+      ],
+      [{ id: 'po-1', so_item_id: 'oi-2', po_id: 'PO 9', status: 'waiting', sizes: { OSFA: 3 }, received: {}, billed: {}, shipments: [], tracking_numbers: [] }],
+      { so_items: [{ data: { id: 'oi-2', so_id: 'SO-RECOLOR-3', line_id: 'L-hat', item_index: 1, sku: 'HAT', color: 'White', product_id: null, sizes: { OSFA: 3 } }, error: null }] },
+    );
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO({
+      id: 'SO-RECOLOR-3', _decosHydrated: true, _deletedItemKeys: ['HAT|White'],
+      items: [
+        { line_id: 'L-tee', sku: 'TEE', color: 'Red', sizes: { M: 1 } },
+        { line_id: 'L-hat', sku: 'HAT', color: 'Charcoal', sizes: { OSFA: 3 } },
+      ],
+    });
+
+    expect(result).toBe(true);
+    const items = planned(__mockState, 'so_items');
+    expect(items.map(i => [i.sku, i.color])).toEqual([['TEE', 'Red'], ['HAT', 'Charcoal'], ['HAT', 'White']]);
+    expect(items[1].line_id).toBe('L-hat');
+    expect(items[2].line_id).toBeTruthy();
+    expect(items[2].line_id).not.toBe('L-hat');
+    expect(planned(__mockState, 'so_item_po_lines').map(p => [p.po_id, p.so_item_id])).toEqual([['PO 9', 'plan-item-2']]);
+  });
+});
+
 // ── SO-2021 (2026-08-17): stale-content guard must honor re-key tombstones ──────────────────
 // Changing a SKU (or color) in place removes the line's old sku|color key from the client's
 // item list. When the server _version had also moved (any other session's benign write), the

@@ -126,3 +126,11 @@ test('opened from a customer\'s Receive Payment button, the form starts on that 
   expect(screen.getByText('INV-7')).toBeTruthy();
   expect(screen.queryByPlaceholderText(/customer name/)).toBeNull();
 });
+
+test('a reconciliation-held receipt shows its warning and cannot be applied or deleted', async () => {
+  mockDb.payment_receipts = [{id:'RCPT-HELD',customer_id:'C1',amount:100,method:'check',ref:'58415',received_date:'10/06/2026',ns_applications:[],reconciliation_hold:true}];
+  render(<Harness invs0={[]} hist0={[]} nf={jest.fn()} />);
+  await waitFor(()=>expect(screen.getByText('QuickBooks review required')).toBeTruthy());
+  expect(screen.queryByText('Apply $100.00')).toBeNull();
+  expect(screen.queryByText('Delete')).toBeNull();
+});

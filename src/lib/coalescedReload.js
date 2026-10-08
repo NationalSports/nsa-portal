@@ -33,3 +33,16 @@ export function createCoalescedReload({load, canRun, onError = () => {}, retryMs
     stop() { stopped = true; clearTimeout(timer); pending.clear(); },
   };
 }
+
+// Tab-focus refresh gate. Returning to a portal tab used to reload every operational group
+// (all orders with their lines/POs/jobs/art, estimates, invoices, messages + read receipts,
+// todos) on EVERY switch back — ~15 times per tab per hour for a rep flipping between tabs
+// (edge logs, 2026-10-07). Realtime events that arrive while a tab is hidden stay queued and
+// run as soon as it is visible again, so the focus reload only adds something when realtime
+// may have missed events (a channel dropped since the last refresh) or the data is getting
+// old. Skip it only when realtime stayed connected AND the tab refreshed within minMs.
+export function shouldRefreshOnFocus({now, lastRefreshAt, realtimeHealthy, lastRealtimeDropAt, minMs = 60000}) {
+  if (!realtimeHealthy) return true;
+  if (!(lastRefreshAt > 0) || lastRealtimeDropAt >= lastRefreshAt) return true;
+  return now - lastRefreshAt >= minMs;
+}

@@ -111,6 +111,20 @@ describe('Showcase settings storage', () => {
     expect(operations.filter((op) => op.patch)).toHaveLength(0);
   });
 
+  test('approves hero and detail set atomically; fallback clears both and rejection preserves both', async () => {
+    const details = [{id:'logo-1',url:'new-detail.png',label:'Decoration detail'}];
+    existing.qa_result = {detail_images:details};
+    existing.approved_detail_images = [{url:'old-detail.png'}];
+    expect((await handler(request('approve'))).statusCode).toBe(200);
+    expect(operations.filter(o=>o.patch).pop().patch).toEqual(expect.objectContaining({approved_showcase_image_url:'new.png',approved_detail_images:details}));
+    operations=[];
+    expect((await handler(request('reject'))).statusCode).toBe(200);
+    expect(operations.filter(o=>o.patch).pop().patch).not.toHaveProperty('approved_detail_images');
+    operations=[];
+    expect((await handler(request('fallback'))).statusCode).toBe(200);
+    expect(operations.filter(o=>o.patch).pop().patch).toEqual(expect.objectContaining({approved_showcase_image_url:null,approved_detail_images:[]}));
+  });
+
   test('refuses to approve an image made with different finish settings', async () => {
     existing.analysis.showcase_settings = settings;
     const result = await handler(request('approve'));

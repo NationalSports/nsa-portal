@@ -11,11 +11,11 @@ export function logoDesignRows(rows) {
   return [...designs.values()];
 }
 
-export default function LogoChoicePicker({ rows, selected, onSelect, color, labelStyle }) {
+export default function LogoChoicePicker({ rows, selected, onSelect, color, labelStyle, compact = false }) {
   const designs = logoDesignRows(rows);
   if (!designs.length) return null;
-  return <div style={{ margin: '4px 0 22px', color, '--logo-choice-color': color || '#17213b' }}>
-    <div style={labelStyle}>{designs.length > 1 ? 'Choose your logo' : 'Included logo'}</div>
+  return <div className={compact ? 'sf-logo-picker-compact' : ''} style={{ margin: compact ? '12px 0' : '4px 0 22px', color, '--logo-choice-color': color || '#17213b' }}>
+    <div style={labelStyle}>{compact ? `${designs.length} designs` : designs.length > 1 ? 'Choose your logo' : 'Included logo'}</div>
     <div className="sf-design-choices" role="group" aria-label="Logo options">
       {designs.map((first, index) => {
         const key = designKey(first);

@@ -8,7 +8,8 @@ import {currentDraftOwner} from './lib/draftJournal';
 export default function SalesOrderEditGate({enabled=process.env.REACT_APP_SO_EDIT_LEASES==='1',editor:Editor,...props}) {
   // Stage one can ship the outbox repair independently. Enable the gate only
   // after the migration and role-specific preview checks in the rollout guide.
-  if(!enabled)return <Editor {...props}/>;
+  const pilotOrderId=process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID;
+  if(!enabled||(pilotOrderId&&props.order?.id!==pilotOrderId))return <Editor {...props}/>;
   return <EnabledSalesOrderEditGate editor={Editor} {...props}/>;
 }
 export function EnabledSalesOrderEditGate({editor:Editor,...props}) {

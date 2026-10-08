@@ -6,14 +6,17 @@
    Existing order screens and save behavior remain available. New emergency
    backups use independent owner/session/document keys; IndexedDB remains the
    transactional draft recovery authority.
-2. Apply `20261008075010_sales_order_edit_leases.sql` before enabling the editor.
+2. Apply `20261008194803_sales_order_edit_leases_pilot.sql` before enabling the editor.
    It has no effect on ordinary saves until an editor acquires a claim. It adds
    a private coordination table and patches the installed atomic save function,
    retaining existing version, child-token, rollback and idempotency checks.
-3. On a preview/test database, build with `REACT_APP_SO_EDIT_LEASES=1`. Verify the
+   This pilot version only permits claims on `SO-TEST-SAVE-20261008`; a later
+   migration is required before enabling ownership for other orders.
+3. Deploy previews build with `REACT_APP_SO_EDIT_LEASES=1` and
+   `REACT_APP_SO_EDIT_PILOT_ORDER_ID=SO-TEST-SAVE-20261008`. Verify the
    rep, CSR, art, warehouse and accounting workflows below before production
    enablement. The flag is build-time; change it and rebuild to enable/disable.
-   A preview pointed at production can acquire real leases: use test records only.
+   A preview pointed at production can acquire a real claim on the synthetic order.
 4. Enable on production only after those checks. This PR does not apply its
    migration or enable the flag on production.
 

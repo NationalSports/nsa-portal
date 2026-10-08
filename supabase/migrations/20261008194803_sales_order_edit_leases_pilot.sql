@@ -3,7 +3,7 @@
 begin;
 create schema if not exists private;
 grant usage on schema private to authenticated;
-create table private.sales_order_edit_leases (
+create table if not exists private.sales_order_edit_leases (
   so_id text primary key references public.sales_orders(id) on delete cascade,
   owner_id uuid not null,
   session_id uuid not null,
@@ -28,6 +28,11 @@ begin
   end if;
   if p_session is null or p_action not in ('status','acquire','renew','release','takeover') then
     raise exception 'INVALID_EDIT_LEASE_COMMAND';
+  end if;
+  -- The first live pilot can only claim the synthetic order. This server-side
+  -- restriction remains effective even if a preview flag is misconfigured.
+  if p_so_id <> 'SO-TEST-SAVE-20261008' then
+    raise exception 'SO_EDIT_PILOT_ORDER_ONLY' using errcode='42501';
   end if;
   -- Same lock and lock order as save_sales_order_atomic; never held while a user types.
   perform pg_advisory_xact_lock(hashtextextended('sales-order-save:'||p_so_id,0));

@@ -12,7 +12,7 @@ const accounts=[
   {Id:'13',AcctNum:'11010',Name:'Undeposited Funds',AccountType:'Other Current Asset',Active:true},
 ];
 // Portal says $100 paid; QBO shows the invoice fully open.
-function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'},payments,initialMigrationApproved=true}={}){
+function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'},payments,initialMigrationApproved=true,qboInvoice={}}={}){
   const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:invoicePaid,qb_invoice_id:'900',date:'2026-06-01',...(payments?{payments}:{})}];
   let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved,
     custQBMap:custMap,syncLog:[]};
@@ -22,7 +22,7 @@ function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbB
       const q=args.query||'';
       if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
       if(q.includes("FROM Item"))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
-      if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',Balance:qbBalance,TotalAmt:100,SyncToken:'0'}]}};
+      if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'55'},Balance:qbBalance,TotalAmt:100,SyncToken:'0',...qboInvoice}]}};
       if(q.includes('FROM Payment')&&q.includes('WHERE Id'))return{QueryResponse:{Payment:readback===undefined?[{Id:'77',TotalAmt:sent?.TotalAmt??100,TxnDate:sent?.TxnDate,CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:sent?.TotalAmt??100,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]:readback}};
       if(q.includes('FROM Payment'))return{QueryResponse:{Payment:existingPayments}};
       return{QueryResponse:{}};
@@ -98,7 +98,7 @@ test('an unlinked customer is skipped without sending anything',async()=>{
   await run.engine.syncPaidFromQB();
   expect(run.qbApi.mock.calls.some(([a])=>a==='upsert_payment')).toBe(false);
   expect(run.persistQbLink).not.toHaveBeenCalled();
-  expect(lastLog(run).details.join(' ')).toMatch(/skipped push: customer not synced to QB/);
+  expect(lastLog(run).details.join(' ')).toMatch(/invoice customer differs or is unverified/);
 });
 
 test('when QBO is ahead of the Portal nothing is pushed',async()=>{
@@ -112,7 +112,7 @@ test('when QBO is ahead of the Portal nothing is pushed',async()=>{
 // rather than 30% once days-to-pay passes 90, and freezes it on first render.
 describe('pulling QBO payments into the Portal',()=>{
   const {qbPaymentsAppliedToInvoice}=require('../qbSyncEngine');
-  function pullSetup({qboPayments,existingRows=[],savedRows=existingRows,receipts=[],dbError=null,currentRows}={}){
+  function pullSetup({qboPayments,existingRows=[],savedRows=existingRows,receipts=[],dbError=null,currentRows,qboInvoice={}}={}){
     supabase.from.mockImplementation(table=>({select:()=> table==='invoice_payments'
       ?{eq:()=>({order:()=>({limit:async()=>({data:savedRows,count:savedRows.length,error:dbError})})})}
       :{in:async()=>({data:receipts,error:dbError})}}));
@@ -126,7 +126,7 @@ describe('pulling QBO payments into the Portal',()=>{
         const q=args.query||'';
         if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
         if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
-        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',Balance:0,TotalAmt:100,SyncToken:'0'}]}};
+        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'55'},Balance:0,TotalAmt:100,SyncToken:'0',...qboInvoice}]}};
         if(q.includes('FROM Payment'))return{QueryResponse:{Payment:qboPayments}};
         return{QueryResponse:{}};
       }
@@ -139,6 +139,13 @@ describe('pulling QBO payments into the Portal',()=>{
     return {engine,saved:()=>saved,log:()=>(config.syncLog||[]).find(l=>l.type==='paid_sync')||{details:[]}};
   }
   const check=(id,date,amount)=>({Id:id,TxnDate:date,Line:[{Amount:amount,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]});
+
+  test('a QBO payment on a mismatched invoice never reaches the Portal',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],qboInvoice:{DocNumber:'INV-OTHER'}});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved()).toBeNull();
+    expect(run.log().details.join(' ')).toContain('payment and total sync BLOCKED');
+  });
 
   test('the real QBO payment date is recorded, not today',async()=>{
     const run=pullSetup({qboPayments:[check('70','2026-05-20',100)]});
@@ -243,7 +250,7 @@ describe('correcting a stale QBO total on a taxable invoice',()=>{
         if(q.includes('FROM TaxCode'))return{QueryResponse:{TaxCode:[]}};
         if(q.includes("FROM Item")&&q.includes('Sales Tax'))return{QueryResponse:{Item:[{Id:'8',Name:'NSA Portal Sales Tax — CA',Type:'Service',Active:true,IncomeAccountRef:{value:'90'}}]}};
         if(q.includes("FROM Item"))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
-        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'196',DocNumber:'INV-1001',Balance:16929.76,TotalAmt:16929.76,SyncToken:'3'}]}};
+        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'196',DocNumber:'INV-1001',CustomerRef:{value:'55'},Balance:16929.76,TotalAmt:16929.76,SyncToken:'3'}]}};
         return{QueryResponse:{}};
       }
       if(action==='upsert_invoice'){
@@ -404,4 +411,32 @@ describe('payment dates on push',()=>{
       expect(()=>buildPortalPaymentPushRows({invoice:{paid:100},cap:100})).toThrow(/no date to derive a payment date/);
     });
   });
+});
+
+
+test.each([
+  {DocNumber:'INV-OTHER'},
+  {CustomerRef:{value:'OTHER'}},
+  {CustomerRef:undefined},
+])('a wrong or unverified invoice link blocks payment writes (%j)',async(qboInvoice)=>{
+  const run=setup({qboInvoice,payments:[{amount:100,ref:'Check 1',date:'2026-06-15'}]});
+  await run.engine.syncPaidFromQB();
+  expect(run.qbApi.mock.calls.some(([action])=>action==='upsert_payment'||action==='upsert_invoice')).toBe(false);
+  expect(run.persistQbLink).not.toHaveBeenCalled();
+  expect(lastLog(run).details.join(' ')).toContain('payment and total sync BLOCKED');
+  const review=await run.engine.syncPaidFromQB({reviewOnly:true});
+  expect(review.rows[0].action).toBe('invoice identity differs');
+});
+
+test('a stale total cannot overwrite a different QBO invoice',async()=>{
+  const run=setup({qboInvoice:{DocNumber:'INV-OTHER',TotalAmt:50},payments:[]});
+  await run.engine.syncPaidFromQB();
+  expect(run.qbApi.mock.calls.some(([action])=>action==='upsert_invoice')).toBe(false);
+  expect(lastLog(run).details.join(' ')).toContain('invoice number differs');
+});
+
+test('an NS prefix is allowed only when the invoice customer also matches',async()=>{
+  const run=setup({qboInvoice:{DocNumber:'NS-INV-1'},payments:[{amount:100,ref:'Check 1',date:'2026-06-15'}]});
+  await run.engine.syncPaidFromQB();
+  expect(run.sent()).toMatchObject({TotalAmt:100});
 });

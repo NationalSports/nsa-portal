@@ -1,3 +1,5 @@
+import { inventoryPickCosts } from './lib/inventoryCosts';
+import InventoryCostDetails from './allSchool/InventoryCostDetails';
 import BatchPoReservationsNotice from './BatchPoReservationsNotice';
 import { itemBatchReservations, checkBatchPoReservations, batchPoReservationMessage, removeQueuedBatchLines } from './lib/batchPoReservations';
 import RepShipmentButton from './RepShipmentButton';
@@ -1279,6 +1281,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const[expandedMockGroups,setExpandedMockGroups]=useState({});// {jobId|sku|color|artFileId:true} — reveal ALL reuse-mock candidates for one garment; default shows only the best couple (the same design was often mocked on many garments — see priorMockCards).
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
+  const openProductionFiles=ids=>{
+    const available=ids.filter(id=>safeArt(oRef.current).some(a=>a.id===id&&!a.archived));
+    if(!available.length){nf('No artwork folder is attached to this job. Set up its artwork first.','error');return}
+    setExpandedArt(prev=>({...prev,...Object.fromEntries(available.map(id=>[id,true]))}));
+    setTab('art');
+    setTimeout(()=>document.getElementById('so-production-files-'+available[0])?.scrollIntoView({behavior:'smooth',block:'center'}),200);
+  };
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
   const[collapsedItems,setCollapsedItems]=useState({});// Track collapsed line items by idx — shows compact sku/qty/total summary
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
@@ -7272,7 +7281,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
-                  <div style={{marginBottom:6}}>
+                  <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
@@ -8235,7 +8244,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const hasActual=blankPOs.length>0||pickQty>0;
           // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
+          const actualBlank=billedCostFromPOs+(inventoryPickCosts(it).qty ? inventoryPickCosts(it).cost : pickQty*safeNum(it.nsa_cost));
           // Use SKU-level totals for unit cost so duplicate SKUs don't halve the price
           const _sk=(it.sku||'').toUpperCase();
           const skuTotalCost=_skuBillCost[_sk]||0;
@@ -8265,9 +8274,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(!(dp.cost>0))return;
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             const artF=af.find(a=>a.id===d.art_file_id);
-            const gkey=(d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco'));
-            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
+            const gkey=d.transfer_code?('stock:'+d.transfer_code):((d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco')));
+            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||d.transfer_code||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
             g.expected+=decoCostAt(d,qty,af,cq,costArtQty);g.qty+=eqD;
+            if(d.inventory_cost_basis?.length){g.actual=(g.actual||0)+d.inventory_cost_basis.filter(b=>b.received&&b.unit_cost!=null).reduce((a,b)=>a+b.qty*b.unit_cost,0)}
             if(d.art_file_id&&costArtQty[d.art_file_id]>0)g.combQty=Math.max(g.combQty,costArtQty[d.art_file_id]);
             if(it.sku&&!g.skus.includes(it.sku))g.skus.push(it.sku);
           });
@@ -8277,7 +8287,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const exp=Math.round(g.expected*100)/100;
           costLines.push({category:'In-House Deco',sku:'',
             name:g.name+(g.skus.length?` · ${g.skus.length} item${g.skus.length>1?'s':''}: ${g.skus.join(', ')}`:''),
-            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
+            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:g.actual??exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
         });
         // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
         // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
@@ -8353,6 +8363,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             {variance>0?'⚠️ Over':'✅ Under'} by ${Math.abs(variance).toFixed(2)}</span>}
         </div>
         <div className="card-body">
+          <InventoryCostDetails order={o} />
           <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
             {Object.entries(cats).map(([cat,v])=>{const diff=v.actual-v.expected;
               return<div key={cat} style={{padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',minWidth:150,flex:1}}>
@@ -12722,6 +12733,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               </div>
               {_multi&&_names&&<div style={{fontSize:11,fontWeight:700,color:'#854d0e',marginTop:3}}>🎨 {_names}</div>}
               <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_msg}</div>
+              {!_dtf&&<button type="button" className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>openProductionFiles(_ids)}>Upload production files</button>}
+              {!_dtf&&<div style={{fontSize:11,color:'#713f12',marginTop:4}}>Opens this job’s artwork folders. Add each file to its matching design.</div>}
               {_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
               {_dst&&_pfCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
               {_staleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}

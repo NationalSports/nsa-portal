@@ -70,6 +70,15 @@ exports.handler = async (event) => {
   let hardFailure = false;
 
   try {
+    // Processing/failure/cancellation events used to disappear for invoice payments.
+    // Retrieve current Stripe state so late/out-of-order events cannot revive pending ACH.
+    if (sb && ['payment_intent.processing', 'payment_intent.payment_failed', 'payment_intent.canceled'].includes(evt.type)
+        && evt.data.object?.metadata?.invoice_id) {
+      const observedAt = new Date().toISOString();
+      const current = await client.paymentIntents.retrieve(evt.data.object.id, { expand: ['latest_charge'] });
+      const result = await reconcileInvoiceFromIntent(sb, current, { observedAt });
+      if (result.error) throw new Error(result.error);
+    }
     if (evt.type === 'payment_intent.succeeded') {
       const pi = evt.data.object;
       if (sb && pi && pi.id) {
@@ -169,7 +178,11 @@ exports.handler = async (event) => {
         // this server-side right after paying (stripe-payment → finalize_invoice); this webhook is the
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
         // idempotent — the portal call, this one, and Stripe retries can't double-apply the surcharge.
-        await reconcileInvoiceFromIntent(sb, pi);
+        const observedAt = new Date().toISOString();
+        const verifiedInvoiceIntent = pi.metadata?.invoice_id
+          ? await client.paymentIntents.retrieve(pi.id, { expand: ['latest_charge'] }) : pi;
+        const invoiceResult = await reconcileInvoiceFromIntent(sb, verifiedInvoiceIntent, { observedAt });
+        if (invoiceResult.error) throw new Error(invoiceResult.error);
 
         // Uniform Builder checkout is order-first. If the buyer closes the tab
         // after Stripe succeeds, this is the authoritative backstop that marks

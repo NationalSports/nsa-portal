@@ -1,9 +1,11 @@
+import InvoiceStripeStatus from './InvoiceStripeStatus';
 import { emailDeliveryLabel } from './lib/emailRouting';
 // Invoices page — lifted verbatim out of App() (was `function rInvoices()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
 import React from 'react';
+import UnapplyPaymentButton from './UnapplyPaymentButton';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _dbCreateInvoiceCreditMemo, _fetchHistInvoiceLines } from './lib/dbEngine';
@@ -37,6 +39,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
+  const [invoiceStripe,setInvoiceStripe]=React.useState(null);
   const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
@@ -469,13 +472,15 @@ export default function InvoicesPage(){
                   <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,
                     background:inv.status==='paid'||settled?'rgba(134,239,172,0.3)':inv.status==='partial'?'rgba(251,191,36,0.3)':overdue?'rgba(252,165,165,0.3)':'rgba(191,219,254,0.3)',
                     color:'white'}}>
-                    {inv.status==='paid'||settled?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
+                    {invoiceStripe?.invoiceId===inv.id&&invoiceStripe.processing?'Payment processing':inv.status==='paid'||settled?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
                   </span>
                 </div>
               </div>
             </div>
           </div>
 
+
+          {!inv._hist&&<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe}/>}
           {/* Rep field */}
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
@@ -788,13 +793,14 @@ export default function InvoicesPage(){
           :!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>No payments recorded yet.</div>
           :<div className="card-body" style={{padding:0}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-              <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th></tr></thead>
+              <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th><th>Actions</th></tr></thead>
               <tbody>{(inv.payments||[]).map((p,pi)=><tr key={pi} style={{borderBottom:'1px solid #f1f5f9'}}>
                 <td style={{padding:'8px 12px'}}>{p.date}</td>
                 <td style={{padding:'8px 12px',textAlign:'right',fontWeight:600,color:'#166534'}}>${p.amount.toLocaleString()}</td>
                 <td style={{padding:'8px 12px'}}>{PAY_METHODS.find(m=>m.id===p.method)?.icon} {PAY_METHODS.find(m=>m.id===p.method)?.label||p.method}</td>
                 <td style={{padding:'8px 12px',color:'#64748b'}}>{p.ref||'—'}</td>
                 <td style={{padding:'8px 12px',textAlign:'right',color:'#d97706'}}>{p.cc_fee>0?'$'+p.cc_fee.toFixed(2):'—'}</td>
+                <td style={{padding:'8px 12px'}}><UnapplyPaymentButton invoice={inv} payment={p} user={cu} nf={nf} onSaved={result=>{const update=x=>({...x,...result.invoice,payments:result.payments,_hydratedPayRefs:result.payments.map(p=>p.ref),_paymentsHydrated:true});setInvs(prev=>prev.map(x=>x.id===inv.id?update(x):x));setViewInvoice(update(inv));}}/></td>
               </tr>)}</tbody>
             </table>
           </div>}
