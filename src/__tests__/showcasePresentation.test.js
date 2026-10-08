@@ -89,14 +89,14 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('approximately 8–15');
     expect(prompt).toContain('front must remain 85–92%');
     expect(prompt).toContain('Never exceed 15 degrees');
-    expect(prompt).toContain('angle the waistband and stagger the legs subtly');
+    expect(prompt).toContain('balanced planted stance');
     expect(prompt).toContain('polished invisible support');
     expect(prompt).toContain('believable on-body');
     expect(prompt).toContain('no visible or residual wearer');
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v8-applied-artwork');
+    expect(PROMPT_VERSION).toBe('showcase-v9-fit-and-laterality');
   });
 
   test('uses athletic male and female invisible garment forms without visible models', () => {
