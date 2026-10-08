@@ -1,3 +1,4 @@
+import { artworkItemName, recipeKey } from './lib/artworkReport';
 import ShowcaseImageReview from './ui/ShowcaseImageReview';
 import * as SHOWCASE from './lib/showcaseSettings';
 import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
@@ -443,7 +444,7 @@ function downloadCsv(filename, header, rows) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
-const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
+const _itemName = (i, stockByPid) => artworkItemName(i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item', i);
 
 // One place for "does this order count": an order that reached Stripe but never paid
 // (pending_payment), was cancelled, or was fully refunded is dead for batching,
@@ -895,10 +896,10 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
   const groups = {};
   lines.forEach((i) => {
     const sku = i._effSku || i.sku || '';
-    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
+    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '') + '|' + recipeKey(i.production_recipe);
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
+    const g = groups[key] || (groups[key] = { name: artworkItemName(i.name || m.name || i.sku || 'Item', i), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
@@ -3663,7 +3664,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const soMetaBySo = {};
     soIds.forEach((id) => { soItemsBySo[id] = []; });
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes').in('so_id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes,recipe_snapshot,source_webstore_item_ids').in('so_id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not reconcile Sales Order items: ' + error.message);
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
@@ -7221,7 +7222,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
           ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? (p.production_approved_at && p.production_approved_by ? 'Hidden' : 'Draft · needs review') : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
           <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
@@ -7354,7 +7355,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
               setBulkSel(new Set()); setMode(null);
             }}>Merge</button>
             <span style={sep} />
-            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
+            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title={isAllSchool ? "Hide from shoppers; keep this choice in the catalog" : "Hide from the store (stays here as Archived)"} onClick={() => applyBulk({ active: false }, true)}>{isAllSchool ? 'Hide' : 'Archive'}</button>
             <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
             <span style={sep} />
             <button style={{ ...gBtn('#b91c1c'), opacity: !n || !onBulkRemove ? 0.4 : 1 }} disabled={!n || !onBulkRemove} title="Permanently remove the selected items from this store" onClick={async () => {
