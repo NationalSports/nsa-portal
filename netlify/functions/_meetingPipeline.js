@@ -11,7 +11,7 @@ const { safePush } = require('./_push');
 const BUCKET = 'meeting-audio';
 const AAI = 'https://api.assemblyai.com/v2';
 const POLL_MS = 4000;
-const TRANSCRIBE_BUDGET_MS = 12 * 60 * 1000; // background functions get 15 minutes
+const TRANSCRIBE_BUDGET_MS = 10 * 60 * 1000; // background functions get 15 minutes
 
 const folderOf = (m) => `${m.team_member_id}/${m.id}`;
 const CHUNK_RE = /^s(\d+)-c(\d+)\.([a-z0-9]+)$/i;
@@ -26,12 +26,13 @@ async function listAudio(admin, m) {
 }
 
 async function purgeAudio(admin, m) {
-  const files = await listAudio(admin, m).catch(() => []);
+  const files = await listAudio(admin, m);
   if (files.length) {
     const { error } = await admin.storage.from(BUCKET).remove(files.map((f) => `${folderOf(m)}/${f.name}`));
     if (error) throw new Error('Could not delete audio: ' + error.message);
   }
-  await admin.from('meetings').update({ audio_purged_at: new Date().toISOString() }).eq('id', m.id);
+  const { error: stampError } = await admin.from('meetings').update({ audio_purged_at: new Date().toISOString() }).eq('id', m.id);
+  if (stampError) throw new Error(stampError.message);
   return files.length;
 }
 
@@ -61,6 +62,7 @@ async function aai(path, { key, method = 'GET', body, raw } = {}) {
     body: raw || (body ? JSON.stringify(body) : undefined),
   });
   const data = await resp.json().catch(() => ({}));
+  if (method === 'DELETE' && resp.status === 404) return {};
   if (!resp.ok) throw new Error(`AssemblyAI ${resp.status}: ${data.error || 'request failed'}`);
   return data;
 }
@@ -77,28 +79,59 @@ async function transcribeMeeting(admin, m, { key = process.env.ASSEMBLYAI_API_KE
   if (!segments.length) throw new Error('No audio was uploaded for this note');
   const diarize = m.mode === 'recorded';
   const utterances = [];
+  let totalAudioBytes=0;
+  const { data: checkpointRow, error: checkpointError } = await admin.from('meeting_processing_jobs').select('segments').eq('meeting_id',m.id).maybeSingle();
+  if (checkpointError) throw new Error(checkpointError.message);
+  const checkpoints = { ...(checkpointRow?.segments || {}) };
+  const saveJobs = async () => {
+    const {data:live,error:liveError}=await admin.from('meetings').select('status').eq('id',m.id).maybeSingle();
+    if(liveError||live?.status!=='processing')throw new Error('This note is no longer processing.');
+    const { error } = await admin.from('meeting_processing_jobs').upsert({ meeting_id: m.id, segments: checkpoints }, { onConflict: 'meeting_id' });
+    if (error) throw new Error('Could not checkpoint transcription: ' + error.message);
+  };
   let offsetMs = 0;
   let audioSeconds = 0;
   for (const seg of segments) {
     const started = Date.now();
-    const parts = [];
-    for (const c of seg.chunks) {
-      const { data, error } = await admin.storage.from(BUCKET).download(`${folderOf(m)}/${c.name}`);
-      if (error) throw new Error('Could not read audio: ' + error.message);
-      parts.push(Buffer.from(await data.arrayBuffer()));
+    if (seg.gaps) throw new Error('Audio is incomplete: a chunk is missing. Recover the upload before processing this note.');
+    let checkpoint = checkpoints[seg.index];
+    let t = checkpoint?.completed;
+    if (!t) {
+      if (!checkpoint?.job_id) {
+        const parts = [];
+        let bytes = 0;
+        for (const c of seg.chunks) {
+          const { data, error } = await admin.storage.from(BUCKET).download(`${folderOf(m)}/${c.name}`);
+          if (error) throw new Error('Could not read audio: ' + error.message);
+          const part = Buffer.from(await data.arrayBuffer()); bytes += part.length; totalAudioBytes+=part.length;
+          if (totalAudioBytes > 150 * 1024 * 1024) throw new Error('Recording exceeds the 150 MB processing limit.');
+          parts.push(part);
+        }
+        const { upload_url } = await aai('/upload', { key, method: 'POST', raw: Buffer.concat(parts) });
+        const job = await aai('/transcript', { key, method: 'POST', body: { audio_url: upload_url, speaker_labels: diarize, language_code: 'en_us', punctuate: true, format_text: true } });
+        checkpoint = checkpoints[seg.index] = { job_id: job.id };
+        await saveJobs();
+      }
+      t = await aai('/transcript/' + checkpoint.job_id, { key });
+      while (t.status !== 'completed' && t.status !== 'error') {
+        if (Date.now() > deadline) { const e = new Error('Transcription is still running; it will resume automatically.'); e.pending = true; throw e; }
+        await new Promise((r) => setTimeout(r, pollMs));
+        t = await aai('/transcript/' + checkpoint.job_id, { key });
+      }
+      if (t.status === 'error') {
+        await aai('/transcript/' + checkpoint.job_id, { key, method: 'DELETE' }).catch(()=>{});
+        delete checkpoints[seg.index]; await saveJobs();
+        throw new Error('Transcription failed: ' + String(t.error || 'unknown error').slice(0,200));
+      }
+      checkpoint.completed = { text: t.text, utterances: t.utterances, audio_duration: t.audio_duration, speech_model: t.speech_model };
+      await saveJobs(); // commit transcript before deleting the provider copy
     }
-    const { upload_url: audioUrl } = await aai('/upload', { key, method: 'POST', raw: Buffer.concat(parts) });
-    const job = await aai('/transcript', { key, method: 'POST', body: { audio_url: audioUrl, speaker_labels: diarize, language_code: 'en_us', punctuate: true, format_text: true } });
-    let t = job;
-    while (t.status !== 'completed' && t.status !== 'error') {
-      if (Date.now() > deadline) throw new Error('Transcription took too long. Tap retry.');
-      await new Promise((r) => setTimeout(r, pollMs));
-      t = await aai('/transcript/' + job.id, { key });
+    if (!checkpoint.deleted) {
+      await aai('/transcript/' + checkpoint.job_id, { key, method: 'DELETE' });
+      checkpoint.deleted = true; await saveJobs();
     }
-    // Remove AssemblyAI's copy of the audio + transcript; ours is saved below.
-    await aai('/transcript/' + job.id, { key, method: 'DELETE' }).catch((e) => console.warn('[meetings] AssemblyAI delete failed:', e.message));
     const secs = Number(t.audio_duration) || 0;
-    await logJob(admin, { meeting_id: m.id, provider: 'assemblyai', model: t.speech_model || null, audio_seconds: secs, duration_ms: Date.now() - started, ok: t.status === 'completed', error: t.status === 'error' ? String(t.error || '').slice(0, 300) : null });
+    await logJob(admin, { meeting_id: m.id, provider: 'assemblyai', model: t.speech_model || null, audio_seconds: secs, duration_ms: Date.now() - started, ok: t.status !== 'error', error: t.status === 'error' ? String(t.error || '').slice(0, 300) : null });
     if (t.status === 'error') throw new Error('Transcription failed: ' + String(t.error || 'unknown error').slice(0, 200));
     const us = Array.isArray(t.utterances) && t.utterances.length
       ? t.utterances
@@ -114,7 +147,17 @@ async function transcribeMeeting(admin, m, { key = process.env.ASSEMBLYAI_API_KE
   if (error) throw new Error('Could not save transcript: ' + error.message);
   await admin.from('meetings').update({ duration_sec: Math.round(audioSeconds) || m.duration_sec || null, updated_at: new Date().toISOString() }).eq('id', m.id);
   await purgeAudio(admin, m);
+
   return { utterances: clean, gaps: segments.reduce((a, s) => a + s.gaps, 0) };
+}
+
+async function purgeProviderJobs(admin,m) {
+  const {data:row,error}=await admin.from('meeting_processing_jobs').select('segments').eq('meeting_id',m.id).maybeSingle();
+  if(error)throw new Error(error.message);
+  for(const job of Object.values(row?.segments||{})) if(job.job_id&&!job.deleted){
+    if(!process.env.ASSEMBLYAI_API_KEY)throw new Error('Provider cleanup needs the transcription key.');
+    await aai('/transcript/'+job.job_id,{key:process.env.ASSEMBLYAI_API_KEY,method:'DELETE'});
+  }
 }
 
 async function contextFor(admin, m) {
@@ -123,7 +166,8 @@ async function contextFor(admin, m) {
     m.customer_id ? admin.from('customers').select('id,name').eq('id', m.customer_id).maybeSingle().then((r) => r.data) : null,
     m.customer_id ? admin.from('customer_contacts').select('name,role').eq('customer_id', m.customer_id).then((r) => r.data || []) : [],
   ]);
-  return { repName: rep?.name || null, customerName: cust?.name || null, contacts };
+  const { accountContext } = await require('./_meetingContext').accountContextFor(admin, m.customer_id);
+  return { repName: rep?.name || null, customerName: cust?.name || null, contacts, accountContext, annotations: m.annotations || [], images: await require('./_meetingAttachments').imagesForModel(admin,m) };
 }
 
 // Full processing for a meeting in status 'processing': transcribe if needed,
@@ -132,6 +176,10 @@ async function processMeeting(admin, meetingId, { apiKey = process.env.ANTHROPIC
   const { data: m, error } = await admin.from('meetings').select('*').eq('id', meetingId).maybeSingle();
   if (error || !m) throw new Error('Meeting not found');
   if (m.status !== 'processing') return { skipped: m.status };
+  const lease = require('crypto').randomUUID();
+  const { data: claimed, error: claimError } = await admin.rpc('claim_meeting_processing', { p_id: m.id, p_token: lease });
+  if (claimError) throw new Error(claimError.message);
+  if (!claimed) return { skipped: 'already processing' };
   try {
     let { data: tr } = await admin.from('meeting_transcripts').select('*').eq('meeting_id', m.id).maybeSingle();
     let gaps = 0;
@@ -141,27 +189,43 @@ async function processMeeting(admin, meetingId, { apiKey = process.env.ANTHROPIC
       gaps = res.gaps;
     }
     if (!tr) throw new Error('Nothing to take notes from');
+    if (!m.audio_purged_at && m.mode !== 'pasted') await purgeAudio(admin, m);
     const transcript = transcriptForModel({ mode: m.mode, utterances: tr.utterances, sourceText: tr.source_text });
     const ctx = await contextFor(admin, m);
     const started = Date.now();
     let result;
     try {
-      result = await extractDraft({ apiKey, mode: m.mode, transcript, meetingDate: meetingDateOf(m), ...ctx });
+      const extractionKey = require('crypto').createHash('sha256').update(JSON.stringify({ transcript, customer:m.customer_id, annotations:m.annotations, attachments:m.attachments })).digest('hex');
+      const {data:job,error:jobError}=await admin.from('meeting_processing_jobs').select('*').eq('meeting_id',m.id).maybeSingle();
+      if(jobError) throw new Error(jobError.message);
+      const parts=job?.extraction_key===extractionKey ? job.extraction_parts||{} : {};
+      result = await extractDraft({ apiKey, mode: m.mode, transcript, meetingDate: meetingDateOf(m), ...ctx,
+        cachedParts:parts, deadline:Date.now()+3*60*1000,
+        onPart:async(i,r)=>{parts[i]=r;const {error}=await admin.from('meeting_processing_jobs').upsert({meeting_id:m.id,extraction_key:extractionKey,extraction_parts:parts},{onConflict:'meeting_id'});if(error)throw new Error(error.message);},
+      });
     } catch (e) {
       await logJob(admin, { meeting_id: m.id, provider: 'anthropic', model: null, input_tokens: e.usage?.input_tokens || null, output_tokens: e.usage?.output_tokens || null, duration_ms: Date.now() - started, ok: false, error: String(e.message).slice(0, 300) });
       throw e;
     }
     await logJob(admin, { meeting_id: m.id, provider: 'anthropic', model: result.model, input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens, duration_ms: Date.now() - started, ok: true });
     const now = new Date().toISOString();
-    const draft = { ...result.draft, ...(gaps ? { audio_gaps: gaps } : {}) };
-    await admin.from('meetings').update({ status: 'ready', draft, title: draft.headline, error: null, processed_at: now, updated_at: now }).eq('id', m.id).eq('status', 'processing');
+    const draft = { ...result.draft, ...(gaps ? { audio_gaps: gaps } : {}), warnings: [...(result.draft.warnings||[]), ...(m.capture_incomplete?['This recording was recovered after an interruption. The ending or unuploaded audio may be missing.']:[])] };
+    const { data: saved, error: saveError } = await admin.from('meetings').update({ status: 'ready', draft, title: draft.headline, error: null, processed_at: now, updated_at: now }).eq('id', m.id).eq('status', 'processing').eq('processing_token', lease).select('id').maybeSingle();
+    if (saveError) throw new Error(saveError.message);
+    if (!saved) return { skipped: 'note changed' };
+    await admin.from('meeting_processing_jobs').delete().eq('meeting_id',m.id);
     await safePush(admin, [m.team_member_id], { title: '🎙️ Your notes are ready', body: draft.headline + ' · tap to review and save', url: '/?pg=meeting_notes&mtab=more&msub=notes', tag: 'note-' + m.id }, { onceKey: 'note-ready:' + m.id });
     return { ok: true };
   } catch (e) {
+    if (e.pending) return { pending: true };
     const msg = String(e.message || e).slice(0, 500);
     console.error('[meetings] processing failed', m.id, msg);
-    await admin.from('meetings').update({ status: 'failed', error: msg, updated_at: new Date().toISOString() }).eq('id', m.id).eq('status', 'processing');
+    await admin.from('meetings').update({ status: 'failed', error: msg, updated_at: new Date().toISOString() }).eq('id', m.id).eq('status', 'processing').eq('processing_token',lease);
     return { ok: false, error: msg };
+  } finally {
+    const {data:live}=await admin.from('meetings').select('status').eq('id',m.id).maybeSingle();
+    if(live?.status==='discarded'){try{await purgeProviderJobs(admin,m);await admin.from('meeting_processing_jobs').delete().eq('meeting_id',m.id)}catch(e){console.warn('[meetings] provider cleanup will retry',e.message)}await purgeAudio(admin,m);await admin.from('meeting_transcripts').delete().eq('meeting_id',m.id);}
+    await admin.from('meetings').update({ processing_token: null, processing_lease_until: null }).eq('id',m.id).eq('processing_token',lease);
   }
 }
 
@@ -238,4 +302,4 @@ async function writeApproval(admin, m, final) {
   return { todo_ids: todos.map((t) => t.id), contacts_added: added };
 }
 
-module.exports = { BUCKET, folderOf, meetingDateOf, groupSegments, listAudio, purgeAudio, transcribeMeeting, processMeeting, normalizeFinal, writeApproval, todoIdFor };
+module.exports = { BUCKET, folderOf, meetingDateOf, groupSegments, listAudio, purgeAudio, transcribeMeeting, processMeeting, normalizeFinal, writeApproval, todoIdFor, purgeProviderJobs };

@@ -10,12 +10,13 @@
 //     discard  { id }                  drop a draft and its audio
 // Processing (transcribe + extract) runs in meeting-process-background.
 const { corsHeaders, verifyUser, getTrustedSiteBaseUrl } = require('./_shared');
-const { purgeAudio, normalizeFinal, writeApproval, folderOf } = require('./_meetingPipeline');
+const { purgeAudio, normalizeFinal, writeApproval, folderOf, purgeProviderJobs } = require('./_meetingPipeline');
 
+const {annotations,imageAction,purgeImages,BUCKET:IMAGE_BUCKET}=require('./_meetingAttachments');
 const MAX_PASTE = 60000;
 const json = (statusCode, body) => ({ statusCode, headers: corsHeaders(), body: JSON.stringify(body) });
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MEETING_COLS = 'id,team_member_id,customer_id,mode,status,title,duration_sec,consent_confirmed_at,draft,final,speaker_map,error,created_at,updated_at,processed_at,approved_at';
+const MEETING_COLS = 'id,team_member_id,customer_id,mode,status,title,duration_sec,consent_confirmed_at,draft,final,speaker_map,error,created_at,updated_at,processed_at,approved_at,annotations,attachments';
 
 async function startProcessing(event, meetingId) {
   const base = getTrustedSiteBaseUrl(event) || process.env.URL;
@@ -75,7 +76,7 @@ exports.handler = async (event) => {
       if (text.length > MAX_PASTE) return json(400, { error: 'That is too long. Paste under 60,000 characters.' });
       if (!(await customerOk(admin, body.customer_id))) return json(400, { error: 'Unknown account' });
       const { data: m, error } = await admin.from('meetings').insert({
-        team_member_id: teamMemberId, customer_id: body.customer_id || null, mode: 'pasted', status: 'processing',
+        team_member_id: teamMemberId, customer_id: body.customer_id || null, mode: 'pasted', status: 'processing', annotations: annotations(body.annotations),
       }).select(MEETING_COLS).single();
       if (error) throw new Error(error.message);
       const { error: tErr } = await admin.from('meeting_transcripts').insert({ meeting_id: m.id, source_text: text });
@@ -84,13 +85,37 @@ exports.handler = async (event) => {
       return json(200, { meeting: m });
     }
 
+    if(action==='images') {
+      if(!UUID_RE.test(String(body.id||'')))return json(404,{error:'Note not found'});
+      const {data:n,error}=await admin.from('meetings').select(MEETING_COLS).eq('id',body.id).maybeSingle();
+      if(error)throw new Error(error.message);
+      const privileged=['admin','super_admin','gm'].includes(auth.role);
+      if(!n||!(n.team_member_id===teamMemberId||privileged||n.status==='approved'))return json(404,{error:'Note not found'});
+      const images=[];
+      for(const f of (n.attachments||[]).filter(f=>!f.pending)) {
+        const r=await admin.storage.from(IMAGE_BUCKET).createSignedUrl(f.path,300);
+        if(r.error)throw new Error(r.error.message);
+        images.push({name:f.name,url:r.data.signedUrl});
+      }
+      return json(200,{images,annotations:n.annotations||[]});
+    }
     const m = await own();
     if (!m) return json(404, { error: 'Note not found' });
 
+    if(action==='annotate') {
+      if(m.status!=='recording')return json(409,{error:'This recording has finished.'});
+      const {error}=await admin.from('meetings').update({annotations:annotations(body.annotations),updated_at:now}).eq('id',m.id).eq('status','recording');
+      if(error)throw new Error(error.message);return json(200,{ok:true});
+    }
+    if(action==='image_upload'||action==='image_commit'||action==='image_remove') {
+      if(m.status!=='recording')return json(409,{error:'Add photos before finishing the recording.'});
+      return json(200,await imageAction(admin,m,action,body));
+    }
     if (action === 'finalize') {
       if (m.status !== 'recording') return json(409, { error: 'This note is already ' + m.status });
+      if ((m.attachments||[]).some(f=>f.pending)) return json(409,{error:'Finish uploading photos before processing.'});
       const dur = Math.max(0, Math.min(6 * 3600, Math.round(Number(body.duration_sec) || 0))) || null;
-      const { data, error } = await admin.from('meetings').update({ status: 'processing', duration_sec: dur, updated_at: now })
+      const { data, error } = await admin.from('meetings').update({ status: 'processing', duration_sec: dur, capture_incomplete: body.capture_complete !== true, annotations: body.annotations ? annotations(body.annotations) : m.annotations||[], updated_at: now })
         .eq('id', m.id).eq('status', 'recording').select(MEETING_COLS).maybeSingle();
       if (error) throw new Error(error.message);
       if (!data) return json(409, { error: 'This note was already finished' });
@@ -132,7 +157,7 @@ exports.handler = async (event) => {
         if (/^[A-Z]$/.test(k) && v) speakerMap[k] = String(v).slice(0, 80);
       });
       let final;
-      try { final = normalizeFinal(body.final, { speakerMap }); } catch (e) { return json(400, { error: 'The note needs a headline or summary' }); }
+      try { final = {...normalizeFinal(body.final, { speakerMap }), warnings:m.draft?.warnings||[],coverage:m.draft?.coverage||null}; } catch (e) { return json(400, { error: e.message }); }
       const { data: approved, error } = await admin.from('meetings').update({
         status: 'approved', final, speaker_map: speakerMap, customer_id: customerId, title: final.headline, approved_at: now, updated_at: now,
       }).eq('id', m.id).eq('status', 'ready').select(MEETING_COLS).maybeSingle();
@@ -147,6 +172,8 @@ exports.handler = async (event) => {
       const { error } = await admin.from('meetings').update({ status: 'discarded', updated_at: now }).eq('id', m.id).neq('status', 'approved');
       if (error) throw new Error(error.message);
       await admin.from('meeting_transcripts').delete().eq('meeting_id', m.id);
+      try{await purgeProviderJobs(admin,m);await admin.from('meeting_processing_jobs').delete().eq('meeting_id',m.id)}catch(e){console.warn('[meeting-notes] provider deletion will retry',e.message)}
+      await purgeImages(admin,m);
       await purgeAudio(admin, m).catch((e) => console.warn('[meeting-notes] purge on discard failed:', e.message));
       return json(200, { ok: true });
     }

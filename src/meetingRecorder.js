@@ -1,3 +1,4 @@
+import { recoveryPut, recoveryDelete, recoveryList, recoveryClear } from './meetingRecovery';
 // Microphone recorder for AI meeting notes. This module's only contract is
 // start / pause / resume / stop and "here is a chunk" — if reps ever need to
 // record with the phone locked, a native (Capacitor) recorder replaces this one
@@ -76,7 +77,7 @@ export function createMeetingRecorder({ onChunk, onState, chunkMs = 30000 } = {}
   const beginRun = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     const mime = pickMime();
-    const rec = mime ? new window.MediaRecorder(stream, { mimeType: mime }) : new window.MediaRecorder(stream);
+    const rec = mime ? new window.MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 64000 }) : new window.MediaRecorder(stream, { audioBitsPerSecond: 64000 });
     const actualMime = rec.mimeType || mime || 'audio/webm';
     const ext = extForMime(actualMime);
     segment += 1;
@@ -191,41 +192,67 @@ export function createChunkUploader({ supabase, bucket = 'meeting-audio', folder
   let failures = 0;
   let cancelled = false;
   let idleWaiters = [];
+  let persistence = Promise.resolve();
+  let fatal = null;
+  let totalBytes = 0;
 
-  const report = () => onProgress && onProgress({ uploaded, pending: queue.length, retrying: failures > 0 });
+  const report = () => onProgress && onProgress({ uploaded, pending: queue.length, retrying: failures > 0, error: fatal?.message || null });
   const pad = (n) => String(n).padStart(4, '0');
 
   const pump = async () => {
     if (running) return;
     running = true;
-    while (queue.length && !cancelled) {
+    while (queue.length && !cancelled && !fatal) {
       const job = queue[0];
       const path = `${folder}/s${job.segment}-c${pad(job.index)}.${job.ext}`;
-      const { error } = await supabase.storage.from(bucket).upload(path, job.blob, { contentType: job.mime, upsert: false });
+      let error;
+      try { ({ error } = await supabase.storage.from(bucket).upload(path, job.blob, { contentType: job.mime, upsert: false })); }
+      catch (e) { error = e; }
       // "already exists" means an earlier attempt landed but its response was lost.
-      if (!error || /exist|duplicate|409/i.test(String(error.message || error.statusCode || ''))) {
+      if (!error || /already exists|duplicate|409/i.test(String(error.message || error.statusCode || ''))) {
+        try { await recoveryDelete(job.key); } catch (e) { fatal=e; report(); break; }
         queue.shift();
         uploaded += 1;
         failures = 0;
         report();
       } else {
+        if (/403|401|400|404|413/.test(String(error.statusCode || error.status || ''))) { fatal = new Error('Upload was refused. Sign in again or check the recording limit; local audio is available for recovery.'); report(); break; }
         failures += 1;
+        if(failures>=6){fatal=new Error('Upload could not reconnect. Audio is saved locally; reopen this note to recover it.');report();break;}
         report();
         await new Promise((r) => setTimeout(r, Math.min(30000, retryBaseMs * 2 ** Math.min(failures, 5))));
       }
     }
     running = false;
     const w = idleWaiters; idleWaiters = [];
-    w.forEach((f) => f());
+    w.forEach((f) => fatal ? f.reject(fatal) : f.resolve());
   };
 
   return {
-    add(blob, meta) { if (cancelled) return; queue.push({ blob, ...meta }); report(); pump(); },
+    add(blob, meta) {
+      if (cancelled || fatal) return;
+      totalBytes += blob.size;
+      persistence = persistence.then(async () => {
+        if (cancelled) return;
+        if (totalBytes > MAX_UPLOAD_BYTES) throw new Error('Recording reached the 150 MB limit. Finish this note before recording more.');
+        const key = await recoveryPut(folder, blob, meta);
+        if (cancelled) { await recoveryDelete(key); return; }
+        queue.push({ blob, ...meta, key }); report(); pump();
+      }).catch(e => { fatal=e; report(); });
+    },
+    async recover() {
+      const rows = await recoveryList(folder);
+      queue.push(...rows); totalBytes=rows.reduce((n,r)=>n+r.blob.size,0); report(); pump();
+    },
     get pending() { return queue.length; },
     get uploaded() { return uploaded; },
     // Resolves when every queued chunk has uploaded.
-    flush() { return queue.length || running ? new Promise((r) => { idleWaiters.push(r); pump(); }) : Promise.resolve(); },
+    async flush() {
+      await persistence;
+      if (fatal) throw fatal;
+      if (queue.length || running) await new Promise((resolve,reject) => { idleWaiters.push({resolve,reject}); pump(); });
+    },
     // Stop after the chunk in flight (the note was discarded).
-    cancel() { cancelled = true; queue.length = 0; },
+    cancel({ discard = false } = {}) { cancelled = true; queue.length = 0; if (discard) persistence.then(()=>recoveryClear(folder)).catch(()=>{}); },
   };
 }

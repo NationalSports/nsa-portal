@@ -1,3 +1,6 @@
+// CRA jsdom lacks structuredClone; Blob is immutable, preserve it in this test clone.
+global.structuredClone = function clone(v) { if(v instanceof Blob)return v;if(Array.isArray(v))return v.map(clone);if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)]));return v; };
+import 'fake-indexeddb/auto';
 /**
  * AI meeting notes: draft validation, the approve writes (idempotent to-dos,
  * contacts appended after the last position), segment grouping, the full
@@ -10,7 +13,7 @@ import { createMeetingRecorder, createChunkUploader, extForMime, extForFile, fil
 
 // Minimal chainable Supabase stand-in over in-memory tables + storage.
 function fakeAdmin(init = {}) {
-  const db = { meetings: [], meeting_transcripts: [], ai_jobs: [], assigned_todos: [], customer_contacts: [], customers: [], team_members: [], ...init };
+  const db = { meetings: [], meeting_processing_jobs: [], estimates: [], sales_orders: [], estimate_items: [], so_items: [], meeting_transcripts: [], ai_jobs: [], assigned_todos: [], customer_contacts: [], customers: [], team_members: [], ...init };
   const files = init._files || {};
   const calls = [];
   const from = (table) => {
@@ -50,7 +53,8 @@ function fakeAdmin(init = {}) {
       remove: async (paths) => { paths.forEach((p) => delete files[p]); return { error: null }; },
     }),
   };
-  return { from, storage, db, files, calls };
+  const rpc=async(name,{p_id,p_token})=>{const m=db.meetings.find(x=>x.id===p_id&&x.status==='processing');if(!m||m.processing_token)return {data:false};m.processing_token=p_token;return {data:true}};
+  return { from, storage, db, files, calls, rpc };
 }
 
 describe('normalizeDraft', () => {
@@ -302,5 +306,38 @@ describe('meeting recorder', () => {
     expect(attempts).toEqual(['tm1/m1/s0-c0000.m4a']);
     up.add('c', { segment: 0, index: 2, ext: 'm4a', mime: 'audio/mp4' });
     expect(up.pending).toBe(0);
+  });
+});
+
+describe('durable transcription continuation',()=>{
+  const {transcribeMeeting}=require('../../netlify/functions/_meetingPipeline');
+  test('a timeout saves the provider job ID and the next run polls that same job',async()=>{
+    const m={id:'continued',team_member_id:'tm1',status:'processing',mode:'dictated'};
+    const admin=fakeAdmin({meetings:[m],_files:{'tm1/continued/s0-c0000.webm':'audio'}});
+    const original=global.fetch;let completed=false;const submissions=[];
+    global.fetch=jest.fn(async(url,opts={})=>{
+      const ok=data=>({ok:true,json:async()=>data});
+      if(url.endsWith('/upload'))return ok({upload_url:'cdn'});
+      if(url.endsWith('/transcript')&&opts.method==='POST'){submissions.push(url);return ok({id:'existing',status:'queued'})}
+      if(opts.method==='DELETE')return ok({});
+      return ok(completed?{status:'completed',text:'Send the quote Friday.',audio_duration:30}:{status:'processing'});
+    });
+    try {
+      await expect(transcribeMeeting(admin,m,{key:'k',deadline:Date.now()-1,pollMs:0})).rejects.toMatchObject({pending:true});
+      expect(admin.db.meeting_processing_jobs[0].segments[0].job_id).toBe('existing');
+      expect(Object.keys(admin.files)).toHaveLength(1);
+      completed=true;await transcribeMeeting(admin,m,{key:'k',pollMs:0});
+      expect(submissions).toHaveLength(1);expect(admin.db.meeting_transcripts[0].utterances[0].text).toBe('Send the quote Friday.');expect(Object.keys(admin.files)).toHaveLength(0);
+    }finally{global.fetch=original}
+  });
+  test('missing chunks block processing instead of approving an apparently complete note',async()=>{
+    const m={id:'gap',team_member_id:'tm1',status:'processing'};
+    const admin=fakeAdmin({meetings:[m],_files:{'tm1/gap/s0-c0000.webm':'a','tm1/gap/s0-c0002.webm':'c'}});
+    await expect(transcribeMeeting(admin,m,{key:'k'})).rejects.toThrow('incomplete');expect(admin.db.meeting_transcripts).toHaveLength(0);
+  });
+  test('a second worker cannot process a note with a live lease',async()=>{
+    const m={id:'leased',team_member_id:'tm1',status:'processing',processing_token:'other-worker'};
+    const admin=fakeAdmin({meetings:[m]});
+    expect(await processMeeting(admin,m.id)).toEqual({skipped:'already processing'});expect(admin.db.ai_jobs).toHaveLength(0);
   });
 });
