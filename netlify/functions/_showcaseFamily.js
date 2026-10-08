@@ -162,7 +162,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
           rendered_preview:true });
       }
       const url = await upload(await render.encode(output,prepared),member.webstore_product_id);
-      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ detail_images:details,human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,patches:sampled.patches,pixels:sampled.pixels},
+      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ artwork_color_policy:'original-srgb-v1',detail_images:details,human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,patches:sampled.patches,pixels:sampled.pixels},
         shared_master_url:master.url,exact_artwork_verified:false,protected_branding_verified:false,
         checklist:['Compare color and fabric texture with supplier photo','Check manufacturer marks across colors','Check logo size, texture and drawstring overlap'] } });
     }

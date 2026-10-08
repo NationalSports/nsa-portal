@@ -77,3 +77,20 @@ test('detail crop uses the exact finished pixels without inventing or upscaling 
   for(let y=0;y<324;y++) assert.deepEqual(detail.data.subarray(y*324*4,(y+1)*324*4),output.subarray(((138+y)*600+138)*4,((138+y)*600+462)*4));
   await assert.rejects(decorationDetail(output,master,[[.3,.3],[.31,.3],[.31,.31],[.3,.31]]),/too small/);
 });
+
+test('royal, gold and neutral artwork retain source colors across fabric colors, shadows and finishes',async()=>{
+ const master=await prepareMaster((await fixture()).bytes,{protected_regions:[],logo_occluders:[]});
+ const palette=[[0,74,173],[255,196,0],[255,255,255],[0,0,0]];
+ const logo=Buffer.alloc(40*40*4,0);
+ for(let y=1;y<39;y++)for(let x=1;x<39;x++) {
+   const rgb=palette[Math.floor(x/10)];const i=(y*40+x)*4;
+   logo.set([...rgb,255],i);
+ }
+ const bytes=await png(logo,40,40);
+ for(const finish of ['tackle_twill','embroidery','chenille','screen_print']) for(const fabric of [[10,10,10],[240,240,240],[0,74,173]]) {
+   const output=recolor(master,fabric);
+   await applyArtwork(output,master,bytes,[[.3,.4],[.7,.4],[.7,.8],[.3,.8]],finish);
+   for(const y of [43,55,73]) for(const [index,x] of [35,45,55,65].entries())
+     assert.deepEqual([...output.subarray((y*100+x)*4,(y*100+x)*4+3)],palette[index],`${finish}: artwork palette cannot change with garment color or shadow`);
+ }
+});

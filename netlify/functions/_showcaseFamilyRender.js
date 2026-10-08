@@ -144,11 +144,11 @@ async function applyArtwork(output, master, bytes, quad, finish, options = {}) {
     const li = (Math.floor(v*logo.info.height)*logo.info.width+Math.floor(u*logo.info.width))*4;
     const alpha = logo.data[li+3]/255;
     if (!alpha) continue;
-    const shade = clamp(master.data[idx*4+1]/master.median,.65,1.15);
-    const texture = finish === 'embroidery' ? 1 + .035*Math.sin((x+y)*2)
-      : finish === 'chenille' ? 1 + .045*Math.sin(x*12.9898+y*78.233)
-      : finish === 'tackle_twill' ? 1 + .02*Math.sin(x*2)*Math.sin(y*2) : 1;
-    for (let c = 0; c < 3; c++) output[idx*4+c] = Math.round(clamp(output[idx*4+c]*(1-alpha)+logo.data[li+c]*shade*texture*alpha));
+    // Brand artwork is color-locked to its original sRGB pixels. Applying the
+    // garment's light map or procedural finish tint here can turn royal into
+    // navy. Keep source texture and alpha edges, plus mapped folds/occlusion,
+    // without recoloring the artwork to match garment lighting.
+    for (let c = 0; c < 3; c++) output[idx*4+c] = Math.round(output[idx*4+c]*(1-alpha)+logo.data[li+c]*alpha);
     applied++;
   }
   if (applied < 30) throw new Error('Artwork did not land on the garment; check its placement');

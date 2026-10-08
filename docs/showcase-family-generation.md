@@ -14,7 +14,9 @@ uses high-frequency texture from a supplier patch. This is a photographic color
 reference, not a calibrated measurement of physical cloth.
 
 Exact transparent logo files are reused, fitted to their original aspect ratios
-on mapped garment planes, shaded and given lightweight finish texture. Placement
+on mapped garment planes. Opaque artwork pixels retain their original sRGB values;
+no garment lighting multiplier or synthetic finish tint may darken royal into
+navy. Source texture and alpha edges are retained. Placement
 planes are shared across colors and designs with matching saved coordinates.
 Drawstring/zipper occlusion regions keep artwork behind those features. Brand
 marks and neutral background pixels are protected from recoloring.
@@ -77,3 +79,9 @@ the old set; Use Standard clears both. Apply `showcase_decoration_details` befor
 deploying this code. Existing approvals have no details until regeneration and
 review. Product detail controls follow the selected logo/color and never use an
 unapproved candidate; staff reviews the full image set in the comparison dialog.
+
+Color-locked results carry `qa_result.artwork_color_policy=original-srgb-v1`.
+Older outputs can be regenerated using the cached base; this does not require
+purchasing a new garment master. Existing approved imagery remains unchanged
+until staff approves replacements. The rendered finish does not manufacture
+stitch texture that is absent from the original artwork.

@@ -38,6 +38,7 @@ function groupShowcaseItems(items = []) {
 function needsFamilyGeneration(group) {
   return group.eligible && !group.working && group.items.some(({ asset, decorations }) => !asset
     || asset.family_version !== FAMILY_VERSION || asset.needs_regeneration
+    || ((decorations || []).some(d => d.side !== 'back' && d.placement !== 'full_back') && asset.qa_result?.artwork_color_policy !== 'original-srgb-v1')
     || (decorations || []).filter(d => d.side !== 'back' && d.placement !== 'full_back').length > (asset.qa_result?.detail_images || []).length
     || !['approved', 'review'].includes(asset.status) || asset.approval_status === 'rejected');
 }
