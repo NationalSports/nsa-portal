@@ -110,6 +110,10 @@ exports.handler = async (event) => {
     job = await loadJob(admin, assetId, requestId);
     if (!job) return reply(202, { ok: true, stale: true });
     if (job.asset.status !== 'queued') return reply(202, { ok: true, skipped: true });
+    if (job.asset.analysis?.family?.key) {
+      const result = await require('../_showcaseFamily').runFamilyJob(admin, job.asset, getTrustedSiteBaseUrl(event));
+      return reply(200, { ok: true, ...result });
+    }
 
     const started = await conditionalUpdate(admin, assetId, requestId, {
       status: 'generating',

@@ -36,6 +36,12 @@ jobs:
       - name: Background runtime compatibility tests
         run: node --test tests/netlify-background-runtime.test.cjs
 
+      - name: Showcase family rendering and atomic lifecycle tests
+        run: |
+          node --test tests/showcase-family-render.test.cjs
+          npm install --prefix "$RUNNER_TEMP/showcase-db" --no-audit --no-fund @electric-sql/pglite@0.3.14
+          SHOWCASE_PGLITE_PATH="$RUNNER_TEMP/showcase-db/node_modules/@electric-sql/pglite" node --test tests/showcase-family-db.test.cjs
+
       - name: Showcase deployment bundle smoke test
         run: |
           npm install --prefix "$RUNNER_TEMP/showcase-bundler" --no-audit --no-fund --ignore-scripts @netlify/zip-it-and-ship-it@16.3.0

@@ -504,3 +504,13 @@ describe('Showcase completion email', () => {
     expect(admin.calls.filter((call) => call.table === 'webstores')).toHaveLength(0);
   });
 });
+
+
+test('public details come only from the approved set, including during regeneration', () => {
+  const {approvedDetailMap} = require('../../netlify/functions/showcase-public');
+  expect(approvedDetailMap([
+    {webstore_product_id:'live',approved_showcase_image_url:'hero',approved_detail_images:[{url:'old-approved'}],qa_result:{detail_images:[{url:'unreviewed'}]}},
+    {webstore_product_id:'draft',qa_result:{detail_images:[{url:'private'}]}},
+    {webstore_product_id:'legacy',approved_showcase_image_url:'hero'}
+  ])).toEqual({live:[{url:'old-approved'}],legacy:[]});
+});

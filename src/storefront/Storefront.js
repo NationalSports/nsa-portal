@@ -510,13 +510,13 @@ async function loadShowcasePresentation(store) {
           });
           if (res.ok) {
             const data = await res.json();
-            return { mode: data.mode === 'showcase' ? 'showcase' : 'standard', assets: data.assets || {}, preview: true };
+            return { mode: data.mode === 'showcase' ? 'showcase' : 'standard', assets: data.assets || {}, details: data.details || {}, preview: true };
           }
         } catch (_) { /* unauthorized/failed preview safely falls back to the published presentation */ }
       }
     }
     const published = await publicRequest;
-    return { mode: published.mode === 'showcase' ? 'showcase' : 'standard', assets: published.assets || {}, preview: false };
+    return { mode: published.mode === 'showcase' ? 'showcase' : 'standard', assets: published.assets || {}, details: published.details || {}, preview: false };
   } catch (_) {
     return fallback;
   }
@@ -534,6 +534,7 @@ function applyShowcaseImages(products, presentation) {
       image_front_url: showcaseUrl,
       showcase_image_url: showcaseUrl,
       showcase_active: true,
+      showcase_detail_images: presentation.details?.[product.webstore_product_id] || [],
       // The approved image is a baked final composition. Suppress the live DOM
       // decoration overlay so team art is not drawn a second time.
       decorations: [],
@@ -1890,7 +1891,9 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   // Fits share one image — keep the representative row's image no matter which
   // fit's size is selected (each fit is a different product with its own photo).
   const imgRow = isFitGroup ? rep : p;
-  const imgUrl = img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url;
+  const decorationDetails = imgRow.showcase_active && Array.isArray(imgRow.showcase_detail_images) ? imgRow.showcase_detail_images : [];
+  const activeDetail = decorationDetails.find((detail) => `detail:${detail.id}` === img);
+  const imgUrl = activeDetail?.url || (img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url);
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const label = { fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.4, color: theme.ink, marginBottom: 10 };
   const proof = store.org_type === 'all_school' ? ['Official school decoration included', 'Made to order for your school', storeDeliveryEstimate(store)] : ['Custom team decoration included', 'adidas & Under Armour quality', 'Ships to the team when the store closes'];
@@ -1901,15 +1904,17 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
         : <BackLink store={store} theme={theme} />}
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
-          <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={p.name} style={{ width: '100%', height: '100%', objectFit: gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
+          <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: activeDetail ? '1' : '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={activeDetail ? `${p.name} — ${p.color || ''} — ${activeDetail.label}` : p.name} style={{ width: '100%', height: '100%', objectFit: activeDetail ? 'contain' : gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
             {img === 'back' && <PersoMock takesNumber={p.takes_number && (store.org_type !== 'all_school' || !!num.trim())} takesName={p.takes_name && (store.org_type !== 'all_school' || !!pname.trim())} decorations={p.decorations} sampleName={store.org_type === 'all_school' ? pname.trim() : 'PLAYER'} sampleNumber={store.org_type === 'all_school' ? num.trim() : '00'} preserveCase={store.org_type === 'all_school'} />}
           </div>
           {store.org_type === 'all_school' && img === 'back' && isPerso && <p style={{ fontSize: 12, color: theme.subText, textAlign: 'center', margin: '10px 0 0' }}>Name and number placement preview. Check your entered text before ordering.</p>}
-          {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
+          {(hasBackDeco || isPerso || decorationDetails.length > 0) && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+            {(hasBackDeco || isPerso ? ['front', 'back'] : ['front']).map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
+            {decorationDetails.map((detail) => <button key={detail.id} onClick={() => setImg(`detail:${detail.id}`)} aria-pressed={activeDetail?.id === detail.id} style={thumbBtn(theme, activeDetail?.id === detail.id)}><img src={detail.url} alt="" style={{width:40,height:40,objectFit:'contain',display:'block',margin:'0 auto 4px'}} />{detail.label}</button>)}
           </div>}
+          {activeDetail && <p style={{fontSize:12,color:theme.subText,textAlign:'center'}}>Rendered decoration preview. Actual fabric and stitching may vary.</p>}
         </div>
         <div ref={detailsSection} style={{ paddingTop: 4 }}>
           <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{[p.store_category, p.category].filter(Boolean)[0] || 'Team Gear'}</div>
@@ -1920,12 +1925,12 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
           {store.org_type === 'all_school' && <LogoChoicePicker rows={colorRows.length ? colorRows : [rep]} selected={p} color={theme.primary} labelStyle={label}
-            onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg('front'); }} />}
+            onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg((view) => view.startsWith('detail:') ? view : 'front'); }} />}
           {!isFitGroup && activeColorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
             <div style={label}>Color{p.color ? ` — ${p.color}` : ''}</div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {activeColorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
-                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg('front'); }}
+                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg((view) => view.startsWith('detail:') ? view : 'front'); }}
                   style={{ width: 32, height: 32, borderRadius: '50%', cursor: 'pointer', padding: 0, background: c.image_front_url ? `center/cover url(${c.image_front_url})` : swatchColor(c.color), border: 'none', boxShadow: on ? `0 0 0 2px #fff, 0 0 0 4px ${theme.primary}` : `0 0 0 1px ${theme.line}` }} />
               ); })}
             </div>

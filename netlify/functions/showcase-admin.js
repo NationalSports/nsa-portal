@@ -1,10 +1,10 @@
 const crypto = require('crypto');
+const {getCatalog} = require('./_showcaseCatalog');
 const { corsHeaders, verifyUser, getTrustedSiteBaseUrl } = require('./_shared');
 const { PROMPT_VERSION, normalizeMode } = require('./_showcase');
-const { markShowcaseBatchPending } = require('./_showcaseEmail');
-const { DECORATION_FINISHES, normalizeShowcaseSettings, showcaseSettingsChanged, resolveShowcaseArtwork } = require('../../src/lib/showcaseSettings');
+const { DECORATION_FINISHES, normalizeShowcaseSettings, showcaseSettingsChanged } = require('../../src/lib/showcaseSettings');
 
-const { expireStalledJobs, dispatchShowcaseJob, recordDispatchFailure } = require('./_showcaseJobs');
+const { expireStalledJobs } = require('./_showcaseJobs');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -28,6 +28,7 @@ function publicAsset(row) {
     standard_image_url: row.standard_image_url,
     showcase_image_url: row.showcase_image_url,
     approved_showcase_image_url: row.approved_showcase_image_url,
+    approved_detail_images: row.approved_detail_images || [],
     status: row.status === 'canceled' && !row.generation_request_id && !row.showcase_image_url && !row.approved_showcase_image_url ? 'missing' : row.status,
     approval_status: row.approval_status,
     fallback_to_standard: row.fallback_to_standard !== false,
@@ -38,6 +39,8 @@ function publicAsset(row) {
     provider_job_id: row.provider_job_id,
     prompt_version: row.prompt_version,
     qa_result: row.qa_result || {},
+    family_version: row.analysis?.family?.version || null,
+    family_key: row.analysis?.family?.key || null,
     showcase_settings: normalizeShowcaseSettings(row.analysis?.showcase_settings),
     needs_regeneration: showcaseSettingsChanged(row.analysis),
     error_details: row.error_details,
@@ -60,42 +63,6 @@ async function getStore(admin, storeId) {
   return data;
 }
 
-async function getCatalog(admin, storeId, storeArt = []) {
-  const { data: rows, error } = await admin
-    .from('webstore_products')
-    .select('id,store_id,product_id,kind,sku,display_name,image_url,decorations,active,sort_order')
-    .eq('store_id', storeId)
-    .eq('active', true)
-    .order('sort_order');
-  if (error) throw new Error(error.message);
-  const productIds = [...new Set((rows || []).map((r) => r.product_id).filter(Boolean))];
-  let products = [];
-  if (productIds.length) {
-    const result = await admin
-      .from('products')
-      .select('id,sku,name,brand,color,category,description,image_front_url')
-      .in('id', productIds);
-    if (result.error) throw new Error(result.error.message);
-    products = result.data || [];
-  }
-  const byProduct = Object.fromEntries(products.map((p) => [p.id, p]));
-  return (rows || []).map((wp) => {
-    const product = byProduct[wp.product_id] || {};
-    return {
-      webstore_product_id: wp.id,
-      product_id: wp.product_id,
-      kind: wp.kind,
-      sku: wp.sku || product.sku || '',
-      name: wp.display_name || product.name || wp.sku || 'Store product',
-      brand: product.brand || '',
-      color: product.color || '',
-      category: product.category || '',
-      decorations: (wp.decorations || []).map((d) => ({ ...d, art_url: resolveShowcaseArtwork(d, product.color, storeArt) })),
-      standard_image_url: wp.image_url || product.image_front_url || null,
-      sort_order: wp.sort_order || 0,
-    };
-  });
-}
 
 function buildStateSnapshot(store, catalog, assetRows) {
   const byWp = Object.fromEntries((assetRows || []).map((a) => [a.webstore_product_id, publicAsset(a)]));
@@ -193,15 +160,16 @@ async function state(admin, store) {
   return buildStateSnapshot(store, catalog, assets);
 }
 
-async function updateAsset(admin, storeId, wpId, fields) {
-  const { data, error } = await admin
+async function updateAsset(admin, storeId, wpId, fields, expectedUpdatedAt) {
+  let query = admin
     .from('webstore_showcase_assets')
     .update({ ...fields, updated_at: new Date().toISOString() })
     .eq('store_id', storeId)
-    .eq('webstore_product_id', wpId)
-    .select('*')
-    .maybeSingle();
+    .eq('webstore_product_id', wpId);
+  if (expectedUpdatedAt) query = query.eq('updated_at',expectedUpdatedAt);
+  const {data,error} = await query.select('*').maybeSingle();
   if (error) throw new Error(error.message);
+  if (expectedUpdatedAt && !data) throw new Error('This image changed. Refresh before reviewing it.');
   return data;
 }
 
@@ -250,12 +218,14 @@ exports.handler = async (event) => {
       if (action === 'preview') {
         const mode = normalizeMode(body.mode ?? store.presentation_mode);
         const assets = {};
+        const details = {};
         snapshot.items.forEach(({ webstore_product_id, asset }) => {
           if (asset.approved_showcase_image_url) {
             assets[webstore_product_id] = asset.approved_showcase_image_url;
+            details[webstore_product_id] = asset.approved_detail_images || [];
           }
         });
-        return reply(200, { ok: true, mode, preview: true, assets });
+        return reply(200, { ok: true, mode, preview: true, assets, details });
       }
       return reply(200, { ok: true, ...snapshot });
     }
@@ -295,44 +265,42 @@ exports.handler = async (event) => {
       return reply(200, { ok: true, store: data, fallback_count: fallbackCount });
     }
 
-    if (action === 'generate_all') {
-      const [catalog, assetsResult] = await Promise.all([
-        getCatalog(admin, storeId, store.store_art),
-        admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId),
-      ]);
-      if (assetsResult.error) throw new Error(assetsResult.error.message);
-      const assets = await expireStalledJobs(admin, assetsResult.data || []);
-      const products = generateAllProducts(catalog, assets);
-      if (!products.length) {
-        return reply(200, { ok: true, queued_count: 0, failed_count: 0 });
-      }
-
-      const baseUrl = getWorkerBaseUrl(event);
-      if (!baseUrl) return reply(500, { error: 'Unable to start Showcase background worker' });
-
-      const requestId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      // Queue the entire batch before starting any worker. A fast worker can
-      // therefore never email the rep while later products are still being added.
-      const byWp = Object.fromEntries((assetsResult.data || []).map((asset) => [asset.webstore_product_id, asset]));
-      const queuedAssets = await Promise.all(
-        products.map((product) => queueProduct(admin, storeId, product, requestId, now, byWp[product.webstore_product_id]?.analysis?.showcase_settings)),
-      );
-      await markShowcaseBatchPending(admin, storeId, requestId);
-
-      const triggerResults = await Promise.all(queuedAssets.map(async (queued) => {
-        try {
-          await dispatchShowcaseJob(baseUrl, queued);
-          return true;
-        } catch (e) {
-          await recordDispatchFailure(admin, queued, e);
-          return false;
+    if (['generate_family', 'generate_all_families', 'cancel_family'].includes(action)) {
+      const { queueFamilies, transition } = require('./_showcaseFamily');
+      const catalog = await getCatalog(admin, storeId, store.store_art);
+      const { data, error } = await admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId);
+      if (error) throw new Error(error.message);
+      const assets = await expireStalledJobs(admin, data || []);
+      if (action === 'cancel_family') {
+        const {groupShowcaseItems} = require('../../src/lib/showcaseFamilies');
+        const group = groupShowcaseItems(catalog).find((g)=>g.key===body.family_key);
+        if (!group) return reply(404,{error:'Base item not found'});
+        const ids = new Set(group.items.map((m)=>m.webstore_product_id));
+        const active = assets.filter((a)=>ids.has(a.webstore_product_id) && ['queued','generating'].includes(a.status));
+        const handled = new Set();
+        for (const asset of active) {
+          if (asset.analysis?.family?.key) {
+            if (!handled.has(asset.generation_request_id)) await transition(admin,storeId,asset.analysis.family.key,asset.generation_request_id,'cancel');
+            handled.add(asset.generation_request_id);
+          } else {
+            const result = await admin.from('webstore_showcase_assets').update({status:'canceled',updated_at:new Date().toISOString()})
+              .eq('id',asset.id).eq('updated_at',asset.updated_at).in('status',['queued','generating']);
+            if (result.error) throw new Error(result.error.message);
+          }
         }
-      }));
-      const queuedCount = triggerResults.filter(Boolean).length;
-      const failedCount = triggerResults.length - queuedCount;
-      if (!queuedCount) return reply(502, { error: 'Unable to start Showcase background workers', queued_count: 0, failed_count: failedCount });
-      return reply(202, { ok: true, queued_count: queuedCount, failed_count: failedCount });
+        await clearNotificationBatchIfInactive(admin,storeId);
+        return reply(200,{ok:true});
+      }
+      if (body.showcase_settings && !DECORATION_FINISHES.some(([key]) => key === body.showcase_settings.decoration_type)) return reply(400,{error:'Invalid decoration finish'});
+      const result = await queueFamilies({admin,store,catalog,assets,key:String(body.family_key || ''),all:action==='generate_all_families',
+        settings:body.showcase_settings,newMaster:body.new_master===true,baseUrl:getWorkerBaseUrl(event)});
+      return reply(result.failed_count && !result.queued_count ? 502 : 202,{ok:!result.failed_count,...result});
+    }
+
+    // Old browser bundles must refresh instead of quietly restarting one paid
+    // generation per color/logo and undoing the shared-base workflow.
+    if (action === 'generate_all' || action === 'generate') {
+      return reply(409,{error:'Refresh Store Appearance to generate by base item.'});
     }
 
     if (action === 'cancel_all') {
@@ -396,42 +364,6 @@ exports.handler = async (event) => {
       return reply(200, { ok: true, asset: publicAsset(saved) });
     }
 
-    if (action === 'generate') {
-      const catalog = await getCatalog(admin, storeId, store.store_art);
-      const product = catalog.find((p) => p.webstore_product_id === wpId);
-      if (!product) return reply(404, { error: 'Store product not found' });
-      if (product.kind === 'bundle') return reply(400, { error: 'Generate Showcase images for the package components instead' });
-      if (!product.standard_image_url) return reply(400, { error: 'A Standard source image is required before generation' });
-
-      const { data: existing, error: existingError } = await admin.from('webstore_showcase_assets')
-        .select('*').eq('store_id', storeId).eq('webstore_product_id', wpId).maybeSingle();
-      if (existingError) throw new Error(existingError.message);
-      if (['queued', 'generating'].includes(existing?.status)) return reply(409, { error: 'This image is already queued or generating' });
-      const requestId = crypto.randomUUID();
-      const settings = body.showcase_settings || existing?.analysis?.showcase_settings;
-      const queued = await queueProduct(admin, storeId, product, requestId, new Date().toISOString(), settings);
-      // Publish the notification batch only after the queued asset is visible.
-      // This prevents a finishing worker from observing a pending batch with no
-      // active asset and emailing the rep before this request actually runs.
-      await markShowcaseBatchPending(admin, storeId, requestId);
-
-      // DEPLOY_PRIME_URL is available while Netlify builds a preview, but not
-      // inside the deployed Functions runtime. Use the validated request host so
-      // a preview invokes the worker from that same immutable deploy.
-      const baseUrl = getWorkerBaseUrl(event);
-      if (!baseUrl) {
-        await updateAsset(admin, storeId, wpId, { status: 'failed', error_details: 'Unable to start background worker: site URL unavailable' });
-        return reply(500, { error: 'Unable to start Showcase background worker' });
-      }
-      try {
-        await dispatchShowcaseJob(baseUrl, queued);
-      } catch (e) {
-        await recordDispatchFailure(admin, queued, e);
-        return reply(502, { error: 'Unable to start Showcase background worker' });
-      }
-      return reply(202, { ok: true, asset: publicAsset(queued) });
-    }
-
     if (action === 'cancel') {
       const { data: active, error: activeError } = await admin
         .from('webstore_showcase_assets')
@@ -464,6 +396,16 @@ exports.handler = async (event) => {
         return reply(409, { error: 'No generated Showcase image is ready to approve' });
       }
       if (showcaseSettingsChanged(ready.analysis)) return reply(409, { error: 'Generate a new image to apply the selected decoration finish before approving' });
+      if (ready.analysis?.family?.key) {
+        const {data:family,error:familyError} = await admin.from('webstore_showcase_families').select('inputs,request_id')
+          .eq('store_id',storeId).eq('family_key',ready.analysis.family.key).maybeSingle();
+        if (familyError) throw new Error(familyError.message);
+        const {groupShowcaseItems} = require('../../src/lib/showcaseFamilies');
+        const {catalogSignature} = require('./_showcaseFamily');
+        const group = groupShowcaseItems(await getCatalog(admin,storeId,store.store_art)).find((g)=>g.key===ready.analysis.family.key);
+        if (!family || family.request_id!==ready.generation_request_id || !group || catalogSignature(group.items)!==family.inputs.catalog_signature)
+          return reply(409,{error:'The catalog or artwork changed. Generate the item again before approving.'});
+      }
       const current = await updateAsset(admin, storeId, wpId, {
         status: 'approved',
         approval_status: 'approved',
@@ -478,20 +420,22 @@ exports.handler = async (event) => {
           protected_branding_verified: true,
         },
         approved_showcase_image_url: ready.showcase_image_url,
+        approved_detail_images: ready.qa_result?.detail_images || [],
         error_details: null,
-      });
+      }, ready.updated_at);
       return reply(200, { ok: true, asset: publicAsset(current) });
     }
 
     if (action === 'reject' || action === 'fallback') {
       const { data: existing, error: existingError } = await admin
         .from('webstore_showcase_assets')
-        .select('qa_result')
+        .select('*')
         .eq('store_id', storeId)
         .eq('webstore_product_id', wpId)
         .maybeSingle();
       if (existingError) throw new Error(existingError.message);
       if (!existing) return reply(404, { error: 'Showcase asset not found' });
+      if (['queued','generating'].includes(existing.status)) return reply(409,{error:'Cancel generation before changing the review decision'});
       const current = await updateAsset(admin, storeId, wpId, {
         status: 'review',
         approval_status: 'rejected',
@@ -505,8 +449,8 @@ exports.handler = async (event) => {
           exact_artwork_verified: false,
           protected_branding_verified: false,
         },
-        ...(action === 'fallback' ? { approved_showcase_image_url: null } : {}),
-      });
+        ...(action === 'fallback' ? { approved_showcase_image_url: null, approved_detail_images: [] } : {}),
+      },existing.updated_at);
       return reply(200, { ok: true, asset: publicAsset(current) });
     }
 

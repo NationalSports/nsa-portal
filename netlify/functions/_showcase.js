@@ -267,14 +267,14 @@ function parseJsonObject(text) {
   throw new Error('Kimi returned an invalid analysis response');
 }
 
-async function analyzeWithKimi({ product, decorations, images, settings, storeArt }) {
+async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt }) {
   const config = getKimiConfig();
   if (!config.key) throw new Error('Kimi/Moonshot is not configured');
   const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
   const content = [
     {
       type: 'text',
-      text: [
+      text: analysisPrompt || [
         'Analyze the supplied product and artwork references for a truthful premium ecommerce image edit.',
         'The first image is the source product. Remaining images are exact locked artwork/brand references.',
         'Apply each assigned structured decoration to its saved position, even when the first image is a blank supplier photo.',
@@ -418,10 +418,10 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
   ].filter(Boolean).join('\n');
 }
 
-async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt }) {
+async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt, editPrompt }) {
   const config = getOpenAiConfig();
   if (!config.key) throw new Error('OpenAI image generation is not configured');
-  const prompt = buildEditPrompt(product, decorations, analysis, settings, storeArt);
+  const prompt = editPrompt || buildEditPrompt(product, decorations, analysis, settings, storeArt);
   const form = new FormData();
   images.forEach((image, index) => {
     form.append('image[]', new Blob([image.bytes], { type: image.contentType }), `reference-${index + 1}.${imageExtension(image.contentType)}`);

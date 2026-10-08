@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,11 +16,15 @@ test('isolated Netlify Showcase bundle boots and reads the requested job', async
   const originalEnv = { ...process.env };
   try {
     const result = await zipFunction('netlify/functions/showcase-image-background.mjs', dest, {
-      archiveFormat: 'none', basePath: resolve('.'), config: { '*': { nodeVersion: '22', includedFiles: ['src/lib/showcaseSettings.js'] } },
+      archiveFormat: 'none', basePath: resolve('.'), config: { '*': { nodeVersion: '22', includedFiles: ['src/lib/showcaseSettings.js','src/lib/showcaseFamilies.js'] } },
     });
     assert.equal(result.runtimeAPIVersion, 2);
     assert.equal(result.invocationMode, 'background');
     const entry = await import(pathToFileURL(join(result.path, 'netlify/functions/showcase-image-background.mjs')).href);
+    const bundledRequire = createRequire(join(result.path,'netlify/functions/showcase-image-background.mjs'));
+    const sharp = bundledRequire('sharp');
+    const png = await sharp({create:{width:100,height:100,channels:3,background:{r:20,g:60,b:140}}}).png().toBuffer();
+    assert.equal((await sharp(png).metadata()).width,100);
     process.env.INTERNAL_FUNCTION_SECRET = 'test-only';
     process.env.REACT_APP_SUPABASE_URL = 'https://showcase-test.supabase.co';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only-key';

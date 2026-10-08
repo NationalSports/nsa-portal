@@ -41,6 +41,15 @@ describe('Expandable Showcase image comparison', () => {
     expect(container.querySelector('a[href="generation-source.png"]')).toBeNull();
   });
 
+  test('shows candidate details and makes approval explicitly cover the image set', () => {
+    const onAction = jest.fn();
+    act(() => root.render(<ShowcaseImageReview item={{...item,asset:{...item.asset,qa_result:{detail_images:[{id:'logo-1',url:'detail.png',label:'Decoration detail'}]},approved_detail_images:[{url:'old.png'}]}}} onClose={()=>{}} onAction={onAction} />));
+    expect(container.querySelector('img[src="detail.png"]')).toBeTruthy();
+    expect(container.querySelector('img[src="old.png"]')).toBeNull();
+    act(() => button('Approve Hero & Details').click());
+    expect(onAction).toHaveBeenCalledWith('approve');
+  });
+
   test('queued message does not claim that generation has started', () => {
     act(() => root.render(<ShowcaseImageReview item={{ ...item, asset: { status: 'queued' } }} onClose={() => {}} onAction={() => {}} />));
     expect(container.textContent).toContain('Queued · waiting for generation to start');
