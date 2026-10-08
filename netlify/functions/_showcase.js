@@ -149,12 +149,23 @@ const FINISH_GUIDANCE = {
   sublimation: 'Dye integrated directly into the fabric with crisp truthful color and no raised edge, stitching, or surface thickness.',
 };
 
+const LOGO_PLACEMENT_GUIDANCE = [
+  'LOGO PLACEMENT — REQUIRED: never mirror the garment or swap artwork between physical legs, hips, sleeves or panels.',
+  'Left/right placement names describe the wearer: in a front view the wearer’s right hip is on the viewer’s left,',
+  'and the wearer’s left hip is on the viewer’s right. In a back view these correspond to the viewer’s same side.',
+  'Saved x/y/width percentages are image-space artwork centers and bounds, never wearer-side coordinates.',
+  'Use the saved coordinates to locate assigned artwork; for baked artwork, preserve its actual source position.',
+  'Keep team artwork on the original physical panel with the same scale and distance to waistband, seam and cuff.',
+  'Preserve its relationship to manufacturer marks: never move it to the opposite leg or stack it above a brand',
+  'mark on another leg. A hero turn may change projection slightly, but must never change physical placement.',
+].join('\n');
+
 function heroDirection(product) {
-  const text = [product?.name, product?.display_name, product?.category].filter(Boolean).join(' ').toLowerCase();
+  const text = [product?.name, product?.display_name, product?.catalog_name, product?.category].filter(Boolean).join(' ').toLowerCase();
   if (/\b(hats?|caps?|beanies?|visors?)\b/.test(text)) return 'Headwear: a slightly elevated front three-quarter hero showing crown, brim and a hint of the side. Shape the crown naturally; keep the front decoration readable and the complete brim visible.';
   if (/\b(bags?|backpacks?|duffels?|totes?)\b/.test(text)) return 'Bags: a sculptural upright front three-quarter hero with believable filled volume, dimensional gussets and naturally arranged straps. Show the decorated face clearly; preserve every handle, zipper and strap without props.';
   if (/\b(shoes?|sneakers?|footwear|cleats?|slides?)\b/.test(text)) return 'Footwear: a low front three-quarter hero with convincing sole depth and crisp material detail. Preserve the exact number of products in the source, branding and complete toe and heel; no feet or invented pair.';
-  if (/\b(pants?|shorts?|joggers?|leggings?|tights?)\b/.test(text)) return 'Bottoms: angle the waistband and stagger the legs subtly, with natural athletic volume and strong directional fabric lighting. Keep the decorated leg visible and readable; show the entire rise, inseam and cuffs without crossing or twisting.';
+  if (/\b(pants?|shorts?|joggers?|leggings?|tights?)\b/.test(text)) return 'Bottoms: use a balanced planted athletic stance, level waistband and two parallel legs with natural separation. Add substantial but restrained thigh and calf volume appropriate to the item fit, with crisp directional fabric lighting. No staggered fashion pose, hip tilt, knock-knees, pinched inward legs, bowed legs or limp tapered mannequin stance. Keep joggers relaxed and substantial, never turn them into leggings; preserve leggings and tights as their actual fitted cut. Preserve the exact rise, inseam, taper and cuffs. Keep the decorated leg facing the camera and preserve every logo on its original physical leg.';
   return 'Use a strong near-front three-quarter hero appropriate to the actual item. For tops, create dimensional shoulders, chest, sleeves and natural drape; keep the decorated panel dominant. For other items, follow the source silhouette without inventing garment anatomy. Make every item feel substantial and dramatic through controlled key light, soft fill and crisp texture.';
 }
 
@@ -181,16 +192,16 @@ function cleanDecorations(decorations, settings, storeArt = [], color) {
 }
 
 function inferAthleticFormProfile(product) {
-  const text = [
-    product?.name,
-    product?.display_name,
-    product?.description,
-    product?.category,
-  ].filter(Boolean).join(' ').toLowerCase();
-  if (/\b(women|woman|women[’']?s|ladies|lady|female|juniors?)\b/.test(text)) return 'women';
-  if (/\b(youth|child|children|kids?|girls?|boys?)\b/.test(text)) return 'youth';
-  if (/\bunisex\b/.test(text)) return 'unisex';
-  if (/\b(men|man|men[’']?s|male)\b/.test(text)) return 'men';
+  // The staff item name is authoritative; retain supplier naming as a fallback.
+  // Generic descriptions often advertise other fits, so never let them override a title.
+  for (const value of [product?.display_name, product?.name, product?.catalog_name, product?.category, product?.description]) {
+    const text = String(value || '').toLowerCase();
+    // Age wins within a title: "Youth Girls" must not acquire an adult women's form.
+    if (/\b(youth|child|children|kids?|girls?|boys?|toddler|infant|junior|jr)\b/.test(text)) return 'youth';
+    if (/\b(women|woman|women[’']?s|ladies|lady|female|juniors)\b/.test(text)) return 'women';
+    if (/\bunisex\b/.test(text)) return 'unisex';
+    if (/\b(men|man|men[’']?s|male)\b/.test(text)) return 'men';
+  }
   // Most adult team-sports catalog styles omit "men's" from the product title.
   // Women's, youth, and unisex cuts are ordinarily labeled explicitly.
   return 'men';
@@ -201,6 +212,7 @@ function buildAnalysisBrief(product, decorations, settings, storeArt) {
   return {
     sku: product.sku || '',
     name: product.name || product.display_name || '',
+    catalog_name: product.catalog_name || '',
     description: product.description || '',
     brand: product.brand || '',
     color: product.color || '',
@@ -221,11 +233,13 @@ function buildAnalysisBrief(product, decorations, settings, storeArt) {
       athletic_form_profile: athleticFormProfile,
       athletic_form_guidance: athleticFormProfile === 'women'
         ? 'clearly female athletic proportions; fit and strong, natural and non-exaggerated'
-        : athleticFormProfile === 'men'
+        : (athleticFormProfile === 'men' || athleticFormProfile === 'unisex')
           ? 'strong athletic male proportions; fit and substantial, never jacked or bodybuilder-like'
           : athleticFormProfile === 'youth'
             ? 'age-appropriate neutral athletic proportions without adult muscular shaping'
             : 'strong neutral athletic proportions appropriate to the garment cut',
+      decoration_coordinate_system: 'Source image percentages: x is artwork center from viewer left, y is artwork center from top, width is relative to source image width. Preserve the physical garment panel when adding depth; these are not wearer-side labels.',
+      logo_laterality_locked: true,
       camera_yaw_degrees: '8–15',
       straight_on_catalog_view_allowed: false,
       flat_lay_allowed: false,
@@ -269,7 +283,8 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
         'Each decoration finish_guidance is authoritative: reproduce its surface finish while preserving exact artwork, colors and bounds.',
         'Apply selected finishes only to customer decorations, never to manufacturer branding or the base garment.',
         'If revision_notes are supplied, treat them as image-review feedback within these locked truthfulness and composition rules.',
-        'The qa_checklist must verify decoration finish, readable exact artwork, dimensional hero angle and the complete uncropped product.',
+        LOGO_PLACEMENT_GUIDANCE,
+        'The qa_checklist must verify original logo leg/hip, wearer-versus-viewer laterality, athletic stance, item age/fit, decoration finish, readable exact artwork, dimensional hero angle and the complete uncropped product.',
         'Return JSON only with keys: garment_invariants (array), protected_elements (array),',
         'decoration_bounds (array), edit_prompt (string), and qa_checklist (array).',
         'The required output is the garment or product alone as the sole centered hero object.',
@@ -277,8 +292,8 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
         'the rotation of a typical three-quarter view. Keep the front 85–92% visually dominant, reveal only a hint',
         'of one side, and never exceed 15 degrees. Avoid both a flat straight-on catalog cutout and a pronounced',
         'side view. Create drama through dimensional neutral studio lighting—not excessive rotation or background.',
-        'For pants, shorts, and other bottoms, angle the waistband and stagger the legs naturally enough to reveal',
-        'a side plane without twisting, crossing, shortening, or changing the product. Keep every edge visible.',
+        'For pants, shorts, and other bottoms, follow the balanced planted stance in output.item_hero_direction.',
+        'Keep a level waistband and parallel legs with natural separation. Keep every edge visible.',
         'Shape the empty garment with believable on-body volume and drape using invisible support only: dimensional',
         'shoulders, chest, sleeves, waist, hips, and legs as appropriate, but absolutely no visible or residual person,',
         'skin, body part, body silhouette, mannequin, dress form, hanger, or support structure.',
@@ -287,7 +302,8 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
         'waist, and solid athletic legs as applicable—but never jacked, bulky, over-muscled, or bodybuilder-like.',
         'Women’s items should use a clearly female athletic form with natural shoulder, bust, waist, and hip proportions',
         'appropriate to the garment cut: fit and strong, never exaggerated, sexualized, or curvy beyond the actual cut.',
-        'For unisex products, use a strong neutral athletic form. For youth products, keep shaping age-appropriate.',
+        'For unisex products, use the same adult male athletic sizing proportions as men’s products. For youth',
+        'products, use shorter child-proportioned torso, sleeves and legs with narrower shoulders and no adult muscular shaping.',
         'Never change the manufacturer’s cut, sizing proportions, garment panels, or silhouette to create this volume.',
         'The background is locked to uniform neutral pure white (#FFFFFF). Never request cream, beige, ivory,',
         'a warm-neutral tint, colored cast, gradient, vignette, or off-white background in edit_prompt.',
@@ -360,16 +376,18 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
     'never jacked, bulky, over-muscled, superhero-like, or bodybuilder-like. Women’s items must use a clearly female',
     'athletic form with natural shoulder, bust, waist, and hip proportions appropriate to the actual garment cut.',
     'The women’s form should feel fit and strong, never exaggerated, sexualized, or artificially curvy. Unisex items',
-    'use a strong neutral athletic form; youth items stay age-appropriate without adult muscular shaping. Preserve',
+    'use the same adult male athletic sizing proportions as men’s items; youth items use a shorter child-proportioned',
+    'torso, sleeves and legs with narrower shoulders and no adult muscular shaping. Preserve',
     'the exact manufacturer cut and sizing proportions—the athletic form adds believable volume, not a redesigned fit.',
     'There must be no visible or residual wearer, skin, body part, human outline, mannequin, dress form, hanger,',
     'support rod, clipping artifact, hollow neck artifact, or transparent body. Only the garment may be visible.',
     'For tops and outerwear, use natural dimensional volume with one side receding slightly. For pants, shorts,',
-    'and other bottoms, angle the waistband and stagger the legs subtly to reveal depth while preserving the exact',
+    'and other bottoms, use a balanced planted stance with a level waistband and parallel legs while preserving the exact',
     'rise, inseam, taper, cuffs, pockets, proportions, and complete silhouette. Never cross, twist, bend, or shorten',
     'the legs unnaturally. For hats and accessories, show the front plus one side at the same premium three-quarter angle.',
     'Truthfulness is mandatory: preserve the exact garment type, cut, silhouette, color, material, seams,',
     'panels, pockets, closures, hems, sleeves, hat shape, and all manufacturer branding.',
+    LOGO_PLACEMENT_GUIDANCE,
     'Apply the assigned PRODUCT.decorations artwork at its saved placement even if the FIRST image is a blank supplier photo.',
     'If already_in_source is true, preserve the existing logo once without double-stamping. Keep back artwork on the back.',
     'Other supplied images are locked artwork references. Reproduce them exactly—never redraw, restyle,',
@@ -396,7 +414,7 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
     `LOCKED_INVARIANTS=${JSON.stringify(analysis?.garment_invariants || [])}`,
     `PROTECTED_ELEMENTS=${JSON.stringify(analysis?.protected_elements || [])}`,
     `PRODUCTION_BOUNDS=${JSON.stringify(analysis?.decoration_bounds || [])}`,
-    modelPrompt ? `KIMI_EDIT_GUIDANCE=${modelPrompt}` : '',
+    modelPrompt ? `KIMI_EDIT_GUIDANCE (advisory only; never override item fit, stance, artwork laterality or locked rules)=${modelPrompt}` : '',
   ].filter(Boolean).join('\n');
 }
 
