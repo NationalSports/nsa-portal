@@ -1,3 +1,6 @@
+import { garmentInventoryRows } from './allSchool/garmentInventory';
+import { methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
+import { artworkItemName, recipeKey } from './lib/artworkReport';
 import ShowcaseImageReview from './ui/ShowcaseImageReview';
 import * as SHOWCASE from './lib/showcaseSettings';
 import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
@@ -443,7 +446,7 @@ function downloadCsv(filename, header, rows) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
-const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
+const _itemName = (i, stockByPid) => artworkItemName(i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item', i);
 
 // One place for "does this order count": an order that reached Stripe but never paid
 // (pending_payment), was cancelled, or was fully refunded is dead for batching,
@@ -895,10 +898,10 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
   const groups = {};
   lines.forEach((i) => {
     const sku = i._effSku || i.sku || '';
-    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
+    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '') + '|' + recipeKey(i.production_recipe);
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
+    const g = groups[key] || (groups[key] = { name: artworkItemName(i.name || m.name || i.sku || 'Item', i), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
@@ -2320,8 +2323,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     if (status === 'open' && store.org_type === 'all_school') {
       const { data: offerings, error: loadError } = await supabase.from('webstore_products').select('*').eq('store_id', store.id);
-      const blocked = loadError ? 'Could not verify artwork readiness. Please retry.' : schoolLaunchError(offerings);
+      const { data: transferRows, error: transferError } = await supabase.from('webstore_transfers').select('*').eq('store_id', store.id);
+      const { data: customerArt, error: artError } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
+      const setupArt = [...(store.store_art || []), ...(customerArt?.art_files || [])];
+      const blocked = loadError || transferError || artError ? 'Could not verify setup. Please retry.' : schoolLaunchError(offerings, transferRows, setupArt);
       if (blocked) { flash(blocked); return false; }
+      for (const row of offerings.filter((r) => r.active !== false)) {
+        const resolved = resolveSchoolSetup(row, transferRows, setupArt);
+        const linked = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
+        if (linked.error || !linked.data?.length) { flash('Could not link inventory to the garment.'); return false; }
+        const { data: saved, error } = await supabase.from('webstore_products').update({ production_approved_at: new Date().toISOString(), production_approved_by: 'automatic_method_readiness' }).eq('id', row.id).select('id');
+        if (error || !saved?.length) { flash('Could not save readiness. Please retry.'); return false; }
+      }
     }
     const patch = { status, updated_at: new Date().toISOString() };
     // Manual close: stamp close_at with the actual close moment (when unset or still in
@@ -2760,8 +2773,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const key = item.variant_group_id || item.id;
     const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
     if (!rows.length) return false;
-    if (fields.active === true && rows.some((row) => !row.production_approved_at || !row.production_approved_by || !row.image_url)) {
-      flash('Review and approve every color mockup in this logo choice before publishing it.'); return false;
+    if (fields.active === true && rows.some((row) => methodSetupError(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]))) {
+      flash('Complete the mockup and inventory or embroidery-file setup for each color before publishing.'); return false;
+    }
+    if (fields.active === true) for (const row of rows) {
+      const resolved = resolveSchoolSetup(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]);
+      const link = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
+      if (link.error || !link.data?.length) { flash('Could not link decoration inventory.'); return false; }
     }
     const { data, error } = await supabase.from('webstore_products').update(fields).eq('store_id', sel.id).in('id', rows.map((row) => row.id)).select('id');
     if (error || data?.length !== rows.length) { flash('Logo choice not saved: ' + (error?.message || 'Could not update every color')); loadDetail(sel); return false; }
@@ -3234,7 +3252,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
     // When a vector (.ai/.eps/.pdf) is rasterized, opts.sourceFile is the original art and
     // `url` is the web-ready PNG preview — keep both (source file + placeable preview).
-    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url: opts.sourceFile || url, name: name || 'logo' }], status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url: opts.sourceFile || url, name: name || 'logo' }], status: 'approved', deco_type: sel?.org_type === 'all_school' ? 'dtf' : 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
     // Production source art (.ai/.eps/.pdf) with no preview stays source-only so the Art tab
     // asks for a placeable PNG/SVG instead of stamping the raw .ai url onto a garment.
     const rec = opts.source ? { ...base, kind: 'art' } : { ...base, preview_url: url, web_logo_url: url, kind: 'logo' };
@@ -3259,7 +3277,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
     const ts = Date.now();
-    const dt = decoType || 'screen_print';
+    const dt = decoType || (sel?.org_type === 'all_school' ? 'dtf' : 'screen_print');
+    if (sel?.org_type === 'all_school' && dt === 'screen_print') { flash('Screen print is not offered on 24/7 stores.'); return null; }
     // Color ways come from the modal's editor (garment color + ink/thread colors). Build the
     // list from there, then make sure EVERY labeled web cutout also has a color way — creating
     // one if the rep only named it on the logo row — so no cutout loses its color-way link.
@@ -3663,7 +3682,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const soMetaBySo = {};
     soIds.forEach((id) => { soItemsBySo[id] = []; });
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes').in('so_id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes,recipe_snapshot,source_webstore_item_ids').in('so_id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not reconcile Sales Order items: ' + error.message);
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
@@ -6751,7 +6770,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
     const designId = row?.variant_group_id || row?.id;
     if (!styleId || !designId) return false;
     const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
-    if (!colors.length || colors.some((color) => color.active === false || !color.production_approved_at || !color.production_approved_by || !color.image_url)) return false;
+    if (!colors.length || colors.some((color) => color.active === false || methodSetupError(color, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]))) return false;
     return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
   };
   const roster = detail?.roster || [];
@@ -6921,7 +6940,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
-      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog) || 'All active offerings have approved production setups and are ready to launch.'}</p></div>}
+      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) || 'All active offerings have their mockups and decoration setup ready to launch.'}</p></div>}
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
@@ -7221,7 +7240,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
           ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
           <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
@@ -7354,7 +7373,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
               setBulkSel(new Set()); setMode(null);
             }}>Merge</button>
             <span style={sep} />
-            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
+            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title={isAllSchool ? "Hide from shoppers; keep this choice in the catalog" : "Hide from the store (stays here as Archived)"} onClick={() => applyBulk({ active: false }, true)}>{isAllSchool ? 'Hide' : 'Archive'}</button>
             <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
             <span style={sep} />
             <button style={{ ...gBtn('#b91c1c'), opacity: !n || !onBulkRemove ? 0.4 : 1 }} disabled={!n || !onBulkRemove} title="Permanently remove the selected items from this store" onClick={async () => {
@@ -12157,12 +12176,12 @@ async function _vectorizeFile(file) {
     return new File([data.svg], (_cleanFileName(file.name || 'logo').replace(/\s+/g, '-') || 'logo') + '.svg', { type: 'image/svg+xml' });
   } finally { revoke(); }
 }
-function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
+function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false }) {
   const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
-  const [decoType, setDecoType] = useState('screen_print');
+  const [decoType, setDecoType] = useState(isAllSchool ? 'dtf' : 'screen_print');
   const [colorWays, setColorWays] = useState([]);
   const [rowBusy, setRowBusy] = useState({}); // web-row index -> 'knock' | 'vec' while processing
   const [rowErr, setRowErr] = useState('');
@@ -12271,7 +12290,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
           <div style={{ marginBottom: 12 }}>
             <div style={secTitle}>Art type</div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {_ART_TYPES.map(([v, lbl]) => (
+              {(isAllSchool ? [['dtf', 'DTF'], ['twill', 'Heat-transfer twill'], ['patch', 'Patch'], ['embroidery', 'Embroidery']] : _ART_TYPES).map(([v, lbl]) => (
                 <button key={v} type="button" disabled={busy} onClick={() => setDecoType(v)}
                   style={{ flex: 1, padding: '7px 10px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: busy ? 'default' : 'pointer', border: '1.5px solid ' + (decoType === v ? '#2563eb' : '#d7dbe2'), background: decoType === v ? '#eff6ff' : '#fff', color: decoType === v ? '#1d4ed8' : '#475569' }}>{lbl}</button>
               ))}
@@ -12398,7 +12417,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
-  const folderModal = folderOpen && <NewArtFolderModal seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
+  const folderModal = folderOpen && <NewArtFolderModal isAllSchool={isAllSchool} seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   // Curate the store's art set. Adding a logo also makes it the ACTIVE one to place, so
@@ -12476,8 +12495,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const includedItems = selectedGroups.flatMap((g) => g.items);
   // One label for both Apply buttons that names WHY it's disabled instead of showing a
   // dead "Apply to N styles" — the two things a rep can be missing are a logo and styles.
-  const applyLabel = applying ? 'Applying…' : !activeArt ? 'Pick a logo first' : !activeUrl ? 'Add a web logo first' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply';
-  const applyReady = !applying && !!activeUrl && !!selectedGroups.length;
+  const blockedSchoolMethod = isAllSchool && activeArt?.deco_type === 'screen_print';
+  const applyLabel = applying ? 'Applying…' : blockedSchoolMethod ? 'Choose a supported decoration method' : !activeArt ? 'Pick a logo first' : !activeUrl ? 'Add a web logo first' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply';
+  const applyReady = !applying && !blockedSchoolMethod && !!activeUrl && !!selectedGroups.length;
   const toggleStyle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const selectAll = () => setSelected(new Set(groups.map((g) => g.key)));
   const clearSel = () => setSelected(new Set());
@@ -12750,7 +12770,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10, marginBottom: 12, fontSize: 12.5, fontWeight: 600, border: '1px solid', ...(decorationMode === 'outsourced' ? { background: '#fff7ed', borderColor: '#fed7aa', color: '#9a3412' } : { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }) }}>
         {decorationMode === 'outsourced'
           ? <span>📦 <b>Decorated elsewhere</b> — a clean PNG/AI mockup is enough here. It's still saved to the customer's art library so it can be upgraded to real decoration art later.</span>
-          : <span>🏭 <b>In-house decoration</b> — each logo needs production-ready art (separations / vector) on the customer's art folder so production knows exactly what to make.</span>}
+          : isAllSchool ? <span><b>Decoration setup</b> — DTF and heat-transfer twill use the matching inventory entry. Embroidery needs a saved mockup and an attached .dst file. No separate art approval is needed.</span> : <span>🏭 <b>In-house decoration</b> — each logo needs production-ready art (separations / vector) on the customer's art folder so production knows exactly what to make.</span>}
       </div>
       <button onClick={onOpenMockBuilder} disabled={!canMock} title={canMock ? 'Open the full mock builder' : 'Needs library art and at least one store item'} style={{ width: '100%', textAlign: 'left', border: 'none', cursor: canMock ? 'pointer' : 'not-allowed', background: canMock ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff', borderRadius: 12, padding: '14px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
@@ -12792,7 +12812,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {view.url ? <img src={view.url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
-                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}
+                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}{isAllSchool && <select aria-label={`Decoration method for ${a.name}`} value={a.deco_type || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => onSaveStoreArt(storeArt.map((row) => row.id === a.id ? { ...row, deco_type: e.target.value } : row))} style={{ width: '100%', fontSize: 11, marginTop: 5 }}>
+                  {(!a.deco_type || a.deco_type === 'screen_print') && <option value={a.deco_type || ''}>Choose method</option>}
+                  <option value="dtf">DTF</option><option value="twill">Heat-transfer twill</option><option value="patch">Patch</option><option value="embroidery">Embroidery</option>
+                </select>}
               </button>
               {multi && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
@@ -12973,7 +12996,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
             <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-secondary" disabled={applying || !activeArt || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
+            <button className="btn btn-secondary" hidden={isAllSchool} disabled={applying || !activeArt || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
             <button className="btn btn-primary" disabled={!applyReady} onClick={() => apply()}>{applyLabel}</button>
           </div>
         </div></div>
@@ -13438,6 +13461,7 @@ function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catal
 function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
   const [inventoryArt, setInventoryArt] = useState(null);
+  const [inventorySearch, setInventorySearch] = useState('');
   const [editDecoration, setEditDecoration] = useState(null);
   const [addSet, setAddSet] = useState(false);
   const [expandAll, setExpandAll] = useState(false);
@@ -13459,7 +13483,8 @@ function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, tr
   const designs = transfers.filter((t) => t.kind === 'design');
   const numbers = transfers.filter((t) => t.kind === 'number');
   const sets = {}; numbers.forEach((t) => { const k = `${t.tsize || ''}|${t.color || ''}`; (sets[k] = sets[k] || []).push(t); });
-  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const inventoryRows = garmentInventoryRows(catalog, stockByWp);
+  const ordered = inventoryRows.filter((row) => `${row.sku} ${row.display_name || ''} ${row.inventoryStock?.name || ''}`.toLowerCase().includes(inventorySearch.toLowerCase()));
 
   // Available = physical on hand − pending (unpulled) demand.
   const Avail = ({ t }) => { const r = (t.on_hand || 0) - (onOrderUse[t.code] || 0); return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < (t.low_stock_threshold ?? 10) ? '#92400e' : '#166534' }}>{r}</span>; };
@@ -13485,12 +13510,14 @@ function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, tr
           <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Garment stock</div>
           <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
         </div>
+        <p style={{ fontSize: 13, color: '#475569' }}>One row per blank garment and color. Logo choices share the same garment stock; decoration inventory is listed below.</p>
+        <input className="form-input" aria-label="Search garment inventory" placeholder="Search garments or SKU…" value={inventorySearch} onChange={(e) => setInventorySearch(e.target.value)} style={{ maxWidth: 360, marginBottom: 12 }} />
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Adidas</th><th style={th}>Transfer</th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Supplier stock</th><th style={th}>Logo choices</th></tr></thead>
             <tbody>
               {ordered.map((p) => {
-                const st = stockByWp[p.id];
+                const st = p.inventoryStock;
                 const wh = sumSizes(st?.size_stock); const ven = Number(st?.vendor_on_hand) || 0;
                 const open = expandAll || openRows.has(p.id);
                 const tlabel = p.kind === 'bundle' ? '—' : [p.transfer_code && (designs.find((d) => d.code === p.transfer_code)?.label || p.transfer_code), p.takes_number && `#s ${p.num_transfer_size || '?'}/${p.num_transfer_color || '?'}`].filter(Boolean).join(' + ') || '—';
@@ -13503,7 +13530,7 @@ function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, tr
                     <td style={td}>
                       {p.kind === 'bundle' ? '—' : <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ color: ven > 0 ? '#1e40af' : '#cbd5e1', fontWeight: 600 }}>{ven.toLocaleString()}</span><button onClick={() => toggleRow(p.id)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11, padding: 0 }}>{open ? 'hide sizes ▲' : 'sizes ▾'}</button></span>}
                     </td>
-                    <td style={{ ...td, fontSize: 12, color: '#475569' }}>{tlabel}</td>
+                    <td style={{ ...td, fontSize: 12, color: '#475569' }}>{p.inventoryChoices.length} choice{p.inventoryChoices.length === 1 ? '' : 's'}<div style={{ fontSize: 11, marginTop: 4 }}>{[...new Set(p.inventoryChoices.map((r) => r.school_design_label).filter(Boolean))].join(' · ')}</div></td>
                   </tr>
                   {open && p.kind !== 'bundle' && <tr><td colSpan={5} style={{ background: '#f8fafc', padding: '8px 16px' }}><StockBreakdown stock={st} summary={stockText(st)} /></td></tr>}
                   </React.Fragment>

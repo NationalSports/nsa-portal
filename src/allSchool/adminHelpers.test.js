@@ -38,7 +38,7 @@ it('links a screen-print choice to its approved art folder instead of DTF stock'
   expect(copy.image_url).toBeNull();
   expect(copy.transfer_codes).toEqual([]);
   expect(copy.decorations).toEqual([{ kind: 'art', art_id: 'serra-arch', art_url: 'arch.png', placement: 'full_front', side: 'front', type: 'screen_print', baked: false }]);
-  expect(productionSetupError({ ...copy, image_url: 'new-mock.png' }, [], [art])).toBe('');
+  expect(productionSetupError({ ...copy, image_url: 'new-mock.png' }, [], [art])).toMatch(/Screen print is not offered/);
 });
 it('counts exact sport offering transfer needs without product ID overwrite', () => {
   const maps = buildTransferMaps([{ id: 'football', product_id: 'blank', transfer_codes: ['football-logo'] }, { id: 'soccer', product_id: 'blank', transfer_codes: ['soccer-logo'] }], []);
@@ -75,9 +75,9 @@ it('refuses generic art replacement of stock-linked offerings but allows explici
 
 it('requires exact production files for approval and identifies setup invalidation fields', () => {
   const item = { product_id: 'blank', sku: 'TEE', image_url: 'exact-mock.png', transfer_codes: ['DTF'] };
-  expect(productionSetupError(item, [])).toMatch(/exact production/);
+  expect(productionSetupError(item, [])).toMatch(/inventory/);
   expect(productionSetupError({ ...item, image_url: null }, [])).toMatch(/mockup/);
-  const stock = { code: 'DTF', width_in: 8, height_in: 10, production_file: { bucket: 'all-school-art', path: 'private/print.ai', name: 'print.ai' } };
+  const stock = { code: 'DTF', application_method: 'heat_press', width_in: 8, height_in: 10, production_file: { bucket: 'all-school-art', path: 'private/print.ai', name: 'print.ai' } };
   expect(productionSetupError(item, [stock])).toBe('');
   expect(productionSetupError({ ...item, takes_name: true }, [stock])).toMatch(/personalization/);
   expect(changesProductionSetup({ decorations: [] })).toBe(true);

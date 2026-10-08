@@ -9,7 +9,7 @@ test('adds a DTF logo choice from the item art editor using its exact stock', as
   const onCreate = jest.fn(async () => 'new-choice');
   const onEdit = jest.fn();
   render(<SchoolLogoOptionsEditor {...base} onCreate={onCreate} onEdit={onEdit}
-    transfers={[{ id: 'print', kind: 'design', code: 'ARCH', label: 'Arched', production_file: { bucket: 'all-school-art', path: 'arch.ai', name: 'arch.ai' }, width_in: 10, height_in: 5 }]}
+    transfers={[{ id: 'print', kind: 'design', code: 'ARCH', application_method: 'heat_press', label: 'Arched', production_file: { bucket: 'all-school-art', path: 'arch.ai', name: 'arch.ai' }, width_in: 10, height_in: 5 }]}
     logoOptions={[{ id: 'art', name: 'Arched Serra', url: 'https://example.com/arch.png', deco_type: 'dtf' }]} />);
   fireEvent.click(screen.getByRole('button', { name: '+ Add logo option' }));
   fireEvent.change(screen.getByLabelText('New web logo'), { target: { value: 'art' } });
@@ -20,21 +20,21 @@ test('adds a DTF logo choice from the item art editor using its exact stock', as
   expect(onEdit).toHaveBeenCalledWith('new-choice', 'art');
 });
 
-test('screen print logo uses an approved production art folder', async () => {
+test('embroidery logo uses its attached DST file', async () => {
   const onCreate = jest.fn(async () => 'new-choice');
   render(<SchoolLogoOptionsEditor {...base} onCreate={onCreate}
-    logoOptions={[{ id: 'art', name: 'Serra arch', url: 'https://example.com/arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] }]} />);
+    logoOptions={[{ id: 'art', name: 'Serra arch', url: 'https://example.com/arch.png', deco_type: 'embroidery', status: 'approved', prod_files: [{ name: 'arch.dst', url: 'https://example.com/arch.dst' }] }]} />);
   fireEvent.click(screen.getByRole('button', { name: '+ Add logo option' }));
   fireEvent.change(screen.getByLabelText('New web logo'), { target: { value: 'art' } });
   fireEvent.click(screen.getByRole('button', { name: 'Create logo choice' }));
-  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(row, 'Original logo', 'Serra arch', null, expect.objectContaining({ deco_type: 'screen_print' })));
+  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(row, 'Original logo', 'Serra arch', null, expect.objectContaining({ deco_type: 'embroidery' })));
 });
 
 test('manages names and publishing beside the item artwork', async () => {
   const onUpdate = jest.fn(async () => true);
   const approved = { ...row, production_approved_at: '2026-10-07', production_approved_by: 'staff', image_url: 'mock.png', active: false, variant_group_id: 'colors', school_style_group_id: 'listing', school_design_label: 'Arched Serra' };
   render(<SchoolLogoOptionsEditor {...base} item={approved} catalog={[approved, { ...approved, id: 'black', sku: 'HOODIE-BLACK' }]} onUpdate={onUpdate} />);
-  expect(screen.getByText('2 colors · production approved')).toBeTruthy();
+  expect(screen.getByText('2 colors · ready')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Name for Arched Serra'), { target: { value: 'Varsity arch' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
   await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'hoodie' }), { school_design_label: 'Varsity arch' }));

@@ -6,6 +6,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
+import LogoChoicePicker, { logoDesignRows } from './LogoChoicePicker';
 import { garmentFrame, normGarment } from '../lib/garmentFrame';
 import PersonalizationOverlay from '../lib/personalizationOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
@@ -99,11 +100,16 @@ function StoreStyles() {
         .sf-design-arrows{position:absolute;left:8px;right:8px;top:48%;display:flex;justify-content:space-between;z-index:3;pointer-events:none}
         .sf-design-arrows button{pointer-events:auto;border:0;border-radius:50%;width:34px;height:34px;background:#fffE;color:#17213b;font-size:26px;line-height:1;cursor:pointer;box-shadow:0 2px 8px #0003}
         .sf-design-caption{font:700 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.8px;margin-top:8px;color:var(--sf-primary,#17213b)}
-        .sf-design-choices{display:flex;gap:10px;flex-wrap:wrap}
-        .sf-design-choice{width:95px;padding:5px;border:2px solid #d9dce3;background:#fff;color:inherit;cursor:pointer;font:700 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;text-align:center}
-        .sf-design-choice-active{border-color:var(--sf-primary,#17213b)}
-        .sf-design-choice-image{position:relative;display:block;aspect-ratio:4/5;background:#f6f6f6;overflow:hidden;margin-bottom:5px}
-        .sf-design-choice-image img{width:100%;height:100%;object-fit:contain}
+        .sf-design-choices{display:flex;gap:12px;flex-wrap:wrap}
+        .sf-design-choice{position:relative;width:112px;padding:7px;border:2px solid #d9dce3;border-radius:12px;background:#fff;color:inherit;cursor:pointer;font:700 13px 'Barlow Condensed',sans-serif;text-align:center;transition:border-color .15s,box-shadow .15s}
+        .sf-design-choice:hover{border-color:currentColor}
+        .sf-design-choice:focus-visible{outline:3px solid currentColor;outline-offset:3px}
+        .sf-design-choice-active{border-color:currentColor;box-shadow:0 0 0 1px currentColor}
+        .sf-design-choice-check{position:absolute;right:-7px;top:-7px;border-radius:50%;width:22px;height:22px;display:grid;place-items:center;background:var(--logo-choice-color);color:white;border:2px solid white;z-index:2}
+        .sf-design-choice-image{position:relative;display:grid;place-items:center;height:76px;border-radius:7px;background:linear-gradient(135deg,#edf0f4 50%,#bac3d0 50%);overflow:hidden;margin-bottom:7px}
+        .sf-design-choice-image>img{width:100%;height:100%;object-fit:contain}
+        .sf-design-choice-image>img.sf-logo-cutout{width:82%;height:82%;filter:drop-shadow(0 1px 1px #657080)}
+        .sf-design-choice-name{display:block;overflow-wrap:anywhere;line-height:1.2}
         .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
         .sf-showcase .sf-card:hover{transform:translateY(-6px);box-shadow:0 22px 48px rgba(22,34,63,.16)}
         .sf-showcase .sf-card .sf-img{transform:scale(1.001)}
@@ -1569,7 +1575,7 @@ function compMeta(c, wpById, compInfo) {
 const buildWpById = (products) => { const m = {}; (products || []).forEach((p) => { m[p.webstore_product_id] = p; }); return m; };
 
 function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
-  const designRows = [...new Map(colorRows.map((row) => [row.variant_group_id || row.webstore_product_id, row])).values()];
+  const designRows = logoDesignRows(colorRows);
   const [designIndex, setDesignIndex] = useState(0);
   const cardRow = store.org_type === 'all_school' && designRows.length > 1 ? designRows[designIndex % designRows.length] : p;
   const isBundle = p.kind === 'bundle';
@@ -1770,7 +1776,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
-  const designGroups = [...new Map(colorRows.map((row) => [row.variant_group_id || row.webstore_product_id, row])).entries()];
+  const designGroups = logoDesignRows(colorRows.length ? colorRows : [rep]).map((row) => [row.variant_group_id || row.webstore_product_id, row]);
   const activeDesignKey = p.variant_group_id || p.webstore_product_id;
   const activeColorRows = designGroups.length > 1 && store.org_type === 'all_school' ? colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === activeDesignKey) : colorRows;
   // Fit/gender variants (Adult / Women's / Youth) carry a variant_label and share
@@ -1907,13 +1913,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], selectedProdu
           {showFund && <div style={{ fontSize: 13, color: STOCK.in, fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
-          {store.org_type === 'all_school' && designGroups.length > 1 && <div style={{ margin: '4px 0 22px' }}>
-            <div style={label}>Choose logo design</div>
-            <div className="sf-design-choices">{designGroups.map(([key, row], index) => <button type="button" key={key} className={key === activeDesignKey ? 'sf-design-choice sf-design-choice-active' : 'sf-design-choice'} onClick={() => { const next = colorRows.find((candidate) => (candidate.variant_group_id || candidate.webstore_product_id) === key && candidate.color === p.color) || row; setColorId(next.webstore_product_id); setSize(null); setImg('front'); }}>
-              <span className="sf-design-choice-image">{row.image_front_url && <img src={row.image_front_url} alt="" />}{row.image_front_url && <DecoOverlay decorations={row.decorations} colorName={row.color} />}</span>
-              <span>{row.school_design_label || `Logo ${index + 1}`}</span>
-            </button>)}</div>
-          </div>}
+          {store.org_type === 'all_school' && <LogoChoicePicker rows={colorRows.length ? colorRows : [rep]} selected={p} color={theme.primary} labelStyle={label}
+            onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg('front'); }} />}
           {!isFitGroup && activeColorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
             <div style={label}>Color{p.color ? ` — ${p.color}` : ''}</div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>

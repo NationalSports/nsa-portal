@@ -1,3 +1,4 @@
+import { recipeKey, artworkInstructions, artworkItemName } from './artworkReport';
 // Player report generated FROM the sales order — every player and exactly what they
 // get, with each line resolved through the SO's CURRENT items. The OMG/webstore
 // report shows what parents ordered; when the rep swaps an item on the SO (stock or
@@ -48,7 +49,7 @@ function downloadCsv(filename, rows) {
 // and the CSV can never disagree about what a line says.
 function lineFields(l) {
   return {
-    name: l._unmatched ? (l.name || l.sku || 'Item') : (l._name || 'Item'),
+    name: artworkItemName(l._unmatched ? (l.name || l.sku || 'Item') : (l._name || 'Item'), l),
     sku: l._unmatched ? (l.sku || '') : (l._sku || ''),
     adidasTagSku: l._adidasTagSku || '',
     color: l._color || '',
@@ -97,10 +98,11 @@ export function activeWebstoreLines(lines, orderById = null) {
 // Every row repeats its order's ship-to so a single line can be read on its own (the whole
 // point of the flat file: filter to one player, still know where the box goes).
 export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
+  const hasArtwork = lines.some((l) => !!l.production_recipe);
   const header = [
     'Order #', 'Order Date', 'Player', 'Player #', 'Buyer', 'Buyer Email', 'Buyer Phone',
     'Item', 'SKU', 'Adidas Tag SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Was Size', 'Flag',
-    'Ship Method', 'Ship Name', 'Address 1', 'Address 2', 'City', 'State', 'Zip', 'Country',
+    'Ship Method', 'Ship Name', 'Address 1', 'Address 2', 'City', 'State', 'Zip', 'Country', ...(hasArtwork ? ['Artwork / application instructions'] : []),
   ];
   const rows = lines.map((l) => {
     const o = orderById[l.order_id] || {};
@@ -124,7 +126,7 @@ export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
         l._orderExtra ? 'ORDER EXTRA / UNASSIGNED' : f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
         o.ship_method || '',
         a.name || o.buyer_name || '', a.street1 || '', a.street2 || '',
-        a.city || '', a.state || '', a.zip || '', a.country || '',
+        a.city || '', a.state || '', a.zip || '', a.country || '', ...(hasArtwork ? [artworkInstructions(l)] : []),
       ],
     };
   });
@@ -237,6 +239,27 @@ function allocateCurrentSizes(g) {
 //     A pairing whose curves don't fully agree carries verify:true.
 //  Anything still unmatched keeps its original data and is flagged for review.
 export function mapLinesToSoItems(lines, soItems) {
+  if (lines.some((l) => l.production_recipe)) {
+    const partitions = new Map();
+    for (const line of lines) {
+      const key = recipeKey(line.production_recipe);
+      if (!partitions.has(key)) partitions.set(key, []);
+      partitions.get(key).push(line);
+    }
+    const result = { lines: [], substitutions: [], unmatched: [] };
+    for (const [key, source] of partitions) {
+      const ids = new Set(source.map((l) => l.id).filter(Boolean));
+      const targets = (soItems || []).filter((item) => key
+        ? recipeKey(item.recipe_snapshot) === key || (item.source_webstore_item_ids || []).some((id) => ids.has(id))
+        : !item.recipe_snapshot && !(item.source_webstore_item_ids || []).length);
+      const mapped = mapLegacyLinesToSoItems(source, targets);
+      for (const field of Object.keys(result)) result[field].push(...mapped[field]);
+    }
+    return result;
+  }
+  return mapLegacyLinesToSoItems(lines, soItems);
+}
+function mapLegacyLinesToSoItems(lines, soItems) {
   // SO side, grouped by sku (blank-sku customs key by name), with per-colorway subgroups.
   const soGroups = {}; const soOrder = []; const pinBySku = {};
   (soItems || []).forEach((it) => {
