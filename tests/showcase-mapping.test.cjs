@@ -40,10 +40,10 @@ test('a false construction rejection is rechecked with product identity and all 
  assert.match(requests[1].analysisPrompt,/genuine cut, pocket, seam or branding mismatch/);
  assert.equal(result.analysis.supported,true);
 });
-test('confirmed construction rejection remains blocked and exposes no raw internal model narrative',async()=>{
+test('repeated rejection remains blocked, saves both diagnostic reasons and offers a saved-image retry',async()=>{
  let calls=0;
  await assert.rejects(validatedMapping(async()=>{calls++;return {analysis:{supported:false,reason:'green hoodie PLACEMENTS wrong pocket'}};},{analysisPrompt:'Map',product:{name:'Hoodie'}},{},async()=>{}),error=>{
-   assert.match(error.message,/Change pose & lighting/);assert.doesNotMatch(error.message,/green|PLACEMENTS|wrong pocket/);return true;
+   assert.match(error.message,/Automatic image review stopped/);assert.match(error.message,/retry the saved image/);assert.equal(error.mappingDiagnostics.attempts.length,2);assert.equal(error.mappingDiagnostics.attempts[1].reason,'green hoodie PLACEMENTS wrong pocket');return true;
  });
  assert.equal(calls,2);
 });
@@ -67,4 +67,14 @@ test('diffuse highlights preserve black fabric while retaining shaded folds',()=
  const master={data:Buffer.from([20,90,30,255,30,180,55,255,40,250,60,255]),mask:[1,1,1],median:180,info:{width:3,height:1,channels:4}};
  const out=recolor(master,[24,24,24]);
  assert.ok(out[0]<24);assert.equal(out[4],24);assert.ok(out[8]>24 && out[8]<=31);
+});
+
+test('unambiguous numeric strings and object corners are normalized for mapped artwork',async()=>{
+ const result=await validatedMapping(async()=>{const r=good();r.analysis.placements.a=[{x:'0.3',y:'0.3'},{x:'0.6',y:'0.3'},{x:'0.6',y:'0.6'},{x:'0.3',y:'0.6'}];return r;},{analysisPrompt:'Map'},{a:{}},async()=>{});
+ assert.deepEqual(result.analysis.placements.a,good().analysis.placements.a);
+});
+test('missing placement keys retain the exact failed rule and never produce a review candidate',async()=>{
+ await assert.rejects(validatedMapping(async()=>good(),{analysisPrompt:'Map'},{p1:{}},async()=>{}),error=>{
+  assert.match(error.message,/Missing mapped artwork placement p1/);assert.equal(error.mappingDiagnostics.attempts.length,2);return true;
+ });
 });
