@@ -7,7 +7,9 @@ import ShowcaseProductImage from './ShowcaseProductImage';
 function FamilyCard({ group, busy, act, onReview }) {
   const [open, setOpen] = useState(false);
   const [finish, setFinish] = useState(group.items[0].asset?.showcase_settings?.decoration_type || 'auto');
-  const approved = group.items.filter(({ asset }) => asset?.approved_showcase_image_url).length;
+  const approved = group.items.filter(({ asset }) => asset?.status === 'approved').length;
+  const generated = group.items.filter(({ asset }) => asset?.showcase_image_url || asset?.approved_showcase_image_url).length;
+  const needsUpdate = needsFamilyGeneration(group);
   const review = group.items.filter(({ asset }) => asset?.status === 'review').length;
   const errors = [...new Set(group.items.map(({ asset }) => asset?.error_details).filter(Boolean))];
   const generate = (newMaster = false) => {
@@ -20,7 +22,7 @@ function FamilyCard({ group, busy, act, onReview }) {
       <div style={{flex:1,minWidth:200}}>
         <div style={{fontSize:14,fontWeight:800}}>{group.name}</div>
         <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{group.colors.length} colors · {group.designs} designs · {group.items.length} combinations</div>
-        <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{approved} approved · {review} need review{group.working ? ' · Generation in progress' : ''}</div>
+        <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{generated}/{group.items.length} generated · {approved} approved · {review} awaiting review{group.working ? ' · Generation in progress' : ''}</div>
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
         <label style={{fontSize:12}}>Decoration finish{' '}
@@ -29,7 +31,7 @@ function FamilyCard({ group, busy, act, onReview }) {
           </select>
         </label>
         <button className="btn btn-sm btn-primary" disabled={busy || group.working || !group.eligible} onClick={()=>generate()}>
-          {group.working ? 'Generating item…' : 'Generate whole item'}
+          {group.working ? 'Generating item…' : generated ? (needsUpdate ? 'Update generated images' : 'Regenerate whole item') : 'Generate whole item'}
         </button>
         {group.working ? <button className="btn btn-sm btn-secondary" disabled={busy} onClick={()=>act(group.key,'cancel_family',{family_key:group.key})}>Cancel item</button>
           : <button className="btn btn-sm btn-secondary" disabled={busy || !group.eligible} onClick={()=>generate(true)}>New base garment</button>}
@@ -48,10 +50,10 @@ function FamilyCard({ group, busy, act, onReview }) {
             <div><small>Standard</small><ShowcaseProductImage item={item} url={item.standard_image_url} height={120} alt="Standard garment with logo" /></div>
             <div><small>Showcase</small>{url?<img src={url} alt={`${item.color} Showcase`} loading="lazy" style={{height:120,width:'100%',objectFit:'contain'}}/>:<div style={{height:120,display:'grid',placeItems:'center',fontSize:12,color:'#64748b'}}>{asset.status || 'Missing'}</div>}</div>
           </div>
-          <div style={{fontSize:11,color:'#64748b',margin:'8px 0'}}>{asset.status === 'review' ? 'Needs review' : asset.status || 'Missing'}</div>
+          <div style={{fontSize:11,color:'#64748b',margin:'8px 0'}}>{asset.status === 'review' ? 'Generated · Awaiting approval' : asset.status === 'approved' ? 'Generated · Approved' : asset.status || 'Not generated'}</div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>onReview(item.webstore_product_id)}>Before / After</button>
-            {asset.status==='review' && <button className="btn btn-sm btn-primary" disabled={busy || asset.needs_regeneration} onClick={()=>setReviewId(item.webstore_product_id)}>Review & Approve</button>}
+            {asset.status==='review' && <button className="btn btn-sm btn-primary" disabled={busy || asset.needs_regeneration} onClick={()=>onReview(item.webstore_product_id)}>Review & Approve</button>}
             {asset.approved_showcase_image_url && <button className="btn btn-sm btn-secondary" disabled={busy || group.working} onClick={()=>act(item.webstore_product_id,'fallback',{webstore_product_id:item.webstore_product_id})}>Use Standard</button>}
           </div>
         </div>;

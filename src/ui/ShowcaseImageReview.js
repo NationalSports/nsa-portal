@@ -31,7 +31,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
 
   return <dialog ref={dialog} aria-labelledby="showcase-review-title" onCancel={(event) => { event.preventDefault(); onClose(); }}
     style={{ width: 'min(1100px, 92vw)', maxHeight: '92vh', padding: 0, border: '1px solid #cbd5e1', borderRadius: 16, color: '#0f172a', boxShadow: '0 24px 80px rgba(15,23,42,.3)' }}>
-    <div style={{ padding: '16px 20px', display: 'flex', gap: 12, alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}>
+    <div style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 2, padding: '16px 20px', display: 'flex', gap: 12, alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}>
       <div style={{ flex: 1 }}>
         <div id="showcase-review-title" style={{ fontSize: 17, fontWeight: 800 }}>{item.name} · Before / After</div>
         <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Check artwork, decoration texture, product color and hero angle. Click Before to enlarge the garment with its logo, or After to open the full-size hero.</div>
@@ -66,7 +66,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
           style={{ display: 'block', width: '100%', boxSizing: 'border-box', minHeight: 66, marginTop: 6, border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, font: 'inherit', fontWeight: 400 }} />
       </label>}
       {familyMode && <p style={{fontSize:12,color:'#64748b'}}>Generate or change the base garment from the item card; that updates all linked colors and logos together.</p>}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+      <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0', zIndex: 2, display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
         {!familyMode && (working ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('cancel')}>Cancel generation</button>
           : <button type="button" className="btn btn-secondary" disabled={busy || !item.standard_image_url || item.kind === 'bundle'}
             onClick={() => onAction('generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Generate New Image</button>)}

@@ -94,3 +94,19 @@ test('royal, gold and neutral artwork retain source colors across fabric colors,
      assert.deepEqual([...output.subarray((y*100+x)*4,(y*100+x)*4+3)],palette[index],`${finish}: artwork palette cannot change with garment color or shadow`);
  }
 });
+
+test('curved drawstring trace preserves logo beside the cord instead of cutting out its bounding box', async()=>{
+ const {bytes}=await fixture();
+ const master=await prepareMaster(bytes,{protected_regions:[],logo_occluders:[],logo_strands:[{points:[[.45,.3,.02],[.48,.4,.02],[.50,.5,.02],[.47,.6,.02],[.45,.7,.02]]}]});
+ const before=recolor(master,[20,60,140]), output=Buffer.from(before);
+ const logo=Buffer.alloc(40*40*4,0);
+ for(let y=1;y<39;y++)for(let x=1;x<39;x++)logo.set([240,190,20,255],(y*40+x)*4);
+ await applyArtwork(output,master,await png(logo,40,40),[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],'tackle_twill',{finishRelief:true});
+ const rgb=(buf,x,y)=>[...buf.subarray((y*100+x)*4,(y*100+x)*4+3)];
+ const isLogo=(x,y)=>{const color=rgb(output,x,y);assert.ok(color[0]>210 && color[1]>165 && color[2]<45, 'source gold remains visible');};
+ assert.deepEqual(rgb(output,50,50),rgb(before,50,50),'cord stays in front');
+ isLogo(46,50);
+ isLogo(54,50);
+ isLogo(50,60);
+ await assert.rejects(prepareMaster(bytes,{protected_regions:[],logo_occluders:[],logo_strands:[{points:[[.4,.3,.1],[.4,.4,.1],[.4,.5,.1]]}]}),/trace needs correction/);
+});
