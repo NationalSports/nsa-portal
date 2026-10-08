@@ -70,8 +70,9 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
           placeholder="For example: lighter twill depth, cleaner stitching, softer matte lighting, smaller logo higher on the chest…"
           style={{ display: 'block', width: '100%', boxSizing: 'border-box', minHeight: 66, marginTop: 6, border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, font: 'inherit', fontWeight: 400 }} />
       </label>}
-      {familyMode && <p style={{fontSize:12,color:'#64748b'}}>Revisions create new images for every color and logo of this item. Approved images stay live until you approve replacements. A new pose and lighting image incurs an AI generation charge.</p>}
+      {familyMode && <p style={{fontSize:12,color:'#64748b'}}>This creates only the selected color and logo image. Other combinations stay unchanged. Approved images stay live until you approve replacements. A new pose and lighting image incurs an AI generation charge.</p>}
       <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0', zIndex: 2, display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+        {familyMode && !revising && <button type="button" className="btn btn-secondary" disabled={busy || working || !item.supplier_image_url} onClick={() => onAction('generate_image', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>{afterUrl ? 'Refresh this image' : 'Create this image'}</button>}
         {!familyMode && (working ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('cancel')}>Cancel generation</button>
           : <button type="button" className="btn btn-secondary" disabled={busy || !item.standard_image_url || item.kind === 'bundle'}
             onClick={() => onAction('generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Generate New Image</button>)}

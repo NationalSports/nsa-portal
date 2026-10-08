@@ -60,7 +60,7 @@ test('worker renders 15 combinations with one master generation, then reuses it'
  },storage:{from:()=>({upload:async()=>{uploaded++;return {};},getPublicUrl:(p)=>({data:{publicUrl:'https://storage/'+p}})})},from:()=>{throw new Error('Email disabled in fixture');}};
  const deps={getCatalog:async()=>members,fetchImage:async()=>({bytes:Buffer.from('image'),contentType:'image/png'}),
   generate:async()=>{generated++;return {bytes:Buffer.from('master'),contentType:'image/png',model:'test'};},
-  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p))), assert.ok(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(id=>/^p[0-9]+$/.test(id)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
+  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p))), assert.ok(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(id=>/^p[0-9]+$/.test(id)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:images.length},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
   render:{placementReference:async bytes=>bytes,validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
  try{
   const leader=await queue();
@@ -81,6 +81,19 @@ test('worker renders 15 combinations with one master generation, then reuses it'
   const recover=await queue('00000000-0000-4000-8000-000000000100');
   await runFamilyJob(admin,{...recover,analysis:asset.analysis},'https://site',deps);
   assert.equal(generated,1);
+  const canonical=(await db.query('select master from webstore_showcase_families')).rows[0].master;
+  const full=familyInputs(group,[]);
+  const single=familyInputs(group,[],undefined,ids[5]);
+  single.shared_master=canonical;single.master_signature=full.master_signature;single.source=full.source;
+  const before=(await db.query('select * from webstore_showcase_assets where webstore_product_id<>$1 order by id',[ids[5]])).rows;
+  const singleKey=group.key+':image:'+ids[5];
+  const singleRequest='00000000-0000-4000-8000-000000000101';
+  const queued=(await db.query('select queue_showcase_family($1,$2,$3,$4,false) result',[store,singleKey,singleRequest,single])).rows[0].result;
+  await assert.rejects(queue('00000000-0000-4000-8000-000000000102'),/already queued/);
+  const uploadsBefore=uploaded;
+  await runFamilyJob(admin,{...queued,analysis:{family:{key:singleKey}}},'https://site',deps);
+  assert.equal(uploaded-uploadsBefore,2);assert.equal(generated,1);
+  assert.deepEqual((await db.query('select * from webstore_showcase_assets where webstore_product_id<>$1 order by id',[ids[5]])).rows,before);
 
  }finally{await db.close();}
 });

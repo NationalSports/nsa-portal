@@ -44,5 +44,12 @@ test('reject offers feedback before requesting a new family version and preserve
  expect(screen.getByText('Create revised images').disabled).toBe(true);
  fireEvent.change(screen.getByRole('textbox',{hidden:true}),{target:{value:'Keep the pose; soften lighting and raise the logo'}});
  fireEvent.click(screen.getByText('Create revised images'));
- expect(act).toHaveBeenCalledWith('style:nike:hood','generate_family',{family_key:'style:nike:hood',new_master:true,showcase_settings:{decoration_type:'tackle_twill',revision_notes:'Keep the pose; soften lighting and raise the logo'}});
+ expect(act).toHaveBeenCalledWith('0','generate_image',{family_key:'style:nike:hood',webstore_product_id:'0',new_master:true,showcase_settings:{decoration_type:'tackle_twill',revision_notes:'Keep the pose; soften lighting and raise the logo'}});
+});
+
+test('a combination can generate by itself without requesting the family',()=>{
+ const act=jest.fn();render(<ShowcaseFamilyList items={items} act={act}/>);
+ fireEvent.click(screen.getByText('Review combinations (15)'));
+ fireEvent.click(screen.getAllByText('Create this image')[4]);
+ expect(act).toHaveBeenCalledWith('4','generate_image',{family_key:'style:nike:hood',webstore_product_id:'4',showcase_settings:{decoration_type:'auto',revision_notes:''}});
 });

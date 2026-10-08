@@ -107,6 +107,7 @@ async function assertPublicImageUrl(rawUrl) {
 }
 
 async function fetchRemoteImage(rawUrl, redirects = 0) {
+  if (/\/(?:Image404ErrorHandler\.jsp|ImageNotAvailable\.[a-z]+)(?:[?\/]|$)/i.test(rawUrl)) throw new Error('Supplier photo is unavailable. Replace this color’s supplier photo before creating its image.');
   if (redirects > 3) throw new Error('Source image redirected too many times');
   const url = await assertPublicImageUrl(rawUrl);
   const res = await fetch(url, {

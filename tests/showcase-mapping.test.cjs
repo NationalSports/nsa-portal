@@ -78,3 +78,15 @@ test('missing placement keys retain the exact failed rule and never produce a re
   assert.match(error.message,/Missing mapped artwork placement p1/);assert.equal(error.mappingDiagnostics.attempts.length,2);return true;
  });
 });
+
+test('single-image inputs contain only the selected combination but retain the catalog guard',()=>{
+ const members=[{product_id:'a',webstore_product_id:'one',supplier_image_url:'broken-other-color'},{product_id:'b',webstore_product_id:'two',supplier_image_url:'selected-photo'}];
+ const group={key:'family',items:members};const full=familyInputs(group,[]);const single=familyInputs(group,[],undefined,'two');
+ assert.equal(single.members.length,1);assert.equal(single.source.supplier_image_url,'selected-photo');assert.equal(single.catalog_signature,full.catalog_signature);assert.equal(single.catalog_family_key,'family');
+ assert.throws(()=>familyInputs(group,[],undefined,'not-in-store'),/not found/);
+});
+test('supplier missing-image redirects stop before downloading placeholder art',async()=>{
+ const {fetchRemoteImage}=require('../netlify/functions/_showcase');
+ await assert.rejects(fetchRemoteImage('https://cdnm.sanmar.com/adminjsps/Image404ErrorHandler.jsp?u=bad'),/Supplier photo is unavailable/);
+ await assert.rejects(fetchRemoteImage('https://marketing.sanmar.com/catalog/images/ImageNotAvailable.jpg'),/Supplier photo is unavailable/);
+});
