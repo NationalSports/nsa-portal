@@ -111,6 +111,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[convertAsk,setConvertAsk]=useState(null);// {est, date, busy} — in-hands date for estimate → sales order
   const[convertedFrom,setConvertedFrom]=useState(null);// estimate id just converted; opens its new order once it appears
   const[quickOpen,setQuickOpen]=useState(false);// the "+" create menu
+  const[todoAll,setTodoAll]=useState(false);// home To-do: first 6, then all
   const[payLink,setPayLink]=useState(null);// {inv, url, qr} — pay-link sheet with QR code
   // Hamburger drawer
   const[drawerOpen,setDrawerOpen]=useState(false);
@@ -408,8 +409,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     // i.e. sales orders written this month rather than invoices paid this month.
     const monthRevenue=sScoped.filter(s=>(s.status||'')!=='cancelled'&&thisMonth(s.created_at)).reduce((a,s)=>{const c=custObj(s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
     const urgentOrders=sScoped.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
-    return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length};
-  },[sos,invs,scope,myCustIds]);
+    // Same point last month (1st → today's day-of-month), so the trend compares like with like.
+    const pm=new Date(now.getFullYear(),now.getMonth()-1,1);const pmEnd=new Date(now.getFullYear(),now.getMonth()-1,Math.min(now.getDate(),new Date(now.getFullYear(),now.getMonth(),0).getDate()),23,59,59);
+    const lastMonthToDate=sScoped.filter(s=>{if((s.status||'')==='cancelled'||!s.created_at)return false;const d=new Date(s.created_at);return d>=pm&&d<=pmEnd}).reduce((a,s)=>{const c=custObj(s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+    const openQuotes=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['draft','open','sent'].includes(e.status||''));
+    const openQuoteValue=openQuotes.reduce((a,e)=>{try{const c=custObj(e.customer_id);return a+(calcOrderTotals(e,c?.tax_rate||0).rev||0)}catch(_){return a}},0);
+    const owedInvs=openInvoices.filter(i=>!i._hist&&Math.max(0,(+i.total||0)-(+i.paid||0))>0.005);
+    const owed=owedInvs.reduce((a,i)=>a+Math.max(0,(+i.total||0)-(+i.paid||0)),0);
+    const wk=new Date(now.getTime()+7*864e5);
+    const dueWeek=activeOrders.filter(s=>s.expected_date&&new Date(s.expected_date)<=wk).length;
+    return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length,lastMonthToDate,openQuotes:openQuotes.length,openQuoteValue,owed,owedCount:owedInvs.length,dueWeek};
+  },[sos,invs,ests,scope,myCustIds]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
@@ -1386,15 +1396,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const dueSOs=sos.filter(s2=>inScope(s2.customer_id,s2.created_by)&&!['completed','complete','shipped','cancelled'].includes(s2.status||'')&&s2.expected_date&&ymd(s2.expected_date)<=wk).sort((a,b)=>ymd(a.expected_date).localeCompare(ymd(b.expected_date)));
     const quiet=new Date(Date.now()-5*864e5).toISOString().slice(0,10);
     const followUps=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['sent','open'].includes(e.status||'')&&ymd(e.updated_at||e.created_at)&&ymd(e.updated_at||e.created_at)<=quiet).sort((a,b)=>ymd(a.updated_at||a.created_at).localeCompare(ymd(b.updated_at||b.created_at)));
-    if(!dueTodos.length&&!dueSOs.length&&!followUps.length&&!notesToReview)return null;
-    const row=(key,icon,label,sub,color,onClick)=><div key={key} onClick={onClick} style={{display:'flex',gap:10,alignItems:'center',padding:'9px 0',borderTop:'1px solid #f1f5f9',cursor:onClick?'pointer':'default'}}>
+    const total=dueTodos.length+dueSOs.length+followUps.length+(notesToReview>0?1:0)+(unreadForMeCount>0?1:0);
+    const row=(key,icon,label,sub,color,onClick)=><div key={key} className="mh-row" onClick={onClick} style={{cursor:onClick?'pointer':'default'}}>
       <span style={{fontSize:16,width:22,textAlign:'center'}}>{icon}</span>
       <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{label}</div>{sub&&<div style={{fontSize:11,color:color||'#64748b'}}>{sub}</div>}</div>
       {onClick&&<span style={{color:'#cbd5e1',fontSize:16}}>›</span>}
     </div>;
     const cname=id=>{const c2=custObj(id);return c2?.alpha_tag||c2?.name||''};
-    return<div className="mp-item-card" style={{marginBottom:12}}>
-      <div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginBottom:4}}>Today</div>
+    return<div className="mh-card">
+      <div className="mh-card-head"><h3>Today</h3>{total>0&&<span className="mh-badge is-red">{total}</span>}</div>
+      {!total&&<div className="mh-empty">✓ You’re all caught up</div>}
+      {unreadForMeCount>0&&row('msgs','💬',unreadForMeCount+' unread message'+(unreadForMeCount===1?'':'s')+' for you','Tap to read','#1e40af',()=>setTab('messages'))}
       {notesToReview>0&&row('notes','🎙️',notesToReview+' AI note'+(notesToReview===1?'':'s')+' to review','Nothing is saved to the account until you approve','#b45309',()=>openNotes())}
       {dueTodos.slice(0,4).map(t=>row('t'+t.id,'☑️',t.title,(ymd(t.due_date)<today?'Overdue · was due ':'Due today · ')+fmtDate(ymd(t.due_date)+'T12:00:00')+(t.customer_id?' · '+cname(t.customer_id):''),ymd(t.due_date)<today?'#dc2626':'#b45309',t.customer_id&&custObj(t.customer_id)?()=>setDetail({type:'customer',data:custObj(t.customer_id)}):null))}
       {dueSOs.slice(0,4).map(s2=>row('s'+s2.id,'📦',s2.id+' · '+(cname(s2.customer_id)||'—'),(ymd(s2.expected_date)<today?'Past in-hands date ':'In-hands ')+fmtDate(ymd(s2.expected_date)+'T12:00:00')+' · '+(orderProgress(s2,calcSOStatus(s2))?.headline||''),ymd(s2.expected_date)<today?'#dc2626':'#64748b',()=>setDetail({type:'order',data:s2})))}
@@ -1405,19 +1417,45 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const renderHome=()=>{
     if(cu.role==='warehouse')return renderWhHome();
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
-    return<div className="mp-page">
-      <div className="mp-greeting" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-        <div>
-          <div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
-          <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+    const hr=new Date().getHours();
+    const greet=hr<12?'Good morning':hr<17?'Good afternoon':'Good evening';
+    const compact=(n)=>{const a=Math.abs(+n||0);return a>=1e6?'$'+(a/1e6).toFixed(a>=1e7?0:1)+'M':a>=1e3?'$'+(a/1e3).toFixed(a>=1e5?0:1)+'k':'$'+Math.round(a)};
+    const trend=stats.lastMonthToDate>0?Math.round((stats.monthRevenue-stats.lastMonthToDate)/stats.lastMonthToDate*100):null;
+    const goSub=(sp)=>{setTab('more');setDetail(null);setMoreSubPage(sp)};
+    const kpis=isOps?[
+      {k:'orders',label:'Active orders',num:stats.activeOrders,foot:stats.dueWeek+' due this week',on:()=>setTab('orders')},
+      {k:'urgent',label:'Due in 3 days',num:stats.urgentOrders,foot:stats.urgentOrders?'Needs attention':'Nothing urgent',hot:stats.urgentOrders>0,on:()=>setTab('orders')},
+      {k:'msgs',label:'Messages',num:unreadForMeCount,foot:'Unread for you',hot:unreadForMeCount>0,on:()=>setTab('messages')},
+      {k:'todo',label:'To-dos',num:myTodos.length,foot:'Open tasks',on:()=>{try{document.getElementById('mh-todo')?.scrollIntoView({behavior:'smooth'})}catch(e){}}},
+    ]:[
+      {k:'sales',label:'Sales this month',num:compact(stats.monthRevenue),trend,foot:'vs last month',on:()=>goSub('reports')},
+      {k:'quotes',label:'Open quotes',num:stats.openQuotes,foot:compact(stats.openQuoteValue)+' outstanding',on:()=>goSub('estimates')},
+      {k:'orders',label:'Active orders',num:stats.activeOrders,foot:stats.urgentOrders?stats.urgentOrders+' due in 3 days':stats.dueWeek+' due this week',hot:stats.urgentOrders>0,on:()=>setTab('orders')},
+      {k:'owed',label:'Owed to us',num:compact(stats.owed),foot:stats.owedCount+' open invoice'+(stats.owedCount===1?'':'s'),on:()=>goSub('invoices')},
+    ];
+    return<div className="mp-page mh-page">
+      <section className="mh-hero" aria-label="Your numbers">
+        <div className="mh-hero-top">
+          <div style={{minWidth:0}}>
+            <div className="mh-eyebrow">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+            <h1 className="mh-title">{greet}, {cu.name?.split(' ')[0]||'there'}.</h1>
+          </div>
+          {myCustIds.size>0&&<div className="mh-scope" role="group" aria-label="Show">
+            {[['mine','Mine'],['all','All']].map(([v,l])=><button key={v} className={scope===v?'on':''} onClick={()=>setScope(v)}>{l}</button>)}
+          </div>}
         </div>
-        <ScopeToggle/>
-      </div>
-      {/* Global search bar */}
-      <div className="mp-search-inline" onClick={()=>setShowSearch(true)} style={{cursor:'pointer'}}>
+        <div className="mh-kpis">
+          {kpis.map(t=><button key={t.k} className="mh-kpi" onClick={t.on}>
+            <span className="mh-kpi-label">{t.label}</span>
+            <strong className="mh-kpi-num">{t.num}</strong>
+            <span className="mh-kpi-foot">{t.trend!=null&&<span className={'mh-trend '+(t.trend>=0?'up':'down')}>{t.trend>=0?'▲':'▼'} {Math.abs(t.trend)}%</span>}<span className={t.hot?'mh-hot':''}>{t.foot}</span></span>
+          </button>)}
+        </div>
+      </section>
+      <button className="mh-search" onClick={()=>setShowSearch(true)}>
         <MIcon name="search" size={18}/>
-        <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
-      </div>
+        <span>Search orders, customers, quotes…</span>
+      </button>
       {!appNudgeHidden&&(!appState.installed||appState.push==='off')&&appState.push!=='unknown'&&<div className="mp-item-card" style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,border:'1px solid #bfdbfe',background:'#eff6ff'}}>
         <img src="/icon-192.png" alt="" style={{width:40,height:40,borderRadius:10,background:'white'}}/>
         <div style={{flex:1,minWidth:0,cursor:'pointer'}} onClick={()=>{setTab('more');setMoreSubPage('app')}}>
@@ -1427,32 +1465,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <button aria-label="Hide" onClick={()=>{setAppNudgeHidden(true);try{localStorage.setItem('nsa_app_nudge','hidden')}catch(e){}}} style={{border:'none',background:'none',color:'#94a3b8',fontSize:18,padding:6}}>✕</button>
       </div>}
       {!isOps&&renderToday()}
-      {/* Quick stats */}
-      <div className="mp-stats-grid">
-        <div className="mp-stat-card" onClick={()=>setTab('orders')}>
-          <div className="mp-stat-num">{stats.activeOrders}</div><div className="mp-stat-label">Active Orders</div>
-        </div>
-        <div className="mp-stat-card" onClick={()=>setTab('messages')}>
-          <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages</div>
-        </div>
-        {!isOps&&<div className="mp-stat-card">
-          <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
-        </div>}
-        {!isOps&&<div className="mp-stat-card">
-          <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">MTD Sales</div>
-        </div>}
-      </div>
-      {/* Urgent orders */}
-      {stats.urgentOrders>0&&<div className="mp-alert-banner">
-        <MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span>
-      </div>}
-      {/* Unread messages for me */}
-      {unreadForMeCount>0&&<div className="mp-msg-banner" onClick={()=>setTab('messages')}>
-        <MIcon name="mail" size={16}/><span>{unreadForMeCount} unread message{unreadForMeCount>1?'s':''} for you</span>
-      </div>}
       {/* To-Do List */}
-      <div className="mp-section-title" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <span>To-Do ({myTodos.length})</span>
+      <div className="mh-card" id="mh-todo">
+      <div className="mh-card-head">
+        <h3>To-do</h3>{myTodos.length>0&&<span className="mh-badge">{myTodos.length}</span>}<span style={{flex:1}}/>
         {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign to Claude</button>}
       </div>
       {botCompose&&<div className="mp-list-card" style={{background:'#f0fdfa',border:'1px solid #99f6e4'}}>
@@ -1470,14 +1486,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             style={{flex:2,padding:'8px',border:'none',borderRadius:8,background:botCompose.title.trim()?'#0f766e':'#cbd5e1',color:'white',fontSize:13,fontWeight:700}}>Assign to Claude</button>
         </div>
       </div>}
-      {myTodos.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:20,fontSize:13}}>No open tasks</div>}
-      {myTodos.slice(0,15).map(t=>{
+      {myTodos.length===0&&<div className="mh-empty">No open tasks</div>}
+      {myTodos.slice(0,todoAll?myTodos.length:6).map(t=>{
         const isAssignedToMe=t.assigned_to===cu.id;
         const _dateStr=t._date||t.created_at;
         const _dateLabel=_dateStr?(()=>{try{const dt=new Date(_dateStr);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}})():'';
-        return<div key={t.id} className="mp-list-card" style={{minHeight:44}}>
+        return<div key={t.id} className="mh-todo">
           <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-            <div style={{width:4,minHeight:36,borderRadius:2,background:priColors[t.priority]||'#94a3b8',flexShrink:0,marginTop:2}}/>
+            <div style={{width:4,minHeight:34,borderRadius:2,background:priColors[t.priority]||'#94a3b8',flexShrink:0,marginTop:2}}/>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{t.title}</div>
               {t.description&&<div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{t.description}</div>}
@@ -1491,6 +1507,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             {t._computed&&t._dismissKey&&<button onClick={e=>{e.stopPropagation();dismissTodo(t._dismissKey)}} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px',fontSize:12,color:'#94a3b8',cursor:'pointer',flexShrink:0,alignSelf:'center'}}>✕</button>}
           </div>
         </div>})}
+      {myTodos.length>6&&<button className="mh-more" onClick={()=>setTodoAll(v=>!v)}>{todoAll?'Show less':'Show all '+myTodos.length}</button>}
+      </div>
     </div>;
   };
 

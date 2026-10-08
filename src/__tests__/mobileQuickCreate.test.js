@@ -101,6 +101,20 @@ test('the + button in the phone app opens the menu, and an invoice opens the Get
   expect(await screen.findByText('Part payment')).toBeTruthy();
 });
 
+test('phone home opens on the KPI banner: money owed, open quotes, active orders', () => {
+  render(<MobilePortal cu={{ id: 'tm1', name: 'Steve Peterson', role: 'rep' }} cust={cust} sos={sos} invs={invs} histInvs={[]} msgs={[]} prod={[]} vend={[]} REPS={[{ id: 'tm1', name: 'Steve Peterson' }]}
+    ests={[{ id: 'EST-1', customer_id: 'c1', status: 'sent', items: [] }, { id: 'EST-2', customer_id: 'c1', status: 'converted', items: [] }]}
+    assignedTodos={[]} computedTodos={[]} dismissedTodos={[]} onDismissTodo={() => {}} onLogout={() => {}} onSwitchDesktop={() => {}} onSaveEstimate={(e) => e} onSaveSO={(s) => s}
+    nextEstId={() => 'EST-9'} nf={jest.fn()} onMsg={() => {}} canAccess={() => true} />);
+  const hero = screen.getByLabelText('Your numbers');
+  const tile = (label) => within(hero).getByText(label).closest('button');
+  expect(within(tile('Owed to us')).getByText('$400')).toBeTruthy();// INV-1 only (paid + imported history skipped)
+  expect(within(tile('Owed to us')).getByText('1 open invoice')).toBeTruthy();
+  expect(within(tile('Open quotes')).getByText('1')).toBeTruthy();// sent counts, converted doesn't
+  expect(within(tile('Active orders')).getByText('2')).toBeTruthy();
+  expect(screen.getByText(/You’re all caught up/)).toBeTruthy();
+});
+
 describe('notifications sign-in', () => {
   const realFetch = global.fetch;
   afterEach(() => { global.fetch = realFetch; });
