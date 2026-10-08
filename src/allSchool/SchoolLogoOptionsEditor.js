@@ -38,7 +38,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
   };
   return <section aria-label="Logo choices for this item" style={{ border: '1px solid #dbe3ef', borderRadius: 12, padding: 16, marginBottom: 18, background: '#fff' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3><p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Choose which logo shows first here. Drag the color thumbnails below to choose that logo’s first color.</p></div>
+      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3><p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Choose which logo shows first here. Drag the color thumbnails under the garment preview to choose that logo’s first color.</p></div>
       <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (!open && !newName.trim() && selectedLogo?.name) setNewName(selectedLogo.name.slice(0, 80)); setOpen((value) => !value); }}>{open ? 'Cancel' : '+ Add logo option'}</button>
     </div>
     <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
