@@ -1,3 +1,4 @@
+import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -2627,6 +2628,7 @@ export default function App(){
   // pre-pass item explicitly — see _diffSave).
   React.useEffect(()=>{_setInvBaseProvider((id)=>{const s=_dbSnap.current.prod;return(s&&s.find(x=>x.id===id))||null})},[]);
   // Batch PO system
+  const[removingBatchId,setRemovingBatchId]=useState(null);
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const allSchoolBatchClaims=useRef(new Map()); // durable claim made before a supplier API request
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
@@ -13121,6 +13123,9 @@ export default function App(){
   };
 
 
+  const newInventoryPO=()=>{
+    setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});
+  };
   function rInvPOs(){
     const q3=invPOSearch.trim().toLowerCase();
     const filtered=invPOs.filter(po=>{if(!q3)return true;return po.po_number.toLowerCase().includes(q3)||po.vendor_name.toLowerCase().includes(q3)||po.items.some(it=>it.sku.toLowerCase().includes(q3)||it.name.toLowerCase().includes(q3))});
@@ -13129,7 +13134,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
         <button className="btn" onClick={()=>setAiInvPoWizOpen(true)} style={{background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an inventory PO with AI from a paste, image, or sheet">✨ Build with AI</button>
-        <button className="btn btn-primary" data-tour-id="inv-new-po-btn" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" data-tour-id="inv-new-po-btn" onClick={newInventoryPO}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -15069,6 +15074,10 @@ export default function App(){
     const totalOpenUnits=dedupPOs.reduce((a,p)=>a+p.totalOpen,0);
     const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.rep!=='all'||poF.search||poF.booking;
     return<>
+      <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
+        <button className="btn btn-primary" data-tour-id="po-new-inventory-po" onClick={newInventoryPO}>+ New Inventory PO</button>
+        <span style={{fontSize:12,color:'#64748b'}}>Buy stock, heat transfers, or supplies without a sales order.</span>
+      </div>
       {/* Status filter tabs */}
       <div style={{display:'flex',gap:4,marginBottom:8,flexWrap:'wrap'}}>
         {[['all','All POs',dedupPOs.length,'#2563eb'],['waiting','Waiting',waitCount,'#d97706'],['partial','Partial',partCount,'#2563eb'],['received','Received',rcvdCount,'#059669']].map(([id,label,count,color])=>
@@ -15127,15 +15136,27 @@ export default function App(){
     const vendorGroups=Object.entries(byVendor);
     // Payment method and manual cost are PO-level metadata stored on one source
     // po_line. If a batch edit removes it, move the metadata to a remaining line.
-    const _carryBatchPoMetadata=(items,bp)=>{
-      const amount=safeNum(bp?.manual_cost);const paymentMethod=bp?.payment_method||'';
-      if(!(amount>0)&&!paymentMethod)return items;
-      let stored=false;
-      return(items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
-        if(pl.batch_queue_id!==bp.id)return pl;
-        if(!stored){stored=true;return{...pl,...(paymentMethod?{_payment_method:paymentMethod}:{}),...(amount>0?{_manual_cost:amount,...(bp.manual_cost_note?{_manual_cost_note:bp.manual_cost_note}:{})}:{})}}
-        const{_payment_method,_manual_cost,_manual_cost_note,...rest}=pl;return rest;
-      })}));
+    const saveQueueChange=async(bp,makePlan,success)=>{
+      const groupKey=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');
+      if(_batchOrderingRef.current.has(groupKey)){nf('This batch is being saved or ordered. Please wait.','warn');return}
+      const current=(_visFlushRefs.current.batchPOs||batchPOs).find(b=>b.id===bp.id);
+      if(!current||JSON.stringify(current)!==JSON.stringify(bp)){nf('This queue entry changed. Reload it before removing.','error');return}
+      _batchOrderingRef.current.add(groupKey);setRemovingBatchId(bp.id);
+      try{
+        const so=(_visFlushRefs.current.sos||sos).find(order=>order.id===bp.so_id);
+        const plan=makePlan(current,so);
+        await commitQueuedBatchRemoval(plan,updated=>savSONow(updated),nextBatch=>{
+          const next=(_visFlushRefs.current.batchPOs||batchPOs).flatMap(b=>b.id!==bp.id?[b]:nextBatch?[nextBatch]:[]);
+          _visFlushRefs.current={..._visFlushRefs.current,batchPOs:next};
+          setBatchPOs(next);setEditingBatchId(null);
+        });
+        nf(success);
+      }catch(err){console.error('[removeFromQueue]',err);nf(err.message+' The queue entry was kept. Reload the order before retrying.','error')}
+      finally{_batchOrderingRef.current.delete(groupKey);setRemovingBatchId(null)}
+    };
+    const removeFromQueue=(bp,itemIndex=null)=>{
+      if(!window.confirm(itemIndex==null?'Remove this PO from the queue? Its sales-order items will remain.':'Remove '+bp.items[itemIndex].sku+' from this batch? Its sales-order item will remain.'))return;
+      return saveQueueChange(bp,(current,so)=>planQueuedBatchRemoval(current,so,itemIndex),itemIndex==null?'PO removed from queue':'Item removed from batch');
     };
     // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
     // (write-in address > decorator > drop-ship program address > NSA warehouse).
@@ -15559,16 +15580,13 @@ export default function App(){
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" title="Remove from queue" disabled={!!bp.all_school_allocation_id} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
-                    const so=sos.find(s=>s.id===bp.so_id);
-                    if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
-                    setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button disabled={!!bp.all_school_allocation_id} title={'Remove '+it.sku+' from batch'} onClick={()=>{if(!window.confirm('Remove '+it.sku+' from this batch?'))return;const newItems=bp.items.filter((_,ii)=>ii!==i);const so=sos.find(s=>s.id===bp.so_id);if(newItems.length===0){if(so){const ui=safeItems(so).map(soIt=>({...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id));nf('Batch entry removed');}else{if(so&&it.item_idx!=null){const ui=safeItems(so).map((soIt,soIdx)=>{if(soIdx!==it.item_idx)return soIt;return{...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}});savSO({...so,items:_carryBatchPoMetadata(ui,bp),updated_at:new Date().toLocaleString()})}const newTotal=newItems.reduce((a,it2)=>a+it2.qty*(it2.unit_cost||0),0)+safeNum(bp.manual_cost);setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:newItems,total_cost:newTotal}:b));nf('Removed '+it.sku+' from batch');}}} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  <button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -15597,7 +15615,7 @@ export default function App(){
                     </div>
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:6}}>
-                  <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed',fontSize:11}} onClick={()=>{
+                  <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed',fontSize:11}} disabled={!!removingBatchId} onClick={()=>{
                     const updatedItems=bp.items.map((it,ii)=>{const itSzs=Object.entries(it.sizes||{}).filter(([,v])=>v>0);
                       const newSizes={};let newQty=0;
                       itSzs.forEach(([sz])=>{const el=document.getElementById('bq-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
@@ -15605,27 +15623,8 @@ export default function App(){
                       const costEl=document.getElementById('bq-edit-cost-'+bp.id+'-'+ii);
                       const newCost=costEl?Math.max(0,parseFloat(String(costEl.value).replace(/[$,\s]/g,''))||0):(it.unit_cost||0);
                       return{...it,sizes:newSizes,qty:newQty,unit_cost:newCost}}).filter(it=>it.qty>0);
-                    const so=sos.find(s=>s.id===bp.so_id);
-                    if(updatedItems.length===0){
-                      if(so){const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})}
-                      setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
-                    const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0)+safeNum(bp.manual_cost);
-                    // Sync the SO po_line sizes AND unit cost so the source PO on the sales order matches the queue edits.
-                    if(so){
-                      const sizeMapByIdx={};const costByIdx={};
-                      updatedItems.forEach(it=>{if(it.item_idx!=null){sizeMapByIdx[it.item_idx]=it.sizes;costByIdx[it.item_idx]=it.unit_cost}});
-                      const items2=safeItems(so).map((it,idx)=>{const pls=(it.po_lines||[]).map(pl=>{
-                        if(pl.batch_queue_id!==bp.id)return pl;
-                        const cleared={...pl};Object.keys(cleared).forEach(k=>{if(typeof cleared[k]==='number'&&!['unit_cost','_manual_cost'].includes(k))delete cleared[k]});
-                        const newSz=sizeMapByIdx[idx]||{};Object.entries(newSz).forEach(([sz,v])=>{if(v>0)cleared[sz]=v});
-                        if(costByIdx[idx]!=null)cleared.unit_cost=costByIdx[idx];
-                        return cleared;
-                      }).filter(pl=>{if(pl.batch_queue_id!==bp.id)return true;return Object.entries(pl).some(([k,v])=>typeof v==='number'&&v>0&&k!=='unit_cost'&&!k.startsWith('_'))});
-                      return{...it,po_lines:pls}});
-                      savSO({...so,items:_carryBatchPoMetadata(items2,bp),updated_at:new Date().toLocaleString()});
-                    }
-                    setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
-                    setEditingBatchId(null);nf('Batch PO updated');
+                    if(updatedItems.length===0){removeFromQueue(bp);return}
+                    saveQueueChange(bp,(current,so)=>planQueuedBatchEdit(current,so,updatedItems),'Batch PO updated');
                   }}>Save</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingBatchId(null)}>Cancel</button>
                 </div>
@@ -39699,7 +39698,10 @@ export default function App(){
             </div>;
           })()}
           <button type="button" data-tour-id="inv-po-add-custom-item" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
-            onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['S','M','L','XL','2XL'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Item</button>
+            onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['EA'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Item (each)</button>
+          <button type="button" style={{marginLeft:8,marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
+            onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['S','M','L','XL','2XL'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Garment (sizes)</button>
+          <div style={{fontSize:11,color:'#64748b',marginTop:6}}>For transfers and supplies, use EA (each) and enter the quantity, SKU, description, color, and cost per unit.</div>
         </div>
 
         {/* Items list with size inputs */}
@@ -39710,7 +39712,7 @@ export default function App(){
           const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
           const extras=[...new Set([...Object.keys(it.sizes||{}),...Object.keys(it.received||{}).filter(sz=>(it.received[sz]||0)>0)])].filter(sz=>!baseSizes.includes(sz));
           const allSizes=[...baseSizes,...extras].sort((a,b)=>szRank(a)-szRank(b));
-          const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
+          const addableSizes=['EA',...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
