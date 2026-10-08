@@ -10,9 +10,11 @@ Warehouse pulls capture garment cost in the same transaction as the stock decrem
 
 ## Release
 
-Apply `supabase/migrations/20261008142755_store_inventory_purchase_costs.sql` with this application release. It has not been applied by the implementation branch. It adds receipt and consumption audit tables, RLS and staff-only RPCs, plus costing triggers. Do not enable the new UI against a database without this migration. Existing historical stock usage is not automatically revalued as a current receipt.
+Production migrations were applied and verified on October 8, 2026: the existing `00237_pull_house_inventory.sql` and `00239_merge_product_inventory.sql` prerequisites, followed by `20261008142755_store_inventory_purchase_costs.sql`. Apply these in that order in other environments. It adds receipt and consumption audit tables, RLS and staff-only RPCs, plus costing triggers. Do not enable the new UI against a database without this migration. Existing historical stock usage is not automatically revalued as a current receipt.
 
 Validation:
+
+- `NODE_PATH=<isolated-pglite-install>/node_modules node scripts/pgtest/verify_store_inventory_flow.cjs` exercises the real paid-order conversion, reservation, consumption, and atomic inventory routines end to end: bulk receipts, separate logo lines, only consumed material cost, replay protection, and stale-save protection.
 
 - `NODE_PATH=<isolated-pglite-install>/node_modules node scripts/pgtest/verify_store_inventory_costs.cjs` executes the real migration and receipt/pull scenarios in a disposable Postgres runtime.
 - `src/__tests__/storeInventoryCosts.test.js` checks shared costing, mixed PO/stock orders, zero versus missing cost, duplicate hydration, and logo variants.
