@@ -79,4 +79,26 @@ describe('Expandable Showcase image comparison', () => {
     expect(button('Approve Image').disabled).toBe(true);
     expect(container.querySelectorAll('img')[1].getAttribute('src')).toBe('approved-hero.png');
   });
+  test('approval shows progress then closes when the server reports success', () => {
+    const onClose=jest.fn(), onAction=jest.fn();
+    const renderReview=(asset,busy=false,error='')=>act(()=>root.render(<ShowcaseImageReview item={{...item,asset}} busy={busy} error={error} onClose={onClose} onAction={onAction}/>));
+    renderReview(item.asset);
+    act(()=>button('Approve Image').click());
+    renderReview(item.asset,true);
+    expect(button('Approving…').disabled).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    renderReview({...item.asset,status:'approved'},true);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('failed approval stays open with a visible error and allows retry', () => {
+    const onClose=jest.fn(),onAction=jest.fn();
+    act(()=>root.render(<ShowcaseImageReview item={item} onClose={onClose} onAction={onAction}/>));
+    act(()=>button('Approve Image').click());
+    act(()=>root.render(<ShowcaseImageReview item={item} error="Catalog changed" onClose={onClose} onAction={onAction}/>));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(button('Approve Image').disabled).toBe(false);
+    expect(button('Approve Image').parentElement.querySelector('[role="alert"]').textContent).toBe('Catalog changed');
+  });
+
 });

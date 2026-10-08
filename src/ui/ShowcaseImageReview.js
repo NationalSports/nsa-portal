@@ -4,6 +4,7 @@ import ShowcaseProductImage from './ShowcaseProductImage';
 
 export default function ShowcaseImageReview({ item, busy, error, onClose, onAction, familyMode = false }) {
   const dialog = useRef(null);
+  const approvalRequested = useRef(false);
   const asset = item.asset || {};
   const [revising, setRevising] = useState(false);
   const [zoomBefore, setZoomBefore] = useState(false);
@@ -12,6 +13,10 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
   const afterUrl = asset.showcase_image_url || asset.approved_showcase_image_url;
   const details = (asset.showcase_image_url ? asset.qa_result?.detail_images : asset.approved_detail_images) || [];
   const canApprove = asset.status === 'review' && !!asset.showcase_image_url && !asset.needs_regeneration;
+
+  useEffect(() => {
+    if (approvalRequested.current && asset.status === 'approved') onClose();
+  }, [asset.status, onClose]);
 
   useEffect(() => {
     if (working) setRevising(false);
@@ -55,7 +60,6 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
         </div>
       </>}
       {asset.needs_regeneration && <p style={{ fontSize: 12, color: '#b45309' }}>Generate a new image to apply the saved decoration finish or review notes.</p>}
-      {(error || asset.error_details) && <p role="alert" style={{ fontSize: 12, color: '#b91c1c' }}>{error || asset.error_details}</p>}
       {!familyMode && item.kind !== 'bundle' && <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, fontSize: 12, fontWeight: 700 }}>
         Hero decoration
         <select value={asset.showcase_settings?.decoration_type || 'auto'} disabled={busy || working}
@@ -72,6 +76,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
       </label>}
       {familyMode && <p style={{fontSize:12,color:'#64748b'}}>This creates only the selected color and logo image. Other combinations stay unchanged. Approved images stay live until you approve replacements. A new pose and lighting image incurs an AI generation charge.</p>}
       <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0', zIndex: 2, display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+        {(error || asset.error_details) && <p role="alert" style={{ width: '100%', margin: 0, fontSize: 12, color: '#b91c1c' }}>{error || asset.error_details}</p>}
         {familyMode && !revising && <button type="button" className="btn btn-secondary" disabled={busy || working || !item.supplier_image_url} onClick={() => onAction('generate_image', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>{afterUrl ? 'Refresh this image' : 'Create this image'}</button>}
         {!familyMode && (working ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('cancel')}>Cancel generation</button>
           : <button type="button" className="btn btn-secondary" disabled={busy || !item.standard_image_url || item.kind === 'bundle'}
@@ -82,7 +87,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
           <button type="button" className="btn btn-secondary" disabled={busy || working} onClick={() => onAction('reject')}>Reject without retrying</button>
           <button type="button" className="btn btn-primary" disabled={busy || working || !notes.trim()} onClick={() => onAction(familyMode ? 'revise' : 'generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Create revised images</button>
         </>}
-        <button type="button" className="btn btn-primary" disabled={busy || !canApprove || revising} onClick={() => onAction('approve')}>{details.length ? 'Approve Hero & Details' : 'Approve Image'}</button>
+        <button type="button" className="btn btn-primary" disabled={busy || !canApprove || revising} onClick={() => { approvalRequested.current = true; onAction('approve'); }}>{asset.status === 'approved' ? 'Approved' : busy && approvalRequested.current ? 'Approving…' : details.length ? 'Approve Hero & Details' : 'Approve Image'}</button>
       </div>
     </div>
   </dialog>;

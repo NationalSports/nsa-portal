@@ -6549,6 +6549,10 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
         return result;
       }
       const data = await call(action, extra);
+      if (action === 'approve' && data.asset) {
+        setSnapshot(cur => cur ? {...cur, items: cur.items.map(item => item.webstore_product_id === extra.webstore_product_id ? {...item, asset: {...item.asset, ...data.asset}} : item)} : cur);
+        onFlash?.('Image approved');
+      }
       if (action === 'save_mode' || action === 'publish') {
         setSnapshot((cur) => cur ? { ...cur, store: { ...cur.store, ...(data.store || {}) } } : cur);
       }
