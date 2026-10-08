@@ -10,7 +10,8 @@ test('zero-stock heat-transfer twill needs inventory setup, not artwork approval
 test('embroidery requires its attached DST and mockup but no separate approval click', () => {
   const art = [{ id: 'logo', deco_type: 'embroidery', status: 'draft', files: [{ name: 'logo.dst', url: '/logo.dst' }] }];
   expect(methodSetupError(blank, [], art)).toBe('');
-  expect(methodSetupError({ ...blank, image_url: null }, [], art)).toMatch(/mockup/);
+  expect(methodSetupError({ ...blank, image_url: null }, [], art)).toBe('');
+  expect(methodSetupError({ ...blank, image_url: null, decorations: [] }, [], art)).toMatch(/mockup/);
   expect(methodSetupError(blank, [], [{ ...art[0], files: [{ url: 'preview.png' }] }])).toMatch(/dst/);
 });
 test('screen print remains blocked, including a legacy approved setup', () => {
@@ -21,4 +22,10 @@ test('inventory groups identical blank colors without summing the same physical 
   expect(rows).toHaveLength(2);
   expect(rows[0].inventoryChoices).toHaveLength(2);
   expect(rows[0].inventoryStock.vendor_on_hand).toBe(1079);
+});
+
+test('special application methods need instructions, without an art approval step', () => {
+  const sewn = { ...stock, application_method: 'sew_on' };
+  expect(methodSetupError(blank, [sewn], [])).toMatch(/application instructions/);
+  expect(methodSetupError(blank, [{ ...sewn, application_instructions: 'Stitch around the edge.' }], [])).toBe('');
 });

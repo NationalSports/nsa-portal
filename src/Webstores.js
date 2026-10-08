@@ -1,5 +1,5 @@
 import { garmentInventoryRows } from './allSchool/garmentInventory';
-import { methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
+import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
 import { artworkItemName, recipeKey } from './lib/artworkReport';
 import ShowcaseImageReview from './ui/ShowcaseImageReview';
 import * as SHOWCASE from './lib/showcaseSettings';
@@ -2767,20 +2767,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
     const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
     if (insertError || inserted?.length !== copies.length) { flash('Logo option not saved: ' + (insertError?.message || 'Could not create every color')); loadDetail(sel); return false; }
-    flash(`Added ${newLabel} as an inactive logo option`); loadDetail(sel); return inserted[0].id;
+    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return inserted[0].id;
   }, [sel, detail, flash, loadDetail]);
   const updateSchoolLogoOption = useCallback(async (item, fields) => {
     if (sel?.org_type !== 'all_school' || !item?.id) return false;
     const key = item.variant_group_id || item.id;
     const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
     if (!rows.length) return false;
-    if (fields.active === true && rows.some((row) => methodSetupError(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]))) {
-      flash('Complete the mockup and inventory or embroidery-file setup for each color before publishing.'); return false;
-    }
-    if (fields.active === true) for (const row of rows) {
-      const resolved = resolveSchoolSetup(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]);
-      const link = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
-      if (link.error || !link.data?.length) { flash('Could not link decoration inventory.'); return false; }
+    if (fields.active === true && rows.some((row) => !hasSchoolMockup(row))) {
+      flash('Save the logo mockup for each color first.'); return false;
     }
     const { data, error } = await supabase.from('webstore_products').update(fields).eq('store_id', sel.id).in('id', rows.map((row) => row.id)).select('id');
     if (error || data?.length !== rows.length) { flash('Logo choice not saved: ' + (error?.message || 'Could not update every color')); loadDetail(sel); return false; }
@@ -2973,6 +2968,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError(candidate, fields.decorations);
       if (blocked) { flash(blocked); return false; }
     }
+    if (sel?.org_type === 'all_school' && (fields.decorations || fields.image_url)) {
+      const candidate = { ...(detail?.catalog || []).find((row) => row.id === id), ...fields };
+      if (hasSchoolMockup(candidate)) fields = { ...fields, active: true };
+    }
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) fields = { ...fields, production_approved_at: null, production_approved_by: null };
     const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
     if (error) { flash('Error: ' + error.message); return false; }
@@ -2988,6 +2987,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // shopper questions attached to that storefront card.
     const groupFields = sharedCardFields(fields);
     if (sel?.org_type === 'all_school') ['school_program_ids', 'school_shared', 'personalization_template', 'takes_name', 'transfer_codes', 'transfer_code'].forEach((key) => { if (Object.prototype.hasOwnProperty.call(fields, key)) groupFields[key] = fields[key]; });
+    if (sel?.org_type === 'all_school' && fields.active === true && fields.decorations) groupFields.active = true;
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) { groupFields.production_approved_at = null; groupFields.production_approved_by = null; }
     if (sel?.org_type === 'all_school' && fields.decorations && fields.transfer_codes) { if (fields.image_url === null) groupFields.image_url = null; if (fields.image_back_url === null) groupFields.image_back_url = null; }
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
@@ -3146,7 +3146,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (item) {
         const prev = Array.isArray(item.decorations) ? item.decorations : [];
         const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
-        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { active: true, production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
       }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
@@ -3173,7 +3173,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // instead of leaving the old art stacked underneath (a back logo still leaves the
       // front intact, since it only clears its own side).
       const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations: next }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
@@ -3226,7 +3226,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     let n = added, fails = 0;
     for (const { id, decorations } of entries) {
-      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
@@ -3239,7 +3239,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === itemId), decorations);
       if (blocked) { flash(blocked); return false; }
     }
-    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
+    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
@@ -6771,7 +6771,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
     const designId = row?.variant_group_id || row?.id;
     if (!styleId || !designId) return false;
     const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
-    if (!colors.length || colors.some((color) => color.active === false || methodSetupError(color, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]))) return false;
+    if (!colors.length || colors.some((color) => color.active === false || !hasSchoolMockup(color))) return false;
     return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
   };
   const roster = detail?.roster || [];
@@ -12845,7 +12845,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. New choices stay hidden until reviewed and published.</p>}
+      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
