@@ -1,3 +1,4 @@
+/** @jest-environment node */
 import { nextSalesOrderId, salesOrderSequenceNumber } from '../lib/salesOrderIds';
 
 test('ignores test and date-like sales order IDs when advancing the sequence', () => {
