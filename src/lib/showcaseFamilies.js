@@ -36,8 +36,9 @@ function groupShowcaseItems(items = []) {
   }));
 }
 function needsFamilyGeneration(group) {
-  return group.eligible && !group.working && group.items.some(({ asset }) => !asset
+  return group.eligible && !group.working && group.items.some(({ asset, decorations }) => !asset
     || asset.family_version !== FAMILY_VERSION || asset.needs_regeneration
+    || (decorations || []).filter(d => d.side !== 'back' && d.placement !== 'full_back').length > (asset.qa_result?.detail_images || []).length
     || !['approved', 'review'].includes(asset.status) || asset.approval_status === 'rejected');
 }
 module.exports = { FAMILY_VERSION, baseStyle, familyKey, groupShowcaseItems, needsFamilyGeneration };

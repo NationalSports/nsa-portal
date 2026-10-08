@@ -51,7 +51,7 @@ function FamilyCard({ group, busy, act, onReview }) {
           <div style={{fontSize:11,color:'#64748b',margin:'8px 0'}}>{asset.status === 'review' ? 'Needs review' : asset.status || 'Missing'}</div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>onReview(item.webstore_product_id)}>Before / After</button>
-            {asset.status==='review' && <button className="btn btn-sm btn-primary" disabled={busy || asset.needs_regeneration} onClick={()=>act(item.webstore_product_id,'approve',{webstore_product_id:item.webstore_product_id})}>Approve</button>}
+            {asset.status==='review' && <button className="btn btn-sm btn-primary" disabled={busy || asset.needs_regeneration} onClick={()=>setReviewId(item.webstore_product_id)}>Review & Approve</button>}
             {asset.approved_showcase_image_url && <button className="btn btn-sm btn-secondary" disabled={busy || group.working} onClick={()=>act(item.webstore_product_id,'fallback',{webstore_product_id:item.webstore_product_id})}>Use Standard</button>}
           </div>
         </div>;

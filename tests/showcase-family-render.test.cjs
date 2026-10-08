@@ -65,3 +65,15 @@ test('protected-brand polygon margins recolor instead of leaving a green halo',a
   assert.deepEqual([...output.subarray(brand,brand+3)],[255,255,255]);
   assert.ok(output[fabric+2]>output[fabric+1], 'fabric next to the brand must be blue, not frozen green');
 });
+
+test('detail crop uses the exact finished pixels without inventing or upscaling texture',async()=>{
+  const {decorationDetail}=require('../netlify/functions/_showcaseFamilyRender');
+  const master=await prepareMaster((await fixture()).bytes,{protected_regions:[],logo_occluders:[]},600);
+  const output=recolor(master,[20,60,140]);
+  const bytes=await decorationDetail(output,master,[[.3,.3],[.7,.3],[.7,.7],[.3,.7]]);
+  const detail=await sharp(bytes).raw().toBuffer({resolveWithObject:true});
+  assert.equal(detail.info.width,324);
+  assert.equal(detail.info.height,324);
+  for(let y=0;y<324;y++) assert.deepEqual(detail.data.subarray(y*324*4,(y+1)*324*4),output.subarray(((138+y)*600+138)*4,((138+y)*600+462)*4));
+  await assert.rejects(decorationDetail(output,master,[[.3,.3],[.31,.3],[.31,.31],[.3,.31]]),/too small/);
+});

@@ -9,6 +9,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
   const [notes, setNotes] = useState(asset.showcase_settings?.revision_notes || '');
   const working = ['queued', 'generating'].includes(asset.status);
   const afterUrl = asset.showcase_image_url || asset.approved_showcase_image_url;
+  const details = (asset.showcase_image_url ? asset.qa_result?.detail_images : asset.approved_detail_images) || [];
   const canApprove = asset.status === 'review' && !!asset.showcase_image_url && !asset.needs_regeneration;
 
   useEffect(() => {
@@ -42,6 +43,12 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
         {panel('Before · Standard image', asset.standard_image_url || item.standard_image_url, 'Add a Standard product image first.', true)}
         {panel(asset.showcase_image_url ? 'After · New hero image' : 'After · Currently approved hero', afterUrl, asset.status === 'queued' ? 'Queued · waiting for generation to start…' : working ? 'Your new hero image is generating…' : 'Generate a hero image to compare it here.')}
       </div>
+      {details.length > 0 && <>
+        <p style={{fontSize:12}}>Review every decoration detail alongside the hero. These are rendered previews, not photographs of finished stitching. Approval publishes this image set together.</p>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(260px,100%),1fr))',gap:16}}>
+          {details.map((detail) => <div key={detail.id}>{panel(`${detail.label} · ${item.color || ''}`, detail.url, 'Detail unavailable')}</div>)}
+        </div>
+      </>}
       {asset.needs_regeneration && <p style={{ fontSize: 12, color: '#b45309' }}>Generate a new image to apply the saved decoration finish or review notes.</p>}
       {(error || asset.error_details) && <p role="alert" style={{ fontSize: 12, color: '#b91c1c' }}>{error || asset.error_details}</p>}
       {!familyMode && item.kind !== 'bundle' && <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, fontSize: 12, fontWeight: 700 }}>
@@ -64,7 +71,7 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
           : <button type="button" className="btn btn-secondary" disabled={busy || !item.standard_image_url || item.kind === 'bundle'}
             onClick={() => onAction('generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Generate New Image</button>)}
         {asset.status === 'review' && !!asset.showcase_image_url && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('reject')}>Reject</button>}
-        <button type="button" className="btn btn-primary" disabled={busy || !canApprove} onClick={() => onAction('approve')}>Approve Image</button>
+        <button type="button" className="btn btn-primary" disabled={busy || !canApprove} onClick={() => onAction('approve')}>{details.length ? 'Approve Hero & Details' : 'Approve Image'}</button>
       </div>
     </div>
   </dialog>;

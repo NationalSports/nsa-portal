@@ -140,18 +140,29 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     const mapping = await analyze({ product:job.inputs.source,decorations:[],images:[masterImage,...refs],
       analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Other images are supplier photos. Return JSON {supported:boolean,reason:string,protected_regions:[polygon],logo_occluders:[polygon],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. All output coordinates are normalized to the FIRST image. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Logo occluders tightly enclose drawstrings, zippers or folds that must lie IN FRONT of logos. Use detailed polygons, never broad bounding rectangles over fabric. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the corresponding original supplier photo; map them to the same physical location on the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. PLACEMENTS=${JSON.stringify(placements)}` });
     if (mapping.analysis.supported !== true) throw new Error(`Master needs review: ${mapping.analysis.reason || 'unreliable logo placement'}`);
-    const prepared = await render.prepareMaster(masterImage.bytes,mapping.analysis);
+    const prepared = await render.prepareMaster(masterImage.bytes,mapping.analysis,2048);
     const outputs = [];
     for (const member of members) {
       await current();
       const sampled = colors[urls.indexOf(member.supplier_image_url)];
       const output = render.recolor(prepared,sampled.rgb,sampled.grain);
-      for (const d of (member.decorations || []).filter((d)=>d.side!=='back' && d.placement!=='full_back')) {
+      const frontDecorations = (member.decorations || []).filter((d)=>d.side!=='back' && d.placement!=='full_back');
+      const detailQuads = [];
+      for (const d of frontDecorations) {
         const id = hash([d.x,d.y,d.w,d.placement]);
-        await render.applyArtwork(output,prepared,art.get(d.art_url).bytes,mapping.analysis.placements?.[id],cleanDecorations([d],member.settings,job.inputs.store_art,member.color)[0].decoration_type,{ fitSquare:true });
+        detailQuads.push(await render.applyArtwork(output,prepared,art.get(d.art_url).bytes,mapping.analysis.placements?.[id],cleanDecorations([d],member.settings,job.inputs.store_art,member.color)[0].decoration_type,{ fitSquare:true }));
+      }
+      const details = [];
+      for (const [index,d] of frontDecorations.entries()) {
+        await current();
+        const bytes = await render.decorationDetail(output,prepared,detailQuads[index]);
+        details.push({ id:`logo-${index+1}`, url:await upload(bytes,`${member.webstore_product_id}-detail-${index+1}`),
+          label:`Decoration detail${frontDecorations.length > 1 ? ` ${index+1}` : ''}`, color:member.color,
+          finish:cleanDecorations([d],member.settings,job.inputs.store_art,member.color)[0].decoration_type,
+          rendered_preview:true });
       }
       const url = await upload(await render.encode(output,prepared),member.webstore_product_id);
-      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,patches:sampled.patches,pixels:sampled.pixels},
+      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ detail_images:details,human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,patches:sampled.patches,pixels:sampled.pixels},
         shared_master_url:master.url,exact_artwork_verified:false,protected_branding_verified:false,
         checklist:['Compare color and fabric texture with supplier photo','Check manufacturer marks across colors','Check logo size, texture and drawstring overlap'] } });
     }

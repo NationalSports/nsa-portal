@@ -52,8 +52,11 @@ function polygons(value) {
   for (const p of value) if (!Array.isArray(p) || p.length < 3 || p.length > 30 || p.some((xy) => !Array.isArray(xy) || xy.length !== 2 || xy.some((v) => !Number.isFinite(v) || v < 0 || v > 1))) throw new Error('Invalid garment region coordinates');
   return value;
 }
-async function prepareMaster(bytes, layout) {
-  const { data, info } = await pixels(bytes);
+async function prepareMaster(bytes, layout, resolution) {
+  // Render artwork from the original file at a larger working resolution. This
+  // adds no inferred stitching or photographic evidence to the garment master.
+  const source = resolution ? await sharp(bytes, { limitInputPixels: 40000000 }).rotate().resize({ width: resolution, height: resolution, fit: 'inside' }).png().toBuffer() : bytes;
+  const { data, info } = await pixels(source);
   const protectedRegions = polygons(layout.protected_regions);
   const occluders = polygons(layout.logo_occluders);
   const mask = new Float32Array(info.width * info.height);
@@ -149,6 +152,21 @@ async function applyArtwork(output, master, bytes, quad, finish, options = {}) {
     applied++;
   }
   if (applied < 30) throw new Error('Artwork did not land on the garment; check its placement');
+  return quad;
 }
 async function encode(output, master) { return sharp(output,{ raw: master.info }).png().toBuffer(); }
-module.exports = { validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+async function decorationDetail(output, master, quad) {
+  validateQuad(quad);
+  const { width, height } = master.info;
+  const xs = quad.map(([x]) => x * width), ys = quad.map(([,y]) => y * height);
+  const span = Math.max(Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys));
+  const size = Math.min(width, height, Math.ceil(span * 1.35));
+  if (size < 160) throw new Error('Logo detail is too small for customer review');
+  const left = Math.round(clamp((Math.min(...xs)+Math.max(...xs)-size)/2,0,width-size));
+  const top = Math.round(clamp((Math.min(...ys)+Math.max(...ys)-size)/2,0,height-size));
+  // Exact pixels from the finished hero retain fabric, color, folds and overlap.
+  // Never upscale a crop or invent additional production texture.
+  return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
+    .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
+}
+module.exports = { decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };

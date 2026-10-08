@@ -57,3 +57,23 @@ masters have immutable storage paths.
 Before merging, review a real provider-generated family in the deploy preview.
 Local testing uses injected provider responses; it does not spend live provider
 credits or certify Kimi's garment mapping.
+
+## Decoration details
+
+Each front decoration gets a square detail crop for each color/design row.
+The working canvas is 2048px (the master is resampled, not AI-regenerated), and
+original artwork is composited at that resolution. Detail crops reuse those exact
+finished pixels, with context around the mapped artwork and no crop upscaling.
+They add zero OpenAI image edits, but do add rendering and storage costs.
+Small placements that cannot yield a useful 160px crop fail for staff correction.
+This is a rendered preview, not evidence of real twill weave, stitch construction
+or production depth. Real finished-decoration photographs are needed to verify
+those properties. The storefront labels detail previews accordingly.
+
+Candidate detail metadata is stored in the same atomic job result as the hero
+(`qa_result.detail_images`). Approval copies it to `approved_detail_images` in the
+same guarded update as the approved hero URL. Rejection and regeneration preserve
+the old set; Use Standard clears both. Apply `showcase_decoration_details` before
+deploying this code. Existing approvals have no details until regeneration and
+review. Product detail controls follow the selected logo/color and never use an
+unapproved candidate; staff reviews the full image set in the comparison dialog.

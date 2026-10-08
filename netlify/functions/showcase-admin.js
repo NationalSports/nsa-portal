@@ -28,6 +28,7 @@ function publicAsset(row) {
     standard_image_url: row.standard_image_url,
     showcase_image_url: row.showcase_image_url,
     approved_showcase_image_url: row.approved_showcase_image_url,
+    approved_detail_images: row.approved_detail_images || [],
     status: row.status === 'canceled' && !row.generation_request_id && !row.showcase_image_url && !row.approved_showcase_image_url ? 'missing' : row.status,
     approval_status: row.approval_status,
     fallback_to_standard: row.fallback_to_standard !== false,
@@ -217,12 +218,14 @@ exports.handler = async (event) => {
       if (action === 'preview') {
         const mode = normalizeMode(body.mode ?? store.presentation_mode);
         const assets = {};
+        const details = {};
         snapshot.items.forEach(({ webstore_product_id, asset }) => {
           if (asset.approved_showcase_image_url) {
             assets[webstore_product_id] = asset.approved_showcase_image_url;
+            details[webstore_product_id] = asset.approved_detail_images || [];
           }
         });
-        return reply(200, { ok: true, mode, preview: true, assets });
+        return reply(200, { ok: true, mode, preview: true, assets, details });
       }
       return reply(200, { ok: true, ...snapshot });
     }
@@ -417,6 +420,7 @@ exports.handler = async (event) => {
           protected_branding_verified: true,
         },
         approved_showcase_image_url: ready.showcase_image_url,
+        approved_detail_images: ready.qa_result?.detail_images || [],
         error_details: null,
       }, ready.updated_at);
       return reply(200, { ok: true, asset: publicAsset(current) });
@@ -445,7 +449,7 @@ exports.handler = async (event) => {
           exact_artwork_verified: false,
           protected_branding_verified: false,
         },
-        ...(action === 'fallback' ? { approved_showcase_image_url: null } : {}),
+        ...(action === 'fallback' ? { approved_showcase_image_url: null, approved_detail_images: [] } : {}),
       },existing.updated_at);
       return reply(200, { ok: true, asset: publicAsset(current) });
     }
