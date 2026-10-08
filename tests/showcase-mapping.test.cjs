@@ -31,3 +31,19 @@ test('hood-down athletic pose is fit aware and invalidates the old cached pose s
  const old=require('crypto').createHash('sha256').update(JSON.stringify(['showcase-family-v1','p','url'])).digest('hex');
  assert.notEqual(input.master_signature,old);
 });
+test('a false construction rejection is rechecked with product identity and all original references',async()=>{
+ const requests=[];const images=[{bytes:Buffer.from('master')},{bytes:Buffer.from('supplier')}];
+ const result=await validatedMapping(async request=>{requests.push(request);return requests.length===1?{analysis:{supported:false,reason:'men/unisex with no sleeve logo'}}:good();},{images,product:{name:"Nike Women's Sleeve Swoosh Hoodie",supplier_sku:'NKFD9889-Black'},analysisPrompt:'Map'}, {a:{}},async()=>{});
+ assert.equal(requests.length,2);assert.equal(requests[1].images,images);
+ assert.match(requests[0].analysisPrompt,/"fit":"women"/);
+ assert.match(requests[1].analysisPrompt,/CORRECTION REQUIRED/);
+ assert.match(requests[1].analysisPrompt,/genuine cut, pocket, seam or branding mismatch/);
+ assert.equal(result.analysis.supported,true);
+});
+test('confirmed construction rejection remains blocked and exposes no raw internal model narrative',async()=>{
+ let calls=0;
+ await assert.rejects(validatedMapping(async()=>{calls++;return {analysis:{supported:false,reason:'green hoodie PLACEMENTS wrong pocket'}};},{analysisPrompt:'Map',product:{name:'Hoodie'}},{},async()=>{}),error=>{
+   assert.match(error.message,/New base garment/);assert.doesNotMatch(error.message,/green|PLACEMENTS|wrong pocket/);return true;
+ });
+ assert.equal(calls,2);
+});
