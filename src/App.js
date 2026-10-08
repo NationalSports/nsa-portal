@@ -11,6 +11,8 @@ import { isOutsideArtJob } from './lib/outsideArt';
 import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import { invoiceFollowUpDate } from './lib/invoiceFollowUp';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
+import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
+import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
@@ -1298,10 +1300,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
   const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
   const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
-  // A garment linked to another garment's mockup prints a one-line reference instead of
-  // repeating the image; the source garment prints it once with an "also used by" caption.
+  // The garment whose mockup a linked garment borrows (null when it has its own).
   const _linkSrcOf=g=>resolveMockLink(allArtFiles,mockSkuOf(g),g.color);
-  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,mockSkuOf(g),g.color).filter(k=>itemDetails.some(x=>garmentMockKey(x)===k));
   const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
     'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
     'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
@@ -1355,11 +1355,16 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
     return a.map(cl=>{const sw=_swatchFor(cl);
       return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
-  // Build one HTML section per item: all info tables + mockup image(s) together
-  const itemSectionHtmls=[];
+  // Collect each garment's sheet parts, then print garments that share a decoration (same
+  // design, color way, placement, numbers/names setup — lib/productionGroups) together: one
+  // section per group with its mockups and logo detail kept on the same page as the size
+  // table and spec, so the art never lands on a different page from the item it belongs to.
+  const itemParts=[];
   itemDetails.forEach(gi=>{
     const it=safeItems(so)[gi.item_idx];
     if(!it)return;
+    const p={gi,key:productionDecoKey(gi,it,allArtFiles),summary:productionDecoSummary(gi,it,safeArt(so)),specHtml:'',listsHtml:'',warnHtml:''};
+    itemParts.push(p);
     const itemArtDecos=jobItemDecosOfKind(gi,it,'art');
     const itemNumDecos=jobItemDecosOfKind(gi,it,'numbers');
     const itemNameDecos=jobItemDecosOfKind(gi,it,'names');
@@ -1368,13 +1373,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey in two
     // colors) with numbers on only one of them; a sku match leaks the roster onto both.
     const ndData=numbersData.find(n=>n.item_idx===gi.item_idx);
-    const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
-    let sHtml='';
-    // Size table
-    const hdrs=['',...itemSizes,'Total'];
-    const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
-    ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
-    sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
+    p.rowTotal=rowTotal;
+    const _gLbl=gi.sku+(gi.color?' ('+gi.color+')':'');
     // Decoration spec
     if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0||itemTwillDecos.length>0){
       const specRows=[];
@@ -1410,7 +1410,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
         const tw=TWA[d.dtf_size||0]||TWA[0];
         specRows.push({cells:[d.position||'—',(tw?tw.label:'Tackle Twill')+(d.reversible?' (Reversible)':''),'Tackle Twill','—','—']});
       });
-      sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
+      p.specHtml=_tHtml('Decoration Spec',['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
     }
     // Numbers list
     if(ndData?.roster&&Object.keys(ndData.roster).length>0){
@@ -1418,7 +1418,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
         if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
       });
-      if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
+      if(numRows.length>0)p.listsHtml+=_tHtml('Number List — '+_gLbl,['Size','Numbers'],['left','left'],numRows);
     }
     // Names list
     if(ndData?.names&&Object.keys(ndData.names).length>0){
@@ -1426,10 +1426,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
         if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
       });
-      if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
+      if(nameRows.length>0)p.listsHtml+=_tHtml('Names List — '+_gLbl,['Size','Names'],['left','left'],nameRows);
     }
-    // Mockup image(s) for this item immediately after its tables — all locations
-    // (front + back arts, numbers/names) side by side
     const _giSrc=_linkSrcOf(gi);
     // Back-proof gate. A garment running numbers or names has its own mockup slot for that side,
     // and the sheet prints it whenever one exists — but nothing ever flagged its ABSENCE, so
@@ -1441,31 +1439,66 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       const _missNn=[];
       if(itemNumDecos.length>0&&_nn.numbers===0)_missNn.push('numbers');
       if(itemNameDecos.length>0&&_nn.names===0)_missNn.push('names');
-      if(_missNn.length>0)sHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
+      if(_missNn.length>0)p.warnHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
     }
-    if(_giSrc){
-      // Linked garment: reference the source garment's mockup instead of repeating it.
-      sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
-      itemSectionHtmls.push(sHtml);
-      return;
-    }
-    const _giDeps=_linkDepsOf(gi);
-    const itemMockUrls=_urlsFor(collectItemMocks(gi));
-    if(itemMockUrls.length>0){
-      const _mh=itemMockUrls.length>1?300:380;
-      const _mw=itemMockUrls.length>1?'48%':'100%';
-      const _depsCap=_giDeps.length?'<div style="text-align:center;font-size:10px;font-weight:700;color:#3730a3;margin-top:6px">🔗 Mockup also used by: '+_giDeps.map(k=>k.split('|')[0]).join(', ')+'</div>':'';
-      sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
-        +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
-        +'</div>'+_depsCap;
-    } else if(gi.image_url&&_isImgUrl(gi.image_url)){
-      sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
-    }
-    // Logo detail: the transparent logo PNG for each design / color way on this garment, printed on
-    // the garment color so the floor can read inks and small type at full size.
-    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color,l.cwLabel,l.side)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
-    if(_logoTiles.length>0)sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'+_logoTiles.join('')+'</div>';
-    itemSectionHtmls.push(sHtml);
+    // A garment linked to another garment's mockup resolves to the SOURCE garment's files
+    // (_prodJobItemMocks), so it prints that image on its own group's page — no page-flipping
+    // to a "Same mockup as" reference.
+    p.linkSrc=_giSrc;
+    p.mockUrls=_urlsFor(collectItemMocks(gi));
+    p.fallbackImg=!p.mockUrls.length&&gi.image_url&&_isImgUrl(gi.image_url)?gi.image_url:'';
+    // Logo detail: the transparent logo PNG for each design / color way, painted on the garment
+    // color so the floor can read inks and small type.
+    p.logos=garmentLogoDetails(gi,so,allArtFiles).map(l=>({url:l.url,bg:logoDetailBg(gi.color,l.cwLabel,l.side),
+      label:'Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')}));
+  });
+  const _decoGroups=groupByDecoration(itemParts,p=>p.key);
+  const _imgBox=(src,h,bg)=>'<div style="border:1px solid #e2e8f0;border-radius:6px;background:'+(bg||'#fff')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:'+h+'px;display:flex;align-items:center;justify-content:center;padding:6px"><img src="'+src+'" style="max-height:'+(h-12)+'px;max-width:100%;object-fit:contain"/></div>';
+  const _cap=t=>'<div style="font-size:9px;font-weight:700;color:#334155;margin:3px 0 8px;line-height:1.3">'+t+'</div>';
+  const itemSectionHtmls=_decoGroups.map((g,gIdx)=>{
+    const ps=g.items;const multi=ps.length>1;
+    const _who=list=>multi?'For: '+list.map(p=>_upEsc(p.gi.sku+(p.gi.color?' ('+p.gi.color+')':''))).join(', '):'';
+    const units=ps.reduce((a,p)=>a+p.rowTotal,0);
+    // Size table — one row per garment, a group total when several garments share the run.
+    const gSizes=allSizes.filter(sz=>ps.some(p=>p.gi.sizes[sz]>0));
+    const hdrs=['Garment',...gSizes,'Total'];
+    const rows=ps.map(p=>({cells:['<strong>'+_upEsc(p.gi.sku)+'</strong> '+_upEsc(p.gi.name||'')+(p.gi.color?' <span style="color:#475569">('+_upEsc(p.gi.color)+')</span>':''),
+      ...gSizes.map(sz=>p.gi.sizes[sz]||''),{value:'<strong>'+p.rowTotal+'</strong>'}]}));
+    if(multi)rows.push({cells:['<strong>Group total</strong>',...gSizes.map(sz=>'<strong>'+(ps.reduce((a,p)=>a+(p.gi.sizes[sz]||0),0)||'')+'</strong>'),{value:'<strong>'+units+'</strong>'}]});
+    const sizeHtml=_tHtml('',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),rows);
+    // Every distinct mockup / logo once, naming the garments it covers.
+    const mocks=[];ps.forEach(p=>(p.mockUrls.length?p.mockUrls:p.fallbackImg?[p.fallbackImg]:[]).forEach(u=>{let m=mocks.find(x=>x.u===u);if(!m){m={u,ps:[]};mocks.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
+    const logos=[];ps.forEach(p=>p.logos.forEach(l=>{const k=l.url+'|'+l.bg;let m=logos.find(x=>x.k===k);if(!m){m={k,l,ps:[]};logos.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
+    const nImg=mocks.length+logos.length;
+    // Art runs full width above the tables, as large as the page allows: the rest of the
+    // section's height is estimated (rows of the size table and spec, warnings, sign-offs) and
+    // the images get what's left. The first section shares page 1 with the sheet header and
+    // barcode, so it gets less room. Images stay together with the tables either way.
+    const _rowsIn=h=>(String(h).match(/<tr>/g)||[]).length;
+    const lists=ps.map(p=>p.listsHtml).join('');
+    const restH=60+_rowsIn(sizeHtml)*22+(ps[0].specHtml?30+_rowsIn(ps[0].specHtml)*28:0)
+      +ps.filter(p=>p.warnHtml).length*60+50+Math.min(260,_rowsIn(lists)*22);
+    const roomH=(gIdx===0?640:900)-restH;
+    // Pick the column count that gives the largest image that still fits; a cell is never
+    // taller than it is wide (proofs are mostly landscape), and never below a readable floor.
+    let cols=1,mh=0;
+    for(let c=1;c<=Math.max(nImg,1);c++){const rowsN=Math.ceil(nImg/c)||1;const colW=(740-10*(c-1))/c;
+      const h=Math.min(560,colW,roomH/rowsN-30);if(h>mh+1){mh=h;cols=c}}
+    mh=Math.round(Math.max(140,mh));
+    const artCol=nImg?'<div style="display:grid;grid-template-columns:repeat('+cols+',minmax(0,1fr));gap:0 10px">'
+      +mocks.map(m=>'<div>'+_imgBox(m.u,mh)+_cap((m.ps.some(p=>p.linkSrc)?'🔗 Shared mockup':'Mockup')+(multi?' · '+_who(m.ps):''))+'</div>').join('')
+      +logos.map(m=>'<div>'+_imgBox(m.l.url,mh,m.l.bg)+_cap(m.l.label+(multi?' · '+_who(m.ps):''))+'</div>').join('')
+      +'</div>'
+      :'<div style="padding:12px;border:2px dashed #fecaca;border-radius:6px;color:#b91c1c;font-size:11px;font-weight:700;text-align:center">No mockup on file for this decoration</div>';
+    const head='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:3px solid #1e3a5f;padding-bottom:4px;margin-bottom:8px">'
+      +'<div><div style="font-size:9px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:#64748b">'+(_decoGroups.length>1?'Decoration '+(gIdx+1)+' of '+_decoGroups.length+' · ':'')+ps.length+' garment'+(multi?'s':'')+(multi?' · same logo &amp; colors':'')+'</div>'
+      +'<div style="font-size:15px;font-weight:800;color:#1e3a5f">'+_upEsc(g.items[0].summary||'Decoration')+'</div></div>'
+      +'<div style="font-size:16px;font-weight:800;color:#1e3a5f;white-space:nowrap">'+units+' units</div></div>';
+    const signoff='<div style="display:flex;gap:16px;margin-top:10px;page-break-inside:avoid">'+['Decorated by','QC by','Date'].map(r=>
+      '<div style="flex:1"><div style="border-bottom:1.5px solid #1e293b;height:22px"></div><div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#64748b;margin-top:3px">'+r+'</div></div>').join('')+'</div>';
+    const top='<div style="page-break-inside:avoid;break-inside:avoid">'+head
+      +artCol+sizeHtml+ps.map(p=>p.warnHtml).join('')+ps[0].specHtml+signoff+'</div>';
+    return top+ps.map(p=>p.listsHtml).join('');
   });
   // Generic mockups not tied to a specific item
   const _pdfGenericUrls=_urlsFor(genericMockupFiles);
@@ -1489,6 +1522,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
   // The <style> override strips the yellow notes-box styling so item sections render cleanly.
   const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
+  // One page per decoration group (a long roster may run onto the next page).
   const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
     '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
   ).join('');
@@ -2027,7 +2061,7 @@ export { dashArtShots };
 // Exported for its unit test — the Work Order sheet is what the floor decorates from, so
 // which garment rosters reach it (SO-2361: a second numbered line was being dropped) is
 // pinned down directly rather than only through the renderer.
-export { buildWorkOrderOpts };
+export { buildWorkOrderOpts, buildProdSheetOpts };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
@@ -14528,7 +14562,7 @@ export default function App(){
         const allArtFiles=_prodJobArtFiles(j,so);
         // Build per-location decoration details — only decorations belonging to THIS job's deco_type
         const machine=MACHINES.find(m=>m.id===j.assigned_machine);
-        const itemDetails=(j.items||[]).map(gi=>{
+        const itemDetails=(j.items||[]).map((gi,jobRowIndex)=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};const fulSizes={};
           Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
@@ -14539,7 +14573,7 @@ export default function App(){
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
           // deco_idx/deco_idxs must ride along — the per-item spec scoping (jobItemDecosOfKind)
           // reads them off these rows; dropping them silently unscopes the job cards.
-          return{item_idx:gi.item_idx,deco_idx:gi.deco_idx,deco_idxs:gi.deco_idxs,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          return{jobRowIndex,item_idx:gi.item_idx,deco_idx:gi.deco_idx,deco_idxs:gi.deco_idxs,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=orderedSizeKeys(itemDetails.flatMap(it=>Object.keys(it.sizes||{})));
         // Parse colors for display — use job's deco_type for labels
@@ -14558,24 +14592,6 @@ export default function App(){
           'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
           'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
         const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        // Numbers & Names roster data — extract from item decorations.
-        // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
-        const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
-          const it=safeItems(so)[gi.item_idx];if(!it)return;
-          // Only decorations THIS job produces — an art job sharing the line with a numbers job
-          // must not show the numbers job's roster on its cards.
-          const numDecos=jobItemDecosOfKind(gi,it,'numbers');
-          const nameDecos=jobItemDecosOfKind(gi,it,'names');
-          const nd=numDecos[0];const nameD=nameDecos[0];
-          if(!nd&&!nameD)return;
-          const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
-          const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
-          // Split rows show only their share of the LIVE SO list — SO-2257 (see jobItemRoster).
-          const roster=nd?jobItemRoster(safeItems(so),safeJobs(so),j,gi,'numbers'):null;
-          const names=nameD?.names?jobItemRoster(safeItems(so),safeJobs(so),j,gi,'names'):null;
-          results.push({item_idx:gi.item_idx,sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
-        });return results})();
-
         // Print Production PDF — delegates to the shared buildProdSheetOpts (top of file) so
         // this modal and the SO editor's Jobs-tab download button always emit the same sheet.
         const _buildProdPdfOpts=()=>buildProdSheetOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS});
@@ -14617,13 +14633,13 @@ export default function App(){
         const printWorkOrder=()=>printRawDoc(_buildWO(),j.id+' — Work Order');
         const downloadWorkOrder=async()=>{setProdPdfDownloading(true);try{await downloadRawDoc(_buildWO(),j.id+'-work-order')}finally{setProdPdfDownloading(false)}};
 
-        return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,maxHeight:'92vh',overflow:'auto'}}>
+        return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal prod-job-modal" onClick={e=>e.stopPropagation()}>
           <div className="modal-header" style={{background:'#1e293b',color:'white'}}>
             <div>
               <h2 style={{color:'white',margin:0}}>{j.id} — {j.art_name}</h2>
               <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{j.customer} · {so.id} · {j.total_units} units</div>
             </div>
-            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <div className="prod-job-tools">
               <button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'5px 12px'}} onClick={printProdPDF}>Print PDF</button>
               <button className="btn btn-sm" style={{fontSize:11,background:'#0284c7',color:'white',border:'none',padding:'5px 12px'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
               <button className="btn btn-sm" style={{fontSize:11,background:'#192853',color:'white',border:'none',padding:'5px 12px'}} onClick={printWorkOrder} title="Print the new National Team Shop work order layout">🧾 Work Order</button>
@@ -14632,208 +14648,31 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* Generic mockup hero — only when generic (non-SKU-specific) mockups exist */}
-            {(()=>{const dispMocks=genericMockupFiles.map((f,i)=>({f,i,u:typeof f==='string'?f:(f?.url||'')})).filter(({u,f})=>_isImgUrl(u,f)||_isPdfUrl(u,f));
-              if(dispMocks.length===0)return null;
-              return<div style={{background:'#0f172a',padding:20,borderBottom:'2px solid #334155',position:'relative'}}>
-                <div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
-                  {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?_cloudinaryDisplay(u):pdfThumb;
-                    return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?340:220}}
-                      onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-                      <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
-                    </div>})}
-                </div>
-                <div style={{textAlign:'right',marginTop:8}}>
-                  <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
-                    onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
-                </div>
-              </div>})()}
-
-            {/* Generic production/mockup file chips — only shows files not tied to a specific SKU */}
-            {(prodFiles.length>0||genericMockupFiles.length>0)&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
-                  <span style={{fontSize:14}}>📁</span>
-                  <div><div style={{fontSize:11,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
-                </div>)}
-                {genericMockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
-                  <span style={{fontSize:14}}>🖼️</span>
-                  <div><div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
-                </div>)}
-              </div>
-            </div>}
-
-            {/* Embroidery names file (digitized names kept in Google Drive) */}
-            {j.deco_type==='embroidery'&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
-              <div style={{fontSize:13,fontWeight:800,color:'#6d28d9',marginBottom:6}}>🧵 Embroidery Names File</div>
-              {j.emb_names_link?<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#7c3aed',color:'white',borderRadius:6,fontSize:12,fontWeight:700,textDecoration:'none'}}>📁 Open Digitized Names (Google Drive) ↗</a>:<div style={{fontSize:12,color:'#94a3b8'}}>No names file linked yet.</div>}
-              <input type="text" className="form-input" placeholder="Paste Google Drive link to digitized name files" defaultValue={j.emb_names_link||''}
-                style={{fontSize:11,padding:'4px 8px',width:'100%',marginTop:8}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
-                onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;updateJobField(j,{emb_names_link:v});setProdJobModal(pm=>pm?{...pm,emb_names_link:v}:pm);nf(v?'Names file link saved':'Names file link cleared')}}/>
-            </div>}
-
-            {/* Dual-Run Order — art + numbers */}
-            {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
-              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Run Order</div>
-              {!j.run_order?<div style={{textAlign:'center',padding:16}}>
-                <div style={{fontSize:13,color:'#6d28d9',fontWeight:700,marginBottom:12}}>This job has both Artwork and Numbers. Select which to run first:</div>
-                <div style={{display:'flex',gap:12,justifyContent:'center'}}>
-                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#7c3aed',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
-                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#22c55e',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
-                </div>
-              </div>:(()=>{const rl=getRunLabels(j);return<div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:12}}>
-                  <div style={{padding:16,borderRadius:10,background:j.run1_done?'#dcfce7':'#eff6ff',border:'2px solid '+(j.run1_done?'#86efac':'#3b82f6')}}>
-                    <div style={{fontSize:11,fontWeight:700,color:j.run1_done?'#166534':'#1e40af',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 1</div>
-                    <div style={{fontSize:20,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{rl.run1}</div>
-                    <div style={{fontSize:12,fontWeight:700,color:j.run1_done?'#166534':'#3b82f6',marginTop:4}}>{j.run1_done?'Completed':'In Progress'}</div>
-                    {!j.run1_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
-                  </div>
-                  <div style={{padding:16,borderRadius:10,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'2px solid '+(j.run2_done?'#86efac':j.run1_done?'#3b82f6':'#e2e8f0')}}>
-                    <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
-                    <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
-                    <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
-                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});moveJobStatus(j,'completed')}}>Mark {rl.run2} Done</button>}
-                  </div>
-                </div>
-                {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
-              </div>})()}
-            </div>}
-
-            {/* Compact job-level info: machine + assigned */}
-            {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
-              {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>
-                <div style={{fontSize:9,fontWeight:700,color:'#c2410c',textTransform:'uppercase',letterSpacing:1}}>Machine</div>
-                <div style={{fontSize:14,fontWeight:800,color:'#9a3412'}}>{machine.name}</div></div>}
-              {j.assigned_to&&<div style={{background:'#f5f3ff',borderRadius:6,padding:'6px 12px'}}>
-                <div style={{fontSize:9,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:1}}>Assigned To</div>
-                <div style={{fontSize:14,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
-            </div>}
-
-            {/* Per-item production cards — mockup, sizes, numbers/names, decoration spec, files */}
-            {(()=>{
-              // Linked garments reference their source garment's mockup instead of repeating it.
-              const _linkSrcOf=g=>resolveMockLink(allArtFiles,mockSkuOf(g),g.color);
-              const _linkDepsOf=g=>mockLinkDependents(allArtFiles,mockSkuOf(g),g.color).filter(k=>itemDetails.some(x=>garmentMockKey(x)===k));
-              return<div style={{padding:20,background:'#f8fafc'}}>
-                {itemDetails.map((gi,gii)=>{
-                  const it=safeItems(so)[gi.item_idx];
-                  if(!it)return null;
-                  const _giSrc=_linkSrcOf(gi);
-                  const _giDeps=_linkDepsOf(gi);
-                  const itemMocks=_giSrc?[]:collectItemMocks(gi);
-                  // Spec/roster/files show only what THIS job produces (mockups stay shared — they
-                  // depict the whole garment, which the numbers crew needs for placement).
-                  const artDecos=jobItemDecosOfKind(gi,it,'art');
-                  const numDecos=jobItemDecosOfKind(gi,it,'numbers');
-                  const nameDecos=jobItemDecosOfKind(gi,it,'names');
-                  const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-                  const itemSizes=SZ_ORD.filter(sz=>gi.sizes[sz]>0);
-                  // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey
-                  // in two colors) with numbers on only one of them; a sku match leaks the roster onto both.
-                  const ndData=numbersData.find(n=>n.item_idx===gi.item_idx);
-                  const itemProdFiles=[];
-                  artDecos.forEach(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);(artF?.prod_files||[]).forEach(f=>{itemProdFiles.push({f,artName:artF?.name||''})})});
-                  return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
-                    {/* Item header */}
-                    <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
-                      {gi.image_url?<img src={gi.image_url} alt="" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',flexShrink:0}}/>
-                      :<div style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8'}}>👕</div>}
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                          <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{gi.sku}</span>
-                          <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
-                          {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
-                          {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
-                        </div>
-                      </div>
-                      <div style={{textAlign:'right',flexShrink:0}}>
-                        <div style={{fontWeight:800,fontSize:20,color:'#1e40af'}}>{rowTotal}</div>
-                        <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase',letterSpacing:1}}>units</div>
-                      </div>
-                    </div>
-                    {/* Mockup display */}
-                    {_giSrc?<div style={{padding:'8px 12px',background:'#eef2ff',borderBottom:'1px solid #c7d2fe',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>🔗 Same mockup as {_giSrc.split('|')[0]}</div>
-                    :itemMocks.length>0&&<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
-                      {_giDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',textAlign:'center',marginBottom:6}}>🔗 Mockup also used by {_giDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                      <div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center'}}>
-                      {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?_cloudinaryDisplay(u):isPdf?_cloudinaryPdfThumb(u):null;
-                        return src?<img key={fi} src={src} alt="Mockup" style={{height:itemMocks.length>1?320:420,maxWidth:itemMocks.length>1?'48%':'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
-                        :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
-                      })}
-                      </div>
-                    </div>}
-                    {/* Logo detail — the logo alone on the garment color, for inks and small type */}
-                    {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
-                      return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
-                        {_lds.map(l=><div key={l.url+'|'+l.side+'|'+l.artName} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
-                          <div style={{background:logoDetailBg(gi.color,l.cwLabel,l.side),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
-                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.side?' · Side '+l.side:''}{l.cwLabel?' · Artwork version: '+l.cwLabel:''}{!logoDetailBackground(gi.color,l.cwLabel,l.side).known?' · Color unknown — neutral preview':''}</div>
-                        </div>)}
-                      </div>})()}
-                    {/* Size grid */}
-                    {itemSizes.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',overflowX:'auto'}}>
-                      <table style={{fontSize:12,minWidth:300,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
-                        <th style={{textAlign:'left',padding:'5px 8px',fontSize:10,fontWeight:700,color:'#555'}}>SIZE</th>
-                        {itemSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:700,minWidth:40}}>{sz}</th>)}
-                        <th style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
-                      </tr></thead><tbody>
-                        <tr>{['QTY',...itemSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
-                          <td key={i} style={{textAlign:i===0?'left':'center',padding:'5px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',background:typeof v==='number'&&i>0?'#eef2ff':i===itemSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
-                        </tr>
-                      </tbody></table>
-                    </div>}
-                    {/* Numbers & Names */}
-                    {ndData&&(ndData.nd||ndData.nameD||(ndData.roster&&Object.keys(ndData.roster).length>0)||(ndData.names&&Object.keys(ndData.names).length>0))&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fafbfc'}}>
-                      {ndData.nd&&<div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12,marginBottom:ndData.roster||ndData.names?8:0,padding:8,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
-                        <span style={{fontWeight:700,color:'#6d28d9'}}>Numbers</span>
-                        <span><strong>{(ndData.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                        <span>Size: <strong>{ndData.nd.num_size||'—'}</strong></span>
-                        {ndData.nd.front_and_back&&<span>Back: <strong>{ndData.nd.num_size_back||ndData.nd.num_size||'—'}</strong></span>}
-                        {ndData.nd.print_color&&<span>Color: <strong>{ndData.nd.print_color}</strong></span>}
-                        {ndData.nd.num_font&&<span>Font: <strong>{ndData.nd.num_font}</strong></span>}
-                        {ndData.nd.front_and_back&&<span style={{padding:'1px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
-                      </div>}
-                      {ndData.roster&&Object.keys(ndData.roster).length>0&&(()=>{
-                        const allNums=ndData.sizes.flatMap(sz=>(ndData.roster[sz]||[]).filter(n=>n!=='').map(n=>({sz,n})));
-                        const doneCount=allNums.filter(x=>numsDone[gi.sku+'|'+x.sz+'|'+x.n]).length;
-                        return<div style={{marginBottom:ndData.names?8:0}}>
-                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                          <div style={{fontSize:11,fontWeight:700,color:'#6d28d9'}}>Number List</div>
-                          {allNums.length>0&&<div style={{fontSize:10,fontWeight:700,color:doneCount===allNums.length?'#15803d':'#64748b'}}>{doneCount}/{allNums.length} done</div>}
-                          <div style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>Click a number to mark done</div>
-                        </div>
-                        {ndData.sizes.map(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
-                          if(nums.length===0)return null;
-                          return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
-                            <span style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:40}}>{sz} ({nums.length})</span>
-                            {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>{
-                              const done=!!numsDone[gi.sku+'|'+sz+'|'+n];
-                              return<button key={ni} type="button" onClick={()=>toggleNumDone(gi.sku,sz,n)}
-                                title={done?'Click to mark not done':'Click to mark done'}
-                                style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:3,minWidth:28,textAlign:'center',padding:'2px 6px',background:done?'#dcfce7':'#faf5ff',border:'1px solid '+(done?'#86efac':'#e9d5ff'),borderRadius:4,fontSize:12,fontWeight:700,color:done?'#15803d':'#6d28d9',cursor:'pointer',textDecoration:done?'line-through':'none',fontFamily:'inherit',lineHeight:1.2}}>
-                                {done&&<span style={{fontSize:10}}>✓</span>}{n}
-                              </button>;
-                            })}
-                          </div>;
-                        })}
-                      </div>;})()}
-                      {ndData.names&&Object.keys(ndData.names).length>0&&<div>
-                        <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:4}}>Names List</div>
-                        {ndData.sizes.map(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
-                          if(nms.length===0)return null;
-                          return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
-                            <span style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:40}}>{sz} ({nms.length})</span>
-                            {nms.map((n,ni)=>
-                              <span key={ni} style={{padding:'2px 8px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:4,fontSize:11,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
-                          </div>;
-                        })}
-                      </div>}
-                    </div>}
-                    {/* Decoration Spec */}
-                    {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:itemProdFiles.length>0?'1px solid #e2e8f0':'none'}}>
+            {/* Tablet workspace: each selected garment keeps its art, specs and roster together. */}
+            <ProductionGarmentWorkspace key={so.id+'|'+j.id} jobUnits={j.total_units} numbersDone={numsDone}
+              onToggleNumber={toggleNumDone} onOpenFile={openFile}
+              items={itemDetails.map(gi=>{
+                const it=safeItems(so)[gi.item_idx];
+                const sourceRow=j.items[gi.jobRowIndex];
+                const artDecos=jobItemDecosOfKind(gi,it,'art');
+                const numDecos=jobItemDecosOfKind(gi,it,'numbers');
+                const nameDecos=jobItemDecosOfKind(gi,it,'names');
+                const itemProdFiles=[];
+                artDecos.forEach(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);(artF?.prod_files||[]).forEach(f=>itemProdFiles.push({f,artName:artF?.name||''}))});
+                const linkedSource=resolveMockLink(allArtFiles,mockSkuOf(gi),gi.color);
+                const ownMocks=collectItemMocks(gi);
+                const useGeneric=!linkedSource&&!ownMocks.length;
+                const mocks=useGeneric?genericMockupFiles:ownMocks;
+                const referenceLabel=linkedSource?'Shared mockup reference from '+linkedSource.split('|').join(' / ')+'. Verify placement on this garment.':useGeneric&&mocks.length?'Job-level mockup reference — not assigned to this garment.':null;
+                const mockups=mocks.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');return{
+                  file:f,label:(linkedSource?'Shared reference':useGeneric?'Job reference':'Garment mockup')+' '+(i+1)+' · '+fileDisplayName(f),
+                  src:_isImgUrl(u,f)?_cloudinaryDisplay(u):_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null,
+                }});
+                const logos=garmentLogoDetails(gi,so,allArtFiles).map(l=>({file:l.url,src:l.url,
+                  label:l.artName+(l.side?' · Side '+l.side:'')+(l.cwLabel?' · Artwork version: '+l.cwLabel:'')+(!logoDetailBackground(gi.color,l.cwLabel,l.side).known?' · Color unknown — neutral preview':''),
+                  background:logoDetailBg(gi.color,l.cwLabel,l.side),
+                }));
+                const specs=(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:itemProdFiles.length>0?'1px solid #e2e8f0':'none'}}>
                       <div style={{fontSize:10,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
                       {artDecos.map((d,di)=>{
                         const artF=safeArt(so).find(f=>f.id===d.art_file_id);
@@ -14905,20 +14744,81 @@ export default function App(){
                         <span style={{fontSize:11,color:'#1e293b'}}>{(nd.name_method||'heat_press').replace(/_/g,' ')}{_nnColorEl(nd)}</span>
                       </div>)}
                         </>})()}
-                    </div>}
-                    {/* Production files for this item */}
-                    {itemProdFiles.length>0&&<div style={{padding:'8px 14px',background:'white'}}>
-                      <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.5}}>Production Files ({itemProdFiles.length})</div>
-                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                        {itemProdFiles.map(({f,artName},fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<a key={fi} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'4px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'inline-flex',alignItems:'center',gap:4,textDecoration:'none'}} onClick={e=>{e.preventDefault();openFile(f)}}>📁 {name}{artName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({artName})</span>}</a>;
-                        })}
-                      </div>
-                    </div>}
-                  </div>;
-                })}
-              </div>;
-            })()}
+                    </div>;
+                // Garments with the same decoration (design, color way, placement, numbers/names
+                // setup) share a groupKey and render as one card — see lib/productionGroups.
+                const decoSummary=productionDecoSummary(sourceRow,it,safeArt(so));
+                return {id:String(gi.jobRowIndex),groupKey:productionDecoKey(sourceRow,it,allArtFiles),decoSummary,sku:gi.sku,name:gi.name,color:gi.color,sizes:gi.sizes,
+                  units:Object.values(gi.sizes).reduce((a,v)=>a+safeNum(v),0),referenceLabel,mockups,logos,specs,
+                  personalization:{hasNumbers:numDecos.length>0,hasNames:nameDecos.length>0,
+                    numbers:numDecos.length?jobItemRoster(safeItems(so),safeJobs(so),j,sourceRow,'numbers'):null,
+                    names:nameDecos.length?jobItemRoster(safeItems(so),safeJobs(so),j,sourceRow,'names'):null},
+                  files:itemProdFiles.map(({f,artName})=>({file:f,label:fileDisplayName(f)+(artName?' · '+artName:'')})),
+                };
+              })}/>
+
+            {/* Generic production/mockup file chips — only shows files not tied to a specific SKU */}
+            {(prodFiles.length>0||genericMockupFiles.length>0)&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
+                  <span style={{fontSize:14}}>📁</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                </div>)}
+                {genericMockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
+                  <span style={{fontSize:14}}>🖼️</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                </div>)}
+              </div>
+            </div>}
+
+            {/* Embroidery names file (digitized names kept in Google Drive) */}
+            {j.deco_type==='embroidery'&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#6d28d9',marginBottom:6}}>🧵 Embroidery Names File</div>
+              {j.emb_names_link?<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#7c3aed',color:'white',borderRadius:6,fontSize:12,fontWeight:700,textDecoration:'none'}}>📁 Open Digitized Names (Google Drive) ↗</a>:<div style={{fontSize:12,color:'#94a3b8'}}>No names file linked yet.</div>}
+              <input type="text" className="form-input" placeholder="Paste Google Drive link to digitized name files" defaultValue={j.emb_names_link||''}
+                style={{fontSize:11,padding:'4px 8px',width:'100%',marginTop:8}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;updateJobField(j,{emb_names_link:v});setProdJobModal(pm=>pm?{...pm,emb_names_link:v}:pm);nf(v?'Names file link saved':'Names file link cleared')}}/>
+            </div>}
+
+            {/* Dual-Run Order — art + numbers */}
+            {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Run Order</div>
+              {!j.run_order?<div style={{textAlign:'center',padding:16}}>
+                <div style={{fontSize:13,color:'#6d28d9',fontWeight:700,marginBottom:12}}>This job has both Artwork and Numbers. Select which to run first:</div>
+                <div style={{display:'flex',gap:12,justifyContent:'center'}}>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#7c3aed',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#22c55e',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                </div>
+              </div>:(()=>{const rl=getRunLabels(j);return<div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:12}}>
+                  <div style={{padding:16,borderRadius:10,background:j.run1_done?'#dcfce7':'#eff6ff',border:'2px solid '+(j.run1_done?'#86efac':'#3b82f6')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run1_done?'#166534':'#1e40af',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 1</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{rl.run1}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run1_done?'#166534':'#3b82f6',marginTop:4}}>{j.run1_done?'Completed':'In Progress'}</div>
+                    {!j.run1_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                  </div>
+                  <div style={{padding:16,borderRadius:10,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'2px solid '+(j.run2_done?'#86efac':j.run1_done?'#3b82f6':'#e2e8f0')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
+                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});moveJobStatus(j,'completed')}}>Mark {rl.run2} Done</button>}
+                  </div>
+                </div>
+                {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
+              </div>})()}
+            </div>}
+
+            {/* Compact job-level info: machine + assigned */}
+            {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
+              {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#c2410c',textTransform:'uppercase',letterSpacing:1}}>Machine</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#9a3412'}}>{machine.name}</div></div>}
+              {j.assigned_to&&<div style={{background:'#f5f3ff',borderRadius:6,padding:'6px 12px'}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:1}}>Assigned To</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
+            </div>}
 
             {/* Notes */}
             {(j.notes||so.production_notes)&&<div style={{padding:20,background:'#fffbe6'}}>
