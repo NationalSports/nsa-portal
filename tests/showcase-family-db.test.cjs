@@ -60,7 +60,7 @@ test('worker renders 15 combinations with one master generation, then reuses it'
  },storage:{from:()=>({upload:async()=>{uploaded++;return {};},getPublicUrl:(p)=>({data:{publicUrl:'https://storage/'+p}})})},from:()=>{throw new Error('Email disabled in fixture');}};
  const deps={getCatalog:async()=>members,fetchImage:async()=>({bytes:Buffer.from('image'),contentType:'image/png'}),
   generate:async()=>{generated++;return {bytes:Buffer.from('master'),contentType:'image/png',model:'test'};},
-  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
+  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
   render:{placementReference:async bytes=>bytes,validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
  try{
   const leader=await queue();
@@ -72,5 +72,15 @@ test('worker renders 15 combinations with one master generation, then reuses it'
   const next=await queue(request2);
   await runFamilyJob(admin,{...next,analysis:asset.analysis},'https://site',deps);
   assert.equal(generated,1);assert.equal(uploaded,61);
+  const retry=await queue('00000000-0000-4000-8000-000000000099');
+  const rejectedDeps={...deps,analyze:async request=>request.analysisPrompt.startsWith('Inspect') ? deps.analyze(request) : {analysis:{supported:false,reason:'Cannot map the leg placement'}}};
+  await assert.rejects(runFamilyJob(admin,{...retry,analysis:asset.analysis},'https://site',rejectedDeps),/Cannot map the leg placement/);
+  const saved=(await db.query('select master,status from webstore_showcase_families')).rows[0];
+  assert.equal(saved.status,'failed');assert.equal(saved.master.mapping_diagnostics.attempts.length,2);
+  assert.ok(saved.master.url);assert.equal(generated,1);
+  const recover=await queue('00000000-0000-4000-8000-000000000100');
+  await runFamilyJob(admin,{...recover,analysis:asset.analysis},'https://site',deps);
+  assert.equal(generated,1);
+
  }finally{await db.close();}
 });

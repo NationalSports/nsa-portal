@@ -73,6 +73,7 @@ async function validatedMapping(analyze, request, placements, current) {
   const render = require('./_showcaseFamilyRender');
   let reason = '';
   let constructionRejected = false;
+  const attempts = [];
   const product = request.product || {};
   const context = JSON.stringify({ name: product.name, sku: product.supplier_sku || product.sku, brand: product.brand, fit: inferAthleticFormProfile(product) });
   const instructions = ` PRODUCT_IDENTITY=${context}. Image 1 is the generated preview base; images 2 onward are supplier references of this same catalog style. The temporary green fabric is intentional and is not a sold color. A lowered hood, modest hero turn and invisible-support drape are intentional presentation changes, not by themselves construction differences. Verify actual seams, pocket shape, closures and manufacturer marks against the references. Inspect sleeve marks closely before claiming they are absent; a side view may reveal marks obscured in a front view. Use catalog fit metadata rather than guessing gender from flat-lay shape. Metadata does not excuse a genuine cut, pocket, seam or branding mismatch; if one is visible, reject it.`;
@@ -81,6 +82,7 @@ async function validatedMapping(analyze, request, placements, current) {
     const result = await analyze({ ...request, analysisPrompt: instructions + '\n' + request.analysisPrompt + (attempt ? ` CORRECTION REQUIRED: ${reason}. Reinspect the images and return a complete corrected mapping. Do not reuse invalid regions.` : '') });
     if (result.analysis?.supported !== true) {
       constructionRejected = true;
+      attempts.push({ attempt: attempt+1, stage: 'comparison_or_mapping', reason: String(result.analysis?.reason || 'No reason supplied').slice(0,2000) });
       reason = String(result.analysis?.reason || 'The preview could not be reliably compared with the supplier references').slice(0,2000);
       console.warn('[showcase-mapping] comparison rejected', { attempt: attempt+1, sku: product.supplier_sku || product.sku, reason });
       continue;
@@ -93,10 +95,14 @@ async function validatedMapping(analyze, request, placements, current) {
       render.validateStrands(a.logo_strands);
       for (const id of Object.keys(placements)) render.validateQuad(a.placements?.[id]);
       return result;
-    } catch (error) { reason = error.message; }
+    } catch (error) { reason = error.message; attempts.push({ attempt: attempt+1, stage: 'coordinates', reason }); }
   }
-  if (constructionRejected) throw new Error('The generated preview could not be verified against the supplier photos after two checks. Choose Change pose & lighting to create a replacement. Your approved images have not changed.');
-  throw new Error('Unable to place the artwork reliably after two checks. The saved base is retained; retry generation. Your approved images have not changed.');
+  const reported = reason.replace(/\s+/g,' ').slice(0,600);
+  const error = new Error(constructionRejected
+    ? `Automatic image review stopped. The image was generated, but the checker reported: ${reported}. This is an automated assessment, not a confirmed garment defect. Refresh images retries the saved image; changing pose is not required. Approved images are unchanged.`
+    : 'Unable to place the artwork reliably after two checks. The saved base is retained; retry generation. Your approved images have not changed.');
+  error.mappingDiagnostics = { attempts };
+  throw error;
 }
 
 async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
@@ -104,6 +110,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
   const move = (action,payload) => transition(admin,store,key,request,action,payload);
   const job = await move('claim');
   if (!job) return { skipped: true };
+  let cachedMaster = job.master;
   try {
     const render = deps.render || require('./_showcaseFamilyRender');
     const fetchImage = deps.fetchImage || fetchRemoteImage;
@@ -140,7 +147,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       if (!d.art_url) throw new Error('A linked logo is missing its artwork file');
       if (![d.x,d.y,d.w].every(Number.isFinite)) throw new Error('Save the logo placement in Art Studio before generating this item');
       const id = hash([d.x,d.y,d.w,d.placement]);
-      placements[id] ||= { x:d.x,y:d.y,w:d.w,placement:d.placement,supplier_index:urls.indexOf(m.supplier_image_url)+1 };
+      placements[id] ||= { x:d.x,y:d.y,w:d.w,supplier_index:urls.indexOf(m.supplier_image_url)+1 };
     }
     await checkCatalog();
     const refs = await Promise.all(urls.map(fetchImage));
@@ -175,9 +182,10 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       if (!await move('cache',master)) throw new Error('Family was canceled');
     }
     await current();
+    cachedMaster = master;
     const framedRefs = await Promise.all(refs.map(async (ref, index) => ({ ...ref, contentType: 'image/png', bytes: await render.placementReference(ref.bytes, Object.entries(placements).filter(([,p]) => p.supplier_index === index+1)) })));
     const mappingRequest = { product:job.inputs.source,decorations:[],images:[masterImage,...framedRefs],
-      analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Other images are supplier photos in the exact editor frame. Magenta outlined squares and center crosses are placement guides, NOT garment features: labels are the first eight characters of the placement id. Transfer each outlined square onto the same fabric area of the master, keeping its physical size and center relative to neckline, torso sides and pocket. Never copy the guide marks into protected regions or treat them as garment construction. Return JSON {supported:boolean,reason:string,protected_regions:[[[0.1,0.2],[0.12,0.2],[0.12,0.23]]],logo_occluders:[],logo_strands:[{points:[[x,y,width],...]}],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. The protected_regions example is SHAPE ONLY, not coordinates to copy. Every polygon vertex must have exactly two finite numeric values [x,y], at least 3 vertices and no more than 80. All output coordinates are normalized 0..1 to the FIRST image, never pixels or percentages. Use [] for absent regions. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Keep logo_occluders empty. For each actual drawstring or narrow zipper lying in front of the logo, trace a separate logo_strands centerline with at least 8 points from top to tip, following every bend. Each point is [x,y,full_width]; width is the actual visible strand width as a fraction of image WIDTH, excludes shadows and surrounding fabric, and must not exceed 0.025. Do not mask ordinary fabric folds: the logo continues over them. If no strands overlap artwork return an empty list. Return supported:false if accurate narrow traces cannot be identified. Never substitute bounding rectangles for paths. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the supplied 4:5 reference FRAME, including white padding, exactly as shown in the placement editor. Width is a percentage of frame WIDTH; y is a percentage of frame HEIGHT. The square therefore has normalized height w*0.8 in that reference. Preserve logo width relative to the torso and vertical distance from neckline and pocket; do not enlarge it to fill the chest or move it down toward the pocket. Map that same physical location and size onto the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. REVIEWER REVISION REQUEST=${JSON.stringify(job.inputs.source.settings?.revision_notes || "")}. Apply requested placement corrections without changing the original logo artwork. PLACEMENTS=${JSON.stringify(placements)}` };
+      analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Saved x/y/w coordinates and magenta guides are authoritative. Placement-editor preset names such as left_chest are intentionally omitted: staff can move a preset onto a trouser leg, so infer the physical garment panel from the reference guide, never from a preset name. For bottoms preserve the viewer-left or viewer-right leg shown in the reference; relaxed flat legs becoming naturally separated in the hero is an intentional pose change, not itself a construction mismatch. Other images are supplier photos in the exact editor frame. Magenta outlined squares and center crosses are placement guides, NOT garment features: labels are the first eight characters of the placement id. Transfer each outlined square onto the same fabric area of the master, keeping its physical size and center relative to neckline, torso sides and pocket. Never copy the guide marks into protected regions or treat them as garment construction. Return JSON {supported:boolean,reason:string,protected_regions:[[[0.1,0.2],[0.12,0.2],[0.12,0.23]]],logo_occluders:[],logo_strands:[{points:[[x,y,width],...]}],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. The protected_regions example is SHAPE ONLY, not coordinates to copy. Every polygon vertex must have exactly two finite numeric values [x,y], at least 3 vertices and no more than 80. All output coordinates are normalized 0..1 to the FIRST image, never pixels or percentages. Use [] for absent regions. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Keep logo_occluders empty. For each actual drawstring or narrow zipper lying in front of the logo, trace a separate logo_strands centerline with at least 8 points from top to tip, following every bend. Each point is [x,y,full_width]; width is the actual visible strand width as a fraction of image WIDTH, excludes shadows and surrounding fabric, and must not exceed 0.025. Do not mask ordinary fabric folds: the logo continues over them. If no strands overlap artwork return an empty list. Return supported:false if accurate narrow traces cannot be identified. Never substitute bounding rectangles for paths. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the supplied 4:5 reference FRAME, including white padding, exactly as shown in the placement editor. Width is a percentage of frame WIDTH; y is a percentage of frame HEIGHT. The square therefore has normalized height w*0.8 in that reference. Preserve logo width relative to the torso and vertical distance from neckline and pocket; do not enlarge it to fill the chest or move it down toward the pocket. Map that same physical location and size onto the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. REVIEWER REVISION REQUEST=${JSON.stringify(job.inputs.source.settings?.revision_notes || "")}. Apply requested placement corrections without changing the original logo artwork. PLACEMENTS=${JSON.stringify(placements)}` };
     const mapping = await validatedMapping(analyze,mappingRequest,placements,current);
     const prepared = await render.prepareMaster(masterImage.bytes,mapping.analysis,2048);
     const outputs = [];
@@ -211,6 +219,9 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     await notifyShowcaseReady(admin,store,siteUrl).catch((error)=>console.error('[showcase-family] email',error.message));
     return { status:'review' };
   } catch (error) {
+    if (error.mappingDiagnostics && cachedMaster?.url) {
+      await move('cache', { ...cachedMaster, mapping_diagnostics: error.mappingDiagnostics }).catch(e => console.warn('[showcase-mapping] diagnostic save failed', e.message));
+    }
     await move('fail',{error:String(error.message || error).slice(0,1200)});
     await notifyShowcaseReady(admin,store,siteUrl).catch(()=>{});
     throw error;
