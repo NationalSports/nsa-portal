@@ -1,6 +1,19 @@
 const sharp = require('sharp');
 const clamp = (x, lo = 0, hi = 255) => Math.max(lo, Math.min(hi, x));
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+// Match the placement editor's contain-fitted 4:5 coordinate frame exactly.
+async function placementReference(bytes, placements = []) {
+  const framed = await sharp(bytes, { limitInputPixels: 40000000 }).rotate()
+    .resize(1000, 1250, { fit: 'contain', background: '#ffffff' }).png().toBuffer();
+  if (!placements.length) return framed;
+  const guides = placements.map(([id, p]) => {
+    if (![p.x,p.y,p.w].every(Number.isFinite) || p.w <= 0 || p.w > 100 || p.x < 0 || p.x > 100 || p.y < 0 || p.y > 100) throw new Error('Invalid saved logo placement');
+    const x=p.x*10, y=p.y*12.5, w=p.w*10;
+    const label=String(id).replace(/[^a-zA-Z0-9]/g,'').slice(0,8);
+    return `<rect x="${x-w/2}" y="${y-w/2}" width="${w}" height="${w}" fill="none" stroke="#ff00ff" stroke-width="3"/><path d="M${x-8},${y}h16 M${x},${y-8}v16" stroke="#ff00ff" stroke-width="2"/><text x="${x-w/2}" y="${y-w/2-6}" fill="#aa00aa" font-size="18">${label}</text>`;
+  }).join('');
+  return sharp(framed).composite([{input:Buffer.from(`<svg width="1000" height="1250">${guides}</svg>`)}]).png().toBuffer();
+}
 async function pixels(bytes) {
   return sharp(bytes, { limitInputPixels: 40000000 }).rotate().toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 }
@@ -124,7 +137,7 @@ function recolor(master, rgb, grain) {
       // Keep black readable without raising it to gray; preserve highlights and
       // folds for white instead of clipping every lit pixel to white.
       const base = rgb[c];
-      let value = shade <= 1 ? base * Math.pow(shade, .85) : base + (255 - base) * (1 - Math.exp(-(shade - 1) * 1.8));
+      let value = shade <= 1 ? base * Math.pow(shade, .85) : base * (1 + .28 * (1 - Math.exp(-(shade - 1))));
       if (grain?.length === 4096) {
         const mirror = (n) => n % 128 < 64 ? n % 128 : 127 - n % 128;
         value += grain[mirror(Math.floor(i/master.info.width))*64+mirror(i%master.info.width)] * Math.min(1,shade);
@@ -230,4 +243,4 @@ async function decorationDetail(output, master, quad) {
   return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
     .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
 }
-module.exports = { normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+module.exports = { placementReference, normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };

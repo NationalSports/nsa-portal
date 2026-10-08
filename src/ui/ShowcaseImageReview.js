@@ -5,12 +5,17 @@ import ShowcaseProductImage from './ShowcaseProductImage';
 export default function ShowcaseImageReview({ item, busy, error, onClose, onAction, familyMode = false }) {
   const dialog = useRef(null);
   const asset = item.asset || {};
+  const [revising, setRevising] = useState(false);
   const [zoomBefore, setZoomBefore] = useState(false);
   const [notes, setNotes] = useState(asset.showcase_settings?.revision_notes || '');
   const working = ['queued', 'generating'].includes(asset.status);
   const afterUrl = asset.showcase_image_url || asset.approved_showcase_image_url;
   const details = (asset.showcase_image_url ? asset.qa_result?.detail_images : asset.approved_detail_images) || [];
   const canApprove = asset.status === 'review' && !!asset.showcase_image_url && !asset.needs_regeneration;
+
+  useEffect(() => {
+    if (working) setRevising(false);
+  }, [working]);
 
   useEffect(() => {
     const element = dialog.current;
@@ -59,19 +64,24 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
           {SHOWCASE.DECORATION_FINISHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>}
-      {!familyMode && <label style={{ display: 'block', fontSize: 12, fontWeight: 700, marginTop: 16 }}>
-        Changes for the next image (optional)
-        <textarea value={notes} maxLength={1000} disabled={busy || working} onChange={(event) => setNotes(event.target.value)}
-          placeholder="For example: lighter twill depth, cleaner stitching, stronger fabric lighting…"
+      {(!familyMode || revising) && <label style={{ display: 'block', fontSize: 12, fontWeight: 700, marginTop: 16 }}>
+        {revising ? 'What should change?' : 'Changes for the next image (optional)'}
+        <textarea autoFocus={revising} value={notes} maxLength={1000} disabled={busy || working} onChange={(event) => setNotes(event.target.value)}
+          placeholder="For example: lighter twill depth, cleaner stitching, softer matte lighting, smaller logo higher on the chest…"
           style={{ display: 'block', width: '100%', boxSizing: 'border-box', minHeight: 66, marginTop: 6, border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, font: 'inherit', fontWeight: 400 }} />
       </label>}
-      {familyMode && <p style={{fontSize:12,color:'#64748b'}}>Generate or change the base garment from the item card; that updates all linked colors and logos together.</p>}
+      {familyMode && <p style={{fontSize:12,color:'#64748b'}}>Revisions create new images for every color and logo of this item. Approved images stay live until you approve replacements. A new pose and lighting image incurs an AI generation charge.</p>}
       <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0', zIndex: 2, display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
         {!familyMode && (working ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('cancel')}>Cancel generation</button>
           : <button type="button" className="btn btn-secondary" disabled={busy || !item.standard_image_url || item.kind === 'bundle'}
             onClick={() => onAction('generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Generate New Image</button>)}
-        {asset.status === 'review' && !!asset.showcase_image_url && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => onAction('reject')}>Reject</button>}
-        <button type="button" className="btn btn-primary" disabled={busy || !canApprove} onClick={() => onAction('approve')}>{details.length ? 'Approve Hero & Details' : 'Approve Image'}</button>
+        {!revising && asset.status === 'review' && !!asset.showcase_image_url && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setRevising(true)}>Reject</button>}
+        {revising && <>
+          <button type="button" className="btn btn-secondary" disabled={busy || working} onClick={() => { setRevising(false); }}>Cancel revision</button>
+          <button type="button" className="btn btn-secondary" disabled={busy || working} onClick={() => onAction('reject')}>Reject without retrying</button>
+          <button type="button" className="btn btn-primary" disabled={busy || working || !notes.trim()} onClick={() => onAction(familyMode ? 'revise' : 'generate', { showcase_settings: { decoration_type: asset.showcase_settings?.decoration_type || 'auto', revision_notes: notes } })}>Create revised images</button>
+        </>}
+        <button type="button" className="btn btn-primary" disabled={busy || !canApprove || revising} onClick={() => onAction('approve')}>{details.length ? 'Approve Hero & Details' : 'Approve Image'}</button>
       </div>
     </div>
   </dialog>;
