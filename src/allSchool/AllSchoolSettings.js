@@ -17,6 +17,9 @@ export default function AllSchoolSettings({ value, onChange, repId }) {
     <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 14px' }}>An always-open school store with separate sport collections. Purchasing stays separate until the weekly cutoff; compatible regular batches may receive additions.</p>
     <Field label="Displayed shipping estimate: days from payment to shipment (14 = 2 weeks)"><input className="form-input" type="number" min="1" max="90" value={s.target_ship_days} onChange={(e) => onChange({ ...s, target_ship_days: Number(e.target.value) })} /></Field>
     <p style={{ fontSize: 12, color: '#64748b' }}>Shown to shoppers; transit time is additional. This is the same estimate as Delivery settings.</p>
+    <h4>Production release</h4>
+    {tick('production', 'auto_release_enabled', 'Automatically release ready jobs into production')}
+    <div style={{ fontSize: 12, color: '#64748b' }}>A job releases only after approved production art, garments in hand, and required decoration materials or DTF prints are confirmed. Picking and receiving remain physical steps.</div>
     <h4>Garment purchasing cutoff</h4>
     {tick('purchasing', 'enabled', 'Enable automated garment purchasing for this store')}
     <div style={grid}>

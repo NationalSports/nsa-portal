@@ -153,13 +153,20 @@ function makeAdmin(tables) {
       };
       return chain;
     },
-    rpc(fn, args) { const call = { fn, args }; rpcs.push(call); return Promise.resolve({ data: { ok: true }, error: null }); },
+    rpc(fn, args) {
+      const call = { fn, args }; rpcs.push(call);
+      const data = fn === 'all_school_materials_ready' ? { ready: true } : { ok: true };
+      return Promise.resolve({ data, error: null });
+    },
   };
   return admin;
 }
 
 const CUSTOMER = { id: 'CUST-1', art_files: [{ id: 'art-1', status: 'approved', prod_files_attached: true }] };
-const SO_ITEM = { id: 11, so_id: 'SO-1', item_index: 0, sizes: { S: 2 } };
+const SO_ITEM = { id: 11, so_id: 'SO-1', item_index: 0, sizes: { S: 2 }, recipe_snapshot: { art_files: [
+  { id: 'art-1', status: 'approved', prod_files_attached: true },
+  { id: 'art-2', status: 'approved', prod_files_attached: true },
+] } };
 const AUTO_JOB = { so_id: 'SO-1', id: 'JOB-1', art_status: 'art_complete', item_status: 'need_to_order', prod_status: 'hold', art_file_id: 'art-1', _art_ids: ['art-1'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
 const STAFF_JOB = { so_id: 'SO-1', id: 'JOB-2', art_status: 'art_complete', item_status: 'need_to_order', prod_status: 'hold', art_file_id: 'art-2', _art_ids: ['art-2'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
 
@@ -172,7 +179,8 @@ const CREATED_EVENTS = [
 function baseTables(overrides = {}) {
   return {
     teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
-    webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null },
+    webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'teamshop', store_id: 'STORE-1' }], error: null },
+    webstores: { data: [{ id: 'STORE-1', all_school_settings: {} }], error: null },
     sales_orders: { data: [{ id: 'SO-1', customer_id: 'CUST-1' }], error: null },
     so_jobs: { data: [AUTO_JOB, STAFF_JOB], error: null },
     job_stage_events: { data: CREATED_EVENTS, error: null },
@@ -193,6 +201,44 @@ describe('runRelease', () => {
     expect(admin.rpcs.length).toBe(0);
     expect(admin.updates.length).toBe(0);
     expect(s.note).toMatch(/false/);
+  });
+
+  test('All School store opt-in releases ready jobs independently of global Team Shop setting and scope', async () => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'auto_art_only' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.enabled).toBe(true);
+    expect(s.all_school_stores).toBe(1);
+    // Includes staff-finished art although the legacy global scope is auto_art_only.
+    expect(s.released.map((r) => r.job_id).sort()).toEqual(['JOB-1', 'JOB-2']);
+    expect(admin.rpcs.filter((r) => r.fn === 'advance_job_stage')).toHaveLength(2);
+  });
+
+  test('All School fails closed unless its store has a boolean production opt-in', async () => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'all' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: 'true' } } }], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.enabled).toBe(false);
+    expect(s.released).toEqual([]);
+    expect(admin.rpcs).toEqual([]);
+  });
+
+  test('All School opt-in still runs when global auto-art event lookup fails', async () => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+      job_stage_events: { data: null, error: { message: 'temporary read failure' } },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.released.map((r) => r.job_id).sort()).toEqual(['JOB-1', 'JOB-2']);
+    expect(admin.rpcs.filter((r) => r.fn === 'advance_job_stage')).toHaveLength(2);
   });
 
   test('auto_art_only: releases the born-art_complete job THROUGH advance_job_stage after setting item_status truth; excludes the staff job', async () => {

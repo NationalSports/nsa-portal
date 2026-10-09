@@ -225,7 +225,7 @@ export function invoiceResyncUpdate({invoice, qboInvoice, qboCustomerId, lines, 
 
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {
   const tax=money(invoice?.tax); if(!(tax>0))return null;
-  const state=clean(customer?.shipping_state||customer?.billing_state).toUpperCase();
+  const state=clean(invoice?.tax_state||customer?.shipping_state||customer?.billing_state).toUpperCase();
   const accountNumber=STATE_TAX_ACCOUNTS[state];
   if(!accountNumber)throw new Error('unmapped_tax_state');
   if(!partnerTaxEnabled)throw new Error('manual_tax_requires_reviewed_rate');

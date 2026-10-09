@@ -4,7 +4,7 @@ import {
   allocateUnreflectedPayments, classifyInvoiceDuplicate, classifySourceInvoice,
   cardFeeDriftEligible, cardFeeLineUpdate, CARD_FEE_DESCRIPTION, invoiceResyncUpdate, invoiceStillSettling, buildInvoiceLines,
   customerIdentityRisks, invoiceNumberForms, linkedInvoiceTotalDrift, normalizeInvoiceNumber,
-  paymentIdentity, paymentReference, writeAllowed,
+  paymentIdentity, paymentReference, writeAllowed, taxPlan,
 } from '../../supabase/functions/qbo-sales-background/logic';
 
 const root=path.join(__dirname,'..','..');
@@ -469,5 +469,23 @@ describe('received checks — accounting edge cases',()=>{
     expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],300)).toMatchObject({state:'match',foreignTotal:300});
     expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],0).state).toBe('conflict');
     expect(compareReceiptPayment({Line:[{Amount:5,LinkedTxn:[{TxnId:'7',TxnType:'CreditMemo'}]}]},[],100).state).toBe('conflict');
+  });
+});
+
+
+describe('individual checkout tax jurisdiction',()=>{
+  test('uses the order jurisdiction before the school customer address',()=>{
+    const invoice={total:124.25,tax:8.25,shipping:8,tax_rate:0,tax_state:'CA'};
+    const plan=taxPlan(invoice,{shipping_state:'WA'});
+    expect(plan.state).toBe('CA');
+    const lines=buildInvoiceLines({invoice,description:'Paid store checkout',salesItemId:'sales',taxItemId:'ca-tax',plan});
+    expect(lines.reduce((sum,line)=>sum+line.Amount,0)).toBeCloseTo(124.25,2);
+    expect(lines.find(line=>line.SalesItemLineDetail?.ItemRef.value==='ca-tax').Amount).toBe(8.25);
+  });
+  test('existing invoices still use the customer address',()=>{
+    expect(taxPlan({total:108,tax:8},{shipping_state:'CA'}).state).toBe('CA');
+  });
+  test('an unsupported checkout jurisdiction cannot silently fall back to the school',()=>{
+    expect(()=>taxPlan({total:108,tax:8,tax_state:'ZZ'},{shipping_state:'CA'})).toThrow('unmapped_tax_state');
   });
 });
