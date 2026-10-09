@@ -45,7 +45,10 @@ async function sampleFabric(bytes, patches, texture = 'solid') {
   if (texture === 'heather') {
     const [x,y,w,h] = rect(patches[0]);
     const tile = await sharp(bytes).rotate().extract({left:Math.floor(x*width),top:Math.floor(y*height),width:Math.floor(w*width),height:Math.floor(h*height)}).resize(64,64).greyscale().raw().toBuffer();
-    const smooth = await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).raw().toBuffer();
+    const smooth = await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).greyscale().raw().toBuffer();
+    // Sharp expands a one-channel raw input to RGB unless explicitly converted
+    // back to greyscale. Subtracting RGB bytes by pixel index creates false bands.
+    if (smooth.length !== tile.length) throw new Error('Fabric texture channel mismatch');
     // Actual small-scale supplier texture, with lighting removed. Mirrored
     // tiling avoids a repeating hard seam; master folds still provide shading.
     result.grain = Array.from(tile,(v,i)=>clamp(v-smooth[i],-35,35));
