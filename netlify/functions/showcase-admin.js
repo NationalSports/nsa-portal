@@ -70,7 +70,7 @@ function buildStateSnapshot(store, catalog, assetRows) {
     const asset = byWp[product.webstore_product_id];
     return {
       ...product,
-      asset: asset || {
+      asset: asset ? {...asset, standard_image_url:product.standard_image_url} : {
         store_id: store.id,
         webstore_product_id: product.webstore_product_id,
         product_id: product.product_id,
@@ -332,6 +332,15 @@ exports.handler = async (event) => {
         || (settings.revision_notes !== undefined && (typeof settings.revision_notes !== 'string' || settings.revision_notes.length > 1000))) {
         return reply(400, { error: 'Choose a valid decoration finish and keep review notes under 1,000 characters' });
       }
+    }
+
+    if (action === 'save_supplier_photo') {
+      const catalog = await getCatalog(admin,storeId,store.store_art);
+      const item = catalog.find(m=>m.webstore_product_id===wpId);
+      if (!item) return reply(404,{error:'Store product not found'});
+      const {saveSupplierPhoto}=require('./_showcaseSource');
+      const url=await saveSupplierPhoto(admin,storeId,item,body.image_data);
+      return reply(200,{ok:true,supplier_image_url:url});
     }
 
     if (action === 'save_settings') {
