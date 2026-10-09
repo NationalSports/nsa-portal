@@ -139,21 +139,9 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     const generate = deps.generate || generateWithOpenAI;
     let members = job.inputs.members;
     const recoverImage = deps.recoverImage || require('./_sanmarImageRecovery').createSanMarImageRecovery(members,fetchImage);
-    const skipped = [];
-    const fetched = new Map();
-    for (const url of [...new Set(members.map(m=>m.supplier_image_url))]) {
-      try {
-        if (!url) throw new Error('No supplier photo added');
-        fetched.set(url,await fetchImage(url));
-      } catch (error) {
-        try {
-          const recovered = await recoverImage(members.find(m=>m.supplier_image_url===url));
-          if (recovered) { fetched.set(url,recovered); continue; }
-        } catch (recoveryError) { console.warn('[showcase] supplier recovery:', recoveryError.message); }
-        for (const m of members.filter(m=>m.supplier_image_url===url)) skipped.push({webstore_product_id:m.webstore_product_id,error:`Skipped ${m.color || 'image'}: supplier photo unavailable. Add or replace the supplier photo and retry. ${error.message}`});
-      }
-    }
-    members = members.filter(m=>fetched.has(m.supplier_image_url));
+    const loaded = await require('./_sanmarImageRecovery').loadSupplierImages(members,fetchImage,recoverImage);
+    members = loaded.members;
+    const { fetched, skipped } = loaded;
     if (!members.length) throw new Error(skipped[0]?.error || 'No usable supplier photos');
     const urls = [...new Set(members.map((m) => m.supplier_image_url))];
     if (urls.length > 16) throw new Error('This item has too many color references for one batch (maximum 16)');

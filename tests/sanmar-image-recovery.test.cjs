@@ -27,3 +27,21 @@ test('discovered placeholders and failed images remain failures, never usable re
  const recover=createSanMarImageRecovery([m],async()=>{throw Error('Supplier photo is unavailable')},{coveoConfig:async()=>({}),scrapeStyle:async()=>({p:{front:'https://cdnp.sanmar.com/placeholder.jpg'}})});
  await assert.rejects(recover(m),/unavailable/);
 });
+
+test('shared placeholder URLs recover separately by color and reuse only matching logo combinations',async()=>{
+ const {loadSupplierImages}=require('../netlify/functions/_sanmarImageRecovery');
+ const members=[['royal','Royal'],['black','Black'],['royal','Royal']].map(([product_id,color],i)=>({product_id,color,webstore_product_id:String(i),supplier_image_url:'https://cdnm.sanmar.com/placeholder.jpg'}));
+ let fetches=0;const recovered=[];
+ const result=await loadSupplierImages(members,async()=>{fetches++;throw Error('placeholder');},async m=>{recovered.push(m.product_id);return {sourceUrl:`https://cdnp.sanmar.com/${m.product_id}.jpg`};});
+ assert.equal(fetches,1);assert.deepEqual(recovered,['royal','black']);
+ assert.deepEqual(result.members.map(m=>m.supplier_image_url),['https://cdnp.sanmar.com/royal.jpg','https://cdnp.sanmar.com/black.jpg','https://cdnp.sanmar.com/royal.jpg']);
+ assert.equal(result.skipped.length,0);assert.equal(result.fetched.size,2);
+ assert.ok(members.every(m=>m.supplier_image_url.endsWith('placeholder.jpg')),'catalog snapshot stays unchanged');
+});
+test('missing URLs do not reuse another color and recovery errors skip only affected combinations',async()=>{
+ const {loadSupplierImages}=require('../netlify/functions/_sanmarImageRecovery');
+ const members=['royal','black'].map(product_id=>({product_id,color:product_id,webstore_product_id:product_id}));
+ const result=await loadSupplierImages(members,async()=>{throw Error('should not fetch missing URL');},async m=>{if(m.product_id==='black')throw Error('supplier 403');return {sourceUrl:'https://cdnp.sanmar.com/royal.jpg'};});
+ assert.equal(result.members.length,1);assert.equal(result.members[0].product_id,'royal');
+ assert.match(result.skipped[0].error,/supplier 403/);assert.equal(result.skipped[0].webstore_product_id,'black');
+});
