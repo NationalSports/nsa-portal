@@ -1,3 +1,4 @@
+import { decoPoCost } from './lib/decoPoCost';
 import { inventoryPickCosts } from './lib/inventoryCosts';
 import InventoryCostDetails from './allSchool/InventoryCostDetails';
 import BatchPoReservationsNotice from './BatchPoReservationsNotice';
@@ -4117,7 +4118,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem)});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
-    (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    (o.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
     // OMG team-store money model (set when an SO is pulled from an OMG store):
     //  • _omg_processing = the online-processing fee CHARGED TO PARENTS — it's
     //    revenue collected to cover fees, so it adds to rev (not cost).

@@ -1,3 +1,4 @@
+import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
@@ -16061,7 +16062,7 @@ export default function App(){
     if(!it.is_free_promo){if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}}
     cost+=garmentCost(it).cost;
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,q,af,cq,_comb)})});
-    (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    (so.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
     // Shipping is a revenue and a cost (mirrors calcGP / calcOrderMargin): actual spend rolls
     // into cost, the charge to the customer offsets it, so margin only moves on an over/under-
     // quote or unbilled freight. `rev` stays product+deco — reports sum it as sales — so the
