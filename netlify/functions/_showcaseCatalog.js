@@ -13,7 +13,7 @@ async function getCatalog(admin, storeId, storeArt = []) {
   if (productIds.length) {
     const result = await admin
       .from('products')
-      .select('id,sku,name,brand,color,category,description,image_front_url,vendor_id')
+      .select('id,sku,name,brand,color,category,description,image_front_url,vendor_id,inventory_source')
       .in('id', productIds);
     if (result.error) throw new Error(result.error.message);
     products = result.data || [];
@@ -25,7 +25,7 @@ async function getCatalog(admin, storeId, storeArt = []) {
       webstore_product_id: wp.id,
       product_id: wp.product_id,
       kind: wp.kind,
-      supplier_sku: product.sku, vendor_id: product.vendor_id,
+      supplier_sku: product.sku, vendor_id: product.vendor_id, inventory_source: product.inventory_source,
       supplier_image_url: wp.supplier_image_url || product.image_front_url,
       variant_group_id: wp.variant_group_id, school_style_group_id: wp.school_style_group_id, school_design_label: wp.school_design_label,
       sku: wp.sku || product.sku || '',

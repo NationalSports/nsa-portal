@@ -22,7 +22,7 @@
 
 const BUDGET_MS = 12 * 60 * 1000;   // leave headroom inside the 15-min limit
 const PAGE_DELAY_MS = 300;          // politeness delay between sanmar.com fetches
-const RECHECK_DAYS = 60;            // form photos rarely change
+const RECHECK_DAYS = 7;             // weekly refresh; incomplete styles retry daily
 const MAX_COLORS_PER_STYLE = 60;
 
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
@@ -79,7 +79,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
 async function fetchText(url) {
-  const r = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,*/*' } });
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': UA, Accept: 'text/html,*/*' } });
   if (!r.ok) throw new Error(url + ' → ' + r.status);
   return r.text();
 }
@@ -97,7 +97,7 @@ async function coveoConfig() {
 // Style number → the base product page path (e.g. ST350 → /p/4349_OlvDrabGn).
 async function findProductPath({ token, orgId }, style) {
   const res = await fetch(`https://${orgId}.org.coveo.com/rest/organizations/${orgId}/commerce/v2/search`, {
-    method: 'POST',
+    method: 'POST', signal: AbortSignal.timeout(15000),
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({
       query: style, trackingId: 'sanmar', language: 'en', country: 'US', currency: 'USD',
@@ -126,9 +126,9 @@ async function findProductPath({ token, orgId }, style) {
 // ("4947_CharcoalHt" in the URL vs "4947_CharcoalHthr" in the media code), so we
 // group media by color token and select the token that best matches `targets`.
 function extractGarmentImages(html, groupId, targets) {
-  const re = /"url":"([^"]+)"[^{}]*?"mediaCode":"([^"]+_624Wx724H)"/g;
+  const re = /"url":"([^"]+)"[^{}]*?"mediaCode":"([^"]+_(?:624Wx724H|1200W))"/g;
   const byToken = {};
-  const codeRe = new RegExp('^' + groupId + '_([A-Za-z0-9]+)-\\d+-(.+?)_624Wx724H$');
+  const codeRe = new RegExp('^' + groupId + '_([A-Za-z0-9]+)-\\d+-(.+?)_(624Wx724H|1200W)$');
   let m;
   while ((m = re.exec(html))) {
     const cm = m[2].match(codeRe);
@@ -138,12 +138,12 @@ function extractGarmentImages(html, groupId, targets) {
     if (!side) continue; // skip side / lifestyle / detail shots
     let url = m[1].replace(/\\u003d/gi, '=').replace(/\\u0026/gi, '&').replace(/\\\//g, '/');
     if (url.startsWith('//')) url = 'https:' + url;
-    (byToken[token] = byToken[token] || []).push({ side, url, kind: /form|flat/i.test(tag) ? 'flat' : /model/i.test(tag) ? 'model' : 'plain' });
+    (byToken[token] = byToken[token] || []).push({ side, url, resolution: cm[3] === '1200W' ? 1200 : 624, kind: /form|flat/i.test(tag) ? 'flat' : /model/i.test(tag) ? 'model' : 'plain' });
   }
   const token = bestColorMatch(targets, Object.keys(byToken));
   const entries = (token && byToken[token]) || [];
   const pick = (side) => {
-    const s = entries.filter((e) => e.side === side);
+    const s = entries.filter((e) => e.side === side).sort((a,b)=>b.resolution-a.resolution);
     const flat = s.find((e) => e.kind === 'flat');
     if (flat) return flat.url;
     if (!s.some((e) => e.kind === 'model')) { const plain = s.find((e) => e.kind === 'plain'); if (plain) return plain.url; }
@@ -225,9 +225,12 @@ exports.handler = async (event) => {
       const st = String(p.sku || '').split('-')[0].trim().toUpperCase();
       if (st) (byStyle[st] = byStyle[st] || []).push(p);
     }
-    const state = await pageAll('sanmar_flat_state?select=style,checked_at&order=style');
-    const freshCutoff = Date.now() - RECHECK_DAYS * 24 * 3600e3;
-    const fresh = new Set(arr(state).filter((r) => new Date(r.checked_at).getTime() > freshCutoff).map((r) => r.style));
+    const state = await pageAll('sanmar_flat_state?select=style,checked_at,products_updated&order=style');
+    const fresh = new Set(arr(state).filter(r => {
+      const products = byStyle[r.style] || [];
+      const incomplete = products.some(p=>!p.image_flat_front_url) || Number(r.products_updated || 0) < products.length;
+      return new Date(r.checked_at).getTime() > Date.now() - (incomplete ? 1 : RECHECK_DAYS)*24*3600e3;
+    }).map(r=>r.style));
     // Styles still missing a flat image go first so the budget always makes
     // forward progress; fully-covered styles only recheck after RECHECK_DAYS.
     const styles = forced.length ? forced : Object.keys(byStyle)
@@ -249,8 +252,17 @@ exports.handler = async (event) => {
           for (const p of byStyle[style] || []) {
             const imgs = imgsByProduct[p.id];
             if (!imgs || !imgs.front) continue;
-            const body = { image_flat_front_url: imgs.front };
-            if (imgs.back) body.image_flat_back_url = imgs.back;
+            // A gallery entry can itself be stale. Never save a placeholder or
+            // non-image response as a successful discovery.
+            const { fetchRemoteImage } = require('../_showcase');
+            let front;
+            try { front = await fetchRemoteImage(imgs.front); }
+            catch (e) { errors.push(p.id + ': front photo ' + e.message); continue; }
+            const body = { image_flat_front_url: front.sourceUrl };
+            if (imgs.back) {
+              try { body.image_flat_back_url = (await fetchRemoteImage(imgs.back)).sourceUrl; }
+              catch (e) { errors.push(p.id + ': back photo ' + e.message); }
+            }
             const ur = await sb('products?id=eq.' + encodeURIComponent(p.id), {
               method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(body),
             });
