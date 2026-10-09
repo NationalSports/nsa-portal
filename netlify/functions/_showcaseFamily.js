@@ -135,7 +135,10 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
   try {
     const render = deps.render || require('./_showcaseFamilyRender');
     const fetchImage = deps.fetchImage || fetchRemoteImage;
-    const analyze = deps.analyze || analyzeWithKimi;
+    const analyzeProvider = deps.analyze || analyzeWithKimi;
+    const analyze = request => analyzeProvider({...request,beforeAttempt:async()=>{
+      if (!await move('check')) throw new Error('Family was canceled or changed');
+    }});
     const generate = deps.generate || generateWithOpenAI;
     let members = job.inputs.members;
     const recoverImage = deps.recoverImage || require('./_sanmarImageRecovery').createSanMarImageRecovery(members,fetchImage);
