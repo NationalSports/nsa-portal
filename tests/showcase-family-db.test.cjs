@@ -103,6 +103,12 @@ test('worker renders 15 combinations with one master generation, then reuses it'
   const partial=(await db.query('select status,error_details from webstore_showcase_assets')).rows;
   assert.equal(partial.filter(r=>r.status==='review').length,12);
   assert.equal(partial.filter(r=>r.status==='failed'&&r.error_details.startsWith('Skipped')).length,3);
+  const recoveredLeader=await queue('00000000-0000-4000-8000-000000000105');
+  await runFamilyJob(admin,{...recoveredLeader,analysis:asset.analysis},'https://site',{
+    ...missingDeps,recoverImage:async()=>({...await deps.fetchImage('current1'),sourceUrl:'current1'})
+  });
+  assert.equal((await db.query("select count(*)::int n from webstore_showcase_assets where status='review'")).rows[0].n,15,'recovered references survive catalog validation and finish the batch');
+  assert.equal(members[3].supplier_image_url,'supplier1','recovery must not mutate catalog identity');
   const missingSourceLeader=await queue('00000000-0000-4000-8000-000000000104',true);
   await runFamilyJob(admin,{...missingSourceLeader,analysis:asset.analysis},'https://site',{...deps,fetchImage:async url=>{if(url==='supplier0')throw new Error('Missing first color');return deps.fetchImage(url);}});
   assert.equal((await db.query("select count(*)::int n from webstore_showcase_assets where status='review'")).rows[0].n,12);

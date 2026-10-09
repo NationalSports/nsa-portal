@@ -112,6 +112,7 @@ async function fetchRemoteImage(rawUrl, redirects = 0) {
   const url = await assertPublicImageUrl(rawUrl);
   const res = await fetch(url, {
     method: 'GET',
+    signal: AbortSignal.timeout(20000),
     redirect: 'manual',
     headers: { Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8' },
   });

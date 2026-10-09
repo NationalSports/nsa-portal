@@ -22,4 +22,32 @@ function createSanMarImageRecovery(members, fetchImage, deps = discovery) {
     return fetchImage(url); // existing host, redirect, type and placeholder checks
   };
 }
-module.exports = { createSanMarImageRecovery };
+async function loadSupplierImages(members, fetchImage, recover) {
+  const originals = new Map(), replacements = new Map(), fetched = new Map();
+  const available = [], skipped = [];
+  for (const member of members) {
+    const url = member.supplier_image_url;
+    let image, failure;
+    if (!originals.has(url)) originals.set(url, (async () => {
+      if (!url) throw new Error('No supplier photo added');
+      return fetchImage(url);
+    })());
+    try { image = await originals.get(url); } catch (e) { failure = e; }
+    if (!image) {
+      // A shared placeholder URL is NOT a color identity. Deduplicate only
+      // logo combinations of the same product, never different product colors.
+      const key = JSON.stringify([member.product_id,member.color,url]);
+      if (!replacements.has(key)) replacements.set(key, recover(member));
+      try { image = await replacements.get(key); } catch (e) { failure = e; }
+    }
+    if (!image) {
+      skipped.push({webstore_product_id:member.webstore_product_id,error:`Skipped ${member.color || 'image'}: supplier photo unavailable. Add or replace the supplier photo and retry. ${failure?.message || 'No matching supplier photo found'}`});
+      continue;
+    }
+    const effectiveUrl = image.sourceUrl || url;
+    fetched.set(effectiveUrl,image);
+    available.push({...member,supplier_image_url:effectiveUrl});
+  }
+  return {members:available,fetched,skipped};
+}
+module.exports = { createSanMarImageRecovery, loadSupplierImages };
