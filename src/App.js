@@ -61,7 +61,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds } from './lib/logoDetail';
+import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -7457,15 +7457,15 @@ export default function App(){
   // dialogs: upload files[0], or remove removeUrl, then an art-only save. Returns false on failure.
   const logoOrdersRef=useRef(sos);logoOrdersRef.current=sos;
   const logoSaveLocks=useRef(new Set());
-  const saveLogoDetailFor=async(so,slot,{files,removeUrl}={})=>{
+  const saveLogoDetailFor=async(so,slot,{files,reuseFile,removeUrl}={})=>{
     if(logoSaveLocks.current.has(so.id)){nf('A logo is still saving on this order. Wait for it to finish, then retry.','error');return false}
     logoSaveLocks.current.add(so.id);
     try{
       if(slot.cwId===undefined)throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
-      const url=files?await fileUpload(files[0],'nsa-web-logos'):null;
+      const url=files?await fileUpload(files[0],'nsa-web-logos'):reuseFile?.url||null;
       const liveSO=logoOrdersRef.current.find(s=>s.id===so.id)||so;
       if(!safeArt(liveSO).some(a=>a.id===slot.artId))throw new Error('this artwork was removed');
-      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files[0].name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl,slot.cwId);
+      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files?.[0]?.name||reuseFile?.name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl,slot.cwId);
       const ok=await savArtFiles({...liveSO,art_files:updArt});
       if(ok===false)return false;
       // Mirror onto the customer's Art Library copy (webstores and the reuse picker read that one).
@@ -7482,14 +7482,14 @@ export default function App(){
   const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;
     // No decoration on the SO line: nothing to assign or attach a logo to until the rep adds it.
     if(slot.missingDeco){const b=logoDetailBackground(garment?.color,'',slot.side);return{url:'',needsColorWay:true,colorWays:[],bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
-      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),productionPngs:productionLogoCandidates(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
     onAssign:async choice=>{
       if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
       logoSaveLocks.current.add(so.id);
       try{const live=logoOrdersRef.current.find(s=>s.id===so.id)||so;const {order:updated}=assignLogoArtwork(live,{...choice,artId:slot.artId,garmentKey:garmentMockKey(garment),side:slot.side});const ok=await savSONow(updated);if(ok){logoOrdersRef.current=logoOrdersRef.current.map(s=>s.id===so.id?updated:s);nf('Artwork version assignment saved')}return ok;}
       finally{logoSaveLocks.current.delete(so.id)}
     },
-    onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
+    onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onUseProductionPng:(file,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{reuseFile:file}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
   // of the fire-and-forget onSave that silently claims "saved". Runs savSO's local-state update + all its
