@@ -8,9 +8,9 @@ const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c
   "'": '&#39;',
 }[char]));
 
-function summarizeAssets(rows) {
+function summarizeAssets(rows, requestIds) {
   const summary = { total: 0, review: 0, approved: 0, failed: 0 };
-  (rows || []).forEach((row) => {
+  (rows || []).filter(row => !requestIds || requestIds.includes(row.generation_request_id)).forEach((row) => {
     summary.total++;
     if (row.status === 'review' && row.approval_status !== 'approved') summary.review++;
     if (row.status === 'approved' && row.approval_status === 'approved') summary.approved++;
@@ -22,7 +22,7 @@ function summarizeAssets(rows) {
 function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl }) {
   const hasFailures = summary.failed > 0;
   const subject = hasFailures
-    ? `Showcase generation finished with ${summary.failed} issue${summary.failed === 1 ? '' : 's'} — ${store.name}`
+    ? `Showcase generation ${summary.review || summary.approved ? 'partially completed' : 'failed'} — ${store.name}`
     : `Showcase images ready for review — ${store.name}`;
   const reviewLine = summary.review
     ? `<strong>${summary.review}</strong> image${summary.review === 1 ? ' is' : 's are'} ready for review.`
@@ -33,11 +33,11 @@ function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl }) {
   const html = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:0 auto;color:#1e293b">
     <div style="background:#0f172a;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0">
       <div style="font-size:11px;letter-spacing:1.4px;text-transform:uppercase;opacity:.75">National Sports Apparel</div>
-      <div style="font-size:21px;font-weight:800;margin-top:5px">Showcase generation complete</div>
+      <div style="font-size:21px;font-weight:800;margin-top:5px">${hasFailures ? 'Showcase generation needs attention' : 'Showcase images ready'}</div>
     </div>
     <div style="padding:22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">
       <p style="margin:0 0 14px">Hi ${esc(rep.name || 'there')},</p>
-      <p style="margin:0 0 8px">Showcase image generation for <strong>${esc(store.name)}</strong> has finished.</p>
+      <p style="margin:0 0 8px">Showcase image generation for <strong>${esc(store.name)}</strong> ${hasFailures ? 'did not finish successfully for every image.' : 'has finished.'}</p>
       <p style="margin:0">${reviewLine}</p>
       ${failureLine}
       <a href="${esc(reviewUrl)}" style="display:inline-block;margin-top:20px;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">Review Showcase images</a>
@@ -99,12 +99,14 @@ async function notifyShowcaseReady(admin, storeId, portalBase) {
   if (!claimed) return { sent: false, reason: 'already-claimed' };
 
   try {
-    const [{ data: rep, error: repError }, { data: assets, error: assetsError }] = await Promise.all([
+    const [{ data: rep, error: repError }, { data: assets, error: assetsError }, {data: families, error: familiesError}] = await Promise.all([
       admin.from('team_members').select('id,name,email,is_active').eq('id', store.rep_id).maybeSingle(),
-      admin.from('webstore_showcase_assets').select('status,approval_status').eq('store_id', storeId),
+      admin.from('webstore_showcase_assets').select('status,approval_status,generation_request_id').eq('store_id', storeId),
+      admin.from('webstore_showcase_families').select('request_id,inputs').eq('store_id',storeId),
     ]);
     if (repError) throw new Error(repError.message);
     if (assetsError) throw new Error(assetsError.message);
+    if (familiesError) throw new Error(familiesError.message);
     if (!rep || rep.is_active === false || !EMAIL_RE.test(String(rep.email || '').trim())) {
       throw new Error('Assigned store rep does not have an active valid email address');
     }
@@ -120,7 +122,8 @@ async function notifyShowcaseReady(admin, storeId, portalBase) {
     }
     if (!['https:', 'http:'].includes(base.protocol)) throw new Error('Portal review URL is invalid');
     const reviewUrl = `${base.origin}/?pg=webstores&store=${encodeURIComponent(store.id)}&tab=appearance`;
-    const summary = summarizeAssets(assets);
+    const requestIds = (families || []).filter(f => f.inputs?.notification_batch_id === batchId).map(f => f.request_id);
+    const summary = summarizeAssets(assets, requestIds.length ? requestIds : undefined);
     const email = buildShowcaseReviewEmail({ store, rep, summary, reviewUrl });
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',

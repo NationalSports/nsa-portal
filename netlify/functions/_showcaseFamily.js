@@ -33,6 +33,7 @@ async function queueFamilies({ admin, store, catalog, assets, key, all, settings
   const selected = all ? groups.filter(needsFamilyGeneration) : groups.filter((g) => g.key === key);
   if (!all && !selected.length) throw new Error('Base item not found. Refresh the page.');
   const queued = [];
+  const batchId = crypto.randomUUID();
   // Queue all groups before dispatching any, to preserve the batch email boundary.
   for (const group of selected) {
     if (targetId ? !group.items.some(m=>m.webstore_product_id===targetId && m.supplier_image_url && m.kind!=='bundle') : !group.eligible) throw new Error('The selected images need an original supplier photo before generation');
@@ -50,6 +51,7 @@ async function queueFamilies({ admin, store, catalog, assets, key, all, settings
         inputs.master_signature = canonical.master_signature;
       }
     }
+    inputs.notification_batch_id = batchId;
     inputs.store_art = store.store_art || [];
     for (const member of inputs.members) delete member.asset;
     delete inputs.source.asset;
@@ -63,7 +65,7 @@ async function queueFamilies({ admin, store, catalog, assets, key, all, settings
     queued.push(result.data);
   }
   if (queued.length) {
-    try { await markShowcaseBatchPending(admin, store.id, crypto.randomUUID()); }
+    try { await markShowcaseBatchPending(admin, store.id, batchId); }
     catch (error) {
       for (const q of queued) await transition(admin,store.id,q.family_key,q.generation_request_id,'fail',{error:'Unable to start the review notification batch. Retry this item.'});
       throw error;
