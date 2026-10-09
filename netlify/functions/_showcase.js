@@ -269,7 +269,7 @@ function parseJsonObject(text) {
   throw new Error('Kimi returned an invalid analysis response');
 }
 
-async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt }) {
+async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt, beforeAttempt }) {
   const config = getKimiConfig();
   if (!config.key) throw new Error('Kimi/Moonshot is not configured');
   const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
@@ -319,7 +319,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
     },
     ...images.map((image) => ({ type: 'image_url', image_url: { url: dataUrl(image) } })),
   ];
-  const res = await fetch(KIMI_URL, {
+  const payload = await require('./_showcaseAnalysisRequest').analysisRequest(KIMI_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.key}`,
@@ -337,9 +337,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
       response_format: { type: 'json_object' },
       thinking: { type: 'disabled' },
     }),
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Kimi analysis failed (${res.status}): ${payload?.error?.message || 'unknown provider error'}`);
+  }, { beforeAttempt });
   const text = payload?.choices?.[0]?.message?.content;
   return {
     analysis: parseJsonObject(text),
