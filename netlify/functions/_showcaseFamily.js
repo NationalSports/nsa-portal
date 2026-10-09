@@ -190,13 +190,13 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     const current = async () => { if (!await move('check')) throw new Error('Family was canceled or changed'); };
     await current();
     const preflight = await analyze({ product: job.inputs.source, decorations: [], images: refs,
-      analysisPrompt: `Inspect these supplier garment photos as color references for one shared garment master. Return JSON {supported:boolean, reason:string, colors:[{index:number, patches:[[x,y,width,height]], texture:"solid"|"heather"}]}. Coordinates are normalized 0..1 in each original photo; index is zero based image order. For each image choose 3 small rectangles of clean evenly lit main fabric, excluding ALL background, manufacturer marks, labels, hardware, shadows and specular highlights. Do not estimate RGB; code will sample actual pixels. supported must be false if photos differ in garment construction, are not the same style, have a complex print/pattern, multiple contrasting fabric panels, green manufacturer marks that cannot be separated from the chroma-green master, differing manufacturer mark colors that would require a separate branding layer, or if suitable fabric patches cannot be identified. Solid and fine heather fabric are supported. IMAGE_COLORS=${JSON.stringify(urls.map((url) => members.find((m) => m.supplier_image_url===url).color))}` });
+      analysisPrompt: `Inspect these supplier garment photos as color references for one shared garment master. Return JSON {supported:boolean, reason:string, colors:[{index:number, patches:[[x,y,width,height]], texture:"solid"|"heather"}]}. Coordinates are normalized 0..1 in each original photo; index is zero based image order. For each image choose 3 small rectangles of clean evenly lit main fabric, excluding ALL background, manufacturer marks, labels, hardware, shadows and specular highlights. Do not estimate RGB; code will sample actual pixels. supported must be false if photos differ in garment construction, are not the same style, have a complex print/pattern, multiple contrasting fabric panels, green manufacturer marks that cannot be separated from the chroma-green master, differing manufacturer mark colors that would require a separate branding layer, or if suitable fabric patches cannot be identified. Solid and fine heather fabric are supported. Use IMAGE_COLORS as colorway context: Team Black describes the base hue, not necessarily solid fabric. Preserve visible lighter heather yarn even when the color name omits heather. If a colorway says heather or marled, select heather. Sample representative body fabric with both light and dark yarn, not only dark sleeves or folds. IMAGE_COLORS=${JSON.stringify(urls.map((url) => members.find((m) => m.supplier_image_url===url).color))}` });
     if (preflight.analysis.supported !== true || !Array.isArray(preflight.analysis.colors) || preflight.analysis.colors.length !== urls.length) throw new Error(`Supplier references need review: ${preflight.analysis.reason || 'color sampling unavailable'}`);
     const colors = [];
     for (let i=0;i<urls.length;i++) {
       const color = preflight.analysis.colors.find((c) => c.index===i);
       if (!color || !['solid','heather'].includes(color.texture)) throw new Error('Supplier fabric type needs review');
-      colors.push(await render.sampleFabric(refs[i].bytes,color.patches,color.texture));
+      colors.push(await render.sampleFabric(refs[i].bytes,color.patches,color.texture,members.find(m=>m.supplier_image_url===urls[i]).color));
     }
     await current();
     let master = job.master || job.inputs.shared_master;
@@ -252,7 +252,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
           rendered_preview:true });
       }
       const url = await upload(await render.encode(output,prepared),member.webstore_product_id);
-      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ renderer_version:'strand-edges-v2', logo_strands:mapping.analysis.logo_strands, artwork_color_policy:'source-hue-relief-v2',detail_images:details,human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,patches:sampled.patches,pixels:sampled.pixels},
+      outputs.push({ webstore_product_id:member.webstore_product_id,url,qa:{ renderer_version:'strand-edges-v2', logo_strands:mapping.analysis.logo_strands, artwork_color_policy:'source-hue-relief-v2',detail_images:details,human_review_required:true,supplier_color_sample:{rgb:sampled.rgb,texture:sampled.texture,colorway:sampled.colorway,patches:sampled.patches,pixels:sampled.pixels},
         shared_master_url:master.url,exact_artwork_verified:false,protected_branding_verified:false,
         checklist:['Compare color and fabric texture with supplier photo','Check manufacturer marks across colors','Check logo size, texture and drawstring overlap'] } });
     }
