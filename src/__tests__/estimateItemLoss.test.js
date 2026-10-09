@@ -30,6 +30,7 @@ jest.mock('@supabase/supabase-js', () => {
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
     rpc: (name,args) => {
+      if(name==='sales_order_edit_lease')return Promise.resolve({data:{owned:true,generation:1,ttl_ms:120000},error:null});
       if(name==='save_estimate'){
         state.calls.push({table:'RPC',method:name,args:[args]});
         return Promise.resolve({data:{estimate_id:args.p_estimate.id,version:23,item_count:args.p_items.length},error:null});
@@ -55,7 +56,7 @@ const setup=()=>{
 };
 const saveCalls=state=>state.calls.filter(c=>c.method==='save_estimate');
 beforeEach(()=>{
-  jest.resetModules();localStorage.clear();
+  jest.resetModules();localStorage.clear();global.crypto=require('crypto').webcrypto;
   process.env.REACT_APP_SUPABASE_URL='https://estimate-test.supabase.co';
   process.env.REACT_APP_SUPABASE_ANON_KEY='test-key';
 });

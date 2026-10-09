@@ -14,6 +14,8 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
+import {createSalesOrderEditLease} from './salesOrderEditLease';
+import {createSessionOutbox} from './sessionOutbox';
 import {loadRecoveryDocument} from './loadRecoveryDocument';
 import { protectDocumentDraft, currentDraftOwner, draftJournal } from './draftJournal';
 import { savedDocumentMatchesDraft, reconcileSavedDocumentDrafts } from './savedDraftComparison';
@@ -811,7 +813,7 @@ const _diffSaveSkipLogged=new Set();// rate-limit "skipped" warnings to once per
 // Strip server-managed fields from diff comparison — _version and updated_at are bumped by the DB on
 // every save, so including them causes a phantom save loop: save → version bump → realtime delivers
 // new version → _diffSave sees version change → saves again → repeat indefinitely.
-const _diffCmp=(o)=>{const{_version,updated_at,...r}=o;return JSON.stringify(r)};
+const _diffCmp=(o)=>{const{_editLease,_version,updated_at,...r}=o;return JSON.stringify(r)};
 // Customer child-table arrays attached at load time (promo/credit/pending-shipping data). These
 // persist through their own tables/handlers — _dbSaveCustomer never writes them — but the promo
 // state updates fan them out onto EVERY family member (parent + all subs), so a whole-object diff
@@ -854,7 +856,7 @@ const _estDiffCmp=(e)=>JSON.stringify({
 // is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
 // stop counting as changes.
 const _soItemForDiff=(it)=>({..._pickSoItem(it),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
-const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
+const _soDiffCmp=(s)=>{const{_editLease,_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 // Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
 // row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
 // the save exactly, INCLUDING the image_url->image_front_url fold, so it detects a change iff the save
@@ -2484,11 +2486,16 @@ const _dbSaveSOInner = async (so) => {
     });
     if(saveFailed)throw new Error(_failMsg||'Sales-order validation failed');
     const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{
-      p_so_id:so.id,p_expected_token:saveToken,p_plan:savePlan,
+      p_so_id:so.id,p_expected_token:saveToken,p_plan:{...savePlan,...(so._editLease?{edit_lease:so._editLease}:{})},
     }));
     if(commitError){
-      if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
+      if(commitError.code==='40001'||/STALE_SO_WRITE|SO_EDIT_LEASE_/.test(commitError.message||'')){
         console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
+        if(/SO_EDIT_LEASE_/.test(commitError.message||'')){
+          _logClientEvent('so_edit_lease_blocked',{id:so.id,session:so._editLease?.session||null,reason:commitError.message});
+          if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('nsa:edit-lease-lost',{detail:{id:so.id,session:so._editLease?.session}}));
+          if(_dbNotify)_dbNotify('This order is being edited elsewhere or your editing session expired. Your draft is kept for review.','error');
+        }
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
@@ -3625,7 +3632,18 @@ export const _saveReviewedDocument=async(table,payload,owner)=>{
   if(payload._draftRecovery&&payload._draftRecovery.owner!==currentDraftOwner())return false;
   _clearDocumentConflictCooldown(payload.id);
   // Dispatch directly, even when the React snapshot already equals this draft.
-  const result=await (table==='estimates'?_dbSaveEstimate(payload,{exactAttempt:true}):_dbSaveSO(payload,{exactAttempt:true}));
+  let lease;
+  let result;
+  try{
+    if(table==='sales_orders'&&(process.env.REACT_APP_SO_EDIT_LEASES==='1'||payload._editLease)){
+      lease=createSalesOrderEditLease({client:supabase,id:payload.id});
+      await lease.acquire();
+      const stamped=lease.stamp(payload);
+      if(!stamped){if(_dbNotify)_dbNotify('This order is being edited elsewhere. Close that editor before saving the reviewed draft.','error');return false;}
+      Object.assign(payload,stamped);
+    }
+    result=await (table==='estimates'?_dbSaveEstimate(payload,{exactAttempt:true}):_dbSaveSO(payload,{exactAttempt:true}));
+  }finally{if(lease)await lease.close()}
   if(result===true)delete payload._reviewedSaveToken;
   return result===true;
 };
@@ -3796,17 +3814,10 @@ const _dbSavePendingIds=new Set();
 // _version the edit was based on, so boot can rehydrate it behind a version gate (_outboxGate).
 // The gate, not this store, decides whether a payload may re-enter state: a stale outbox entry
 // silently overwriting a newer server row would be worse than the loss it prevents.
-const _OUTBOX_KEY='nsa_outbox';
-const _outboxRead=()=>{try{const raw=localStorage.getItem(_OUTBOX_KEY);const box=raw?JSON.parse(raw):{};return box&&typeof box==='object'&&!Array.isArray(box)?box:{}}catch{return{}}};
-// A full browser store must never delete someone else's unsaved work to make
-// room. setItem is atomic: failure leaves the previous backup unchanged.
-const _outboxWrite=(box)=>{
-  try{localStorage.setItem(_OUTBOX_KEY,JSON.stringify(box));return true}
-  catch(error){
-    console.error('[Outbox] Could not update backup; existing drafts retained:',error);
-    if(_dbNotify)_dbNotify('Browser backup is full or unavailable. Existing drafts were kept. Keep this tab open until your cloud save is confirmed.','error');
-    return false;
-  }
+const _sessionOutbox=createSessionOutbox({storage:()=>localStorage,owner:currentDraftOwner});
+const _outboxStorageError=error=>{
+  console.error('[Outbox] Existing drafts retained:',error);
+  if(_dbNotify)_dbNotify('Browser backup is full or unavailable. Keep this tab open until your cloud save is confirmed.','error');
 };
 // A save completion must identify the draft that it belongs to. A random component keeps tokens
 // distinct across tabs; the counter makes repeated saves in one tab easy to distinguish even when
@@ -3842,67 +3853,39 @@ const _consumeOutboxConflict=(entity,revision)=>{
 };
 const _outboxPayload=(entity)=>{const payload={...entity};delete payload._retry;return payload};
 const _outboxAdd=(table,entity,revision)=>{try{
-  if(!entity||!entity.id)return;
-  const box=_outboxRead();const key=table+':'+entity.id;
-  const payload=_outboxPayload(entity);// transient retry-poke marker, not part of the edit
-  const prev=box[key];
-  // Calls from a new save attempt intentionally replace the prior draft with their new revision.
-  // Completion handlers never call this function: they use _outboxUpdate/_outboxAck below, which
-  // compare the token and therefore cannot overwrite or remove a newer attempt.
-  // Base = the version this edit's CONTENT was authored against. The optimistic-lock auto-heal
-  // (_checkVersion conflict → entity._version=serverVersion) advances _version without touching the
-  // content, so recording _version here would stamp stale content as "current" and make _outboxGate
-  // silently re-apply it over newer server data on the next boot (the SO-1514 stuck-retry loop).
-  // _obBaseVersion preserves the true pre-heal base; it's set at every auto-heal site and cleared on
-  // a fully-successful save (_outboxWrap).
-  const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
-  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1,revision:revision||_newOutboxRevision()};
-  return _outboxWrite(box)?box[key].revision:false;
-}catch(e){console.error('[Outbox] add failed:',e);return false}};
-// Update and acknowledge are compare-before-write operations. They intentionally do nothing when
-// another tab/attempt has replaced the key, which is the key safety property for delayed results.
-// localStorage has no cross-tab transaction here; the final read immediately before the write narrows
-// the race, while the revision check prevents the ordinary delayed-completion interleaving.
+  if(!entity?.id)return false;
+  const payload=_outboxPayload(entity),prev=_sessionOutbox.own(table,entity.id);
+  const base=payload._obBaseVersion??payload._version;
+  return _sessionOutbox.write(table,entity.id,{table,id:entity.id,payload,
+    baseVersion:base!=null&&isFinite(Number(base))?Number(base):null,
+    ts:Date.now(),attempts:(prev?.attempts||0)+1,revision:revision||_newOutboxRevision()});
+}catch(error){_outboxStorageError(error);return false}};
 const _outboxUpdate=(table,entity,revision,stagedId)=>{try{
-  if(!revision||!entity||!entity.id)return false;
-  const box=_outboxRead();const sourceId=stagedId||entity.id;const key=table+':'+sourceId;const prev=box[key];
-  if(!prev||prev.revision!==revision)return false;
-  const finalId=entity.id;const payload=_outboxPayload(entity);const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
-  const updated={...prev,table,id:finalId,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev.attempts||0)+1,revision};
-  if(String(sourceId)===String(finalId)){box[key]=updated}
-  else{
-    const destKey=table+':'+finalId;const dest=box[destKey];
-    // A newer draft already owns the reminted ID. Drop only this attempt's old key and retain it.
-    if(dest&&dest.revision!==revision){delete box[key];_outboxWrite(box);return false}
-    box[destKey]=updated;delete box[key];
+  if(!entity?.id||!revision)return false;
+  const sourceId=stagedId||entity.id,prev=_sessionOutbox.own(table,sourceId);
+  if(prev?.revision!==revision)return false;
+  if(sourceId!==entity.id){
+    const dest=_sessionOutbox.own(table,entity.id);
+    if(dest&&dest.revision!==revision){_sessionOutbox.remove(table,sourceId,revision);return false;}
   }
-  return _outboxWrite(box);
-}catch(e){console.error('[Outbox] update failed:',e);return false}};
+  const result=_outboxAdd(table,entity,revision);
+  if(result&&sourceId!==entity.id)_sessionOutbox.remove(table,sourceId,revision);
+  return !!result;
+}catch(error){_outboxStorageError(error);return false}};
 const _outboxAck=(table,id,revision)=>{try{
-  if(!id||!revision)return false;
-  const box=_outboxRead();const key=table+':'+id;const prev=box[key];
-  if(!prev||prev.revision!==revision)return false;
-  // Re-read before deleting so a storage event/newer write observed during the read is retained.
-  // This is still bounded by localStorage's lack of an atomic compare-and-swap; all callers must
-  // use revision-aware ack/update paths for the guarantee to hold.
-  const latest=_outboxRead()[key];if(!latest||latest.revision!==revision)return false;
-  delete box[key];return _outboxWrite(box);
-}catch{return false}};
-// Failed add-only saves historically captured their entity only after the failure was known. Keep
-// that behavior when no entry exists, while refusing to replace a full-save entry that may be newer.
-// A tokened full save may update only the entry it staged; if it was explicitly discarded meanwhile,
-// it must not resurrect itself here.
-const _outboxRetainFailure=(table,entity,revision,stagedId)=>{try{
-  if(!entity||!entity.id)return false;
-  const box=_outboxRead();const sourceId=stagedId||entity.id;const current=box[table+':'+sourceId];
-  if(current){return revision&&current.revision===revision?_outboxUpdate(table,entity,revision,sourceId):false}
-  // A tokened attempt was explicitly removed (or lost); never recreate it. Add-only failures have
-  // no staged token and retain their historical capture-on-failure behavior.
+  return !!revision&&_sessionOutbox.remove(table,id,revision);
+}catch(error){_outboxStorageError(error);return false}};
+const _outboxRetainFailure=(table,entity,revision,stagedId)=>{
+  if(!entity?.id)return false;
+  const current=_sessionOutbox.own(table,stagedId||entity.id);
+  if(current)return revision&&current.revision===revision?_outboxUpdate(table,entity,revision,stagedId):false;
   return revision?false:_outboxAdd(table,entity);
-}catch{return false}};
-const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
-const _outboxRemoveById=(id)=>{try{const box=_outboxRead();let hit=false;for(const k of Object.keys(box)){if(box[k]&&box[k].id===id){delete box[k];hit=true}}if(hit)_outboxWrite(box)}catch{}};
-const _outboxList=()=>{try{return Object.values(_outboxRead())}catch{return[]}};
+};
+const _outboxRemove=(table,id,entry)=>{try{
+  return _sessionOutbox.remove(table,id,entry?.revision,entry?.storageKey,entry?.legacySnapshot);
+}catch(error){_outboxStorageError(error);return false}};
+const _outboxRemoveById=id=>{for(const entry of _outboxList())if(entry.id===id&&!entry.reviewOnly)_outboxRemove(entry.table,id,entry)};
+const _outboxList=()=>{try{return _sessionOutbox.list()}catch{return[]}};
 // Live conflict surfacing: when a save is rejected because the server moved past the client's base
 // version (the estimate stale-guard), the edit's content is preserved in the outbox and the App is
 // notified so the conflict card appears IMMEDIATELY — the rep decides view/apply/discard instead of
@@ -3916,7 +3899,7 @@ const _emitOutboxConflict=(table,entity)=>{try{
   // explicit conflict surfaces have no token and retain the intentional fresh-capture behavior.
   const attempts=_outboxAttemptsByEntity.get(entity);
   if(attempts?.size){attempts.forEach((stagedId,revision)=>_outboxUpdate(table,entity,revision,stagedId));_markOutboxConflict(entity)}else _outboxAdd(table,entity);
-  const en=_outboxRead()[table+':'+entity.id];
+  const en=_sessionOutbox.own(table,entity.id);
   if(en&&_onOutboxConflict)_onOutboxConflict(en);
 }catch(e){console.error('[Outbox] conflict emit failed:',e)}};
 // Deterministic item-count rejections cannot heal by retrying the same payload.

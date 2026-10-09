@@ -20,6 +20,12 @@
 # chunks that don't exist there, blanking the page).
 [context.production.environment]
   PUBLIC_URL = "https://nsa-portal.netlify.app"
+  REACT_APP_SO_EDIT_LEASES = "0"
+
+# Ownership is enabled only on the synthetic order in deploy previews.
+[context.deploy-preview.environment]
+  REACT_APP_SO_EDIT_LEASES = "1"
+  REACT_APP_SO_EDIT_PILOT_ORDER_ID = "SO-TEST-SAVE-20261008"
 
 # Team Shop launch gate — netlify/edge-functions/teamshop-gate.js. Declared here (NOT via
 # inline `export const config`) ON PURPOSE: config-file edge functions run BEFORE inline
