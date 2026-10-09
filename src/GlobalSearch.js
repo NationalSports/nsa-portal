@@ -88,7 +88,7 @@ export default React.memo(function GlobalSearch({
   const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[]})};
   const select=(kind,value,event)=>{if(event&&(event.ctrlKey||event.metaKey||event.shiftKey||event.button===1))return;event?.preventDefault();clear();onOpen(kind,value,index.customerById)};
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
-  const kinds=['store','customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
+  const kinds=['customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor','store'];
   const total=kinds.reduce((n,k)=>n+(grouped[k]?.length||0),0);
   const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):kind==='pick'&&v.pick_id?newTabHref({pg:'item_fulfillment',if:v.pick_id}):(kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
   const row=(kind,v)=>{

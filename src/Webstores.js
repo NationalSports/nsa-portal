@@ -5178,10 +5178,10 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
 
   const matchesFilter = (s) => {
     const st = storeStatus(s);
-    if (!matchesStatus(st)) return false;
-    if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
+    if (!search.trim() && !matchesStatus(st)) return false;
+    if (!search.trim() && repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
-      const q = search.toLowerCase();
+      const q = search.trim().toLowerCase();
       if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q) || (s.store_code || '').toLowerCase().includes(q))) return false;
     }
     return true;
@@ -5340,9 +5340,11 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores — name, customer, or store #…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search all stores — name, customer, or store #…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
             </div>
           </div>
+
+          {search.trim() && <p style={{ fontSize: 12, color: '#5A6075', marginBottom: 10 }}>Searching all statuses and reps. Clear search to return to your filters.</p>}
 
           {/* Table */}
           <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', overflowX: 'auto' }}>
