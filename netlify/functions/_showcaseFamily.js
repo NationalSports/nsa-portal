@@ -17,7 +17,7 @@ function catalogSignature(members) {
 function familyInputs(group, assets, settings, targetId) {
   const members = group.items.map((item) => ({ ...item, settings: normalizeShowcaseSettings(settings || assets.find((a) => a.webstore_product_id === item.webstore_product_id)?.analysis?.showcase_settings) }));
   // Stable selection across catalog reorder; logos never become master inputs.
-  const source = (targetId && members.find(m => m.webstore_product_id === targetId)) || [...members].sort((a,b) => a.product_id.localeCompare(b.product_id))[0];
+  const source = (targetId && members.find(m => m.webstore_product_id === targetId)) || [...members].filter(m=>m.supplier_image_url).sort((a,b) => a.product_id.localeCompare(b.product_id))[0] || members[0];
   const selected = targetId ? members.filter(m => m.webstore_product_id === targetId) : members;
   if (!selected.length) throw new Error('Image combination not found in this item');
   return { version: FAMILY_VERSION, members: selected, source, catalog_family_key: group.key, catalog_signature:catalogSignature(members),
@@ -137,7 +137,19 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     const fetchImage = deps.fetchImage || fetchRemoteImage;
     const analyze = deps.analyze || analyzeWithKimi;
     const generate = deps.generate || generateWithOpenAI;
-    const members = job.inputs.members;
+    let members = job.inputs.members;
+    const skipped = [];
+    const fetched = new Map();
+    for (const url of [...new Set(members.map(m=>m.supplier_image_url))]) {
+      try {
+        if (!url) throw new Error('No supplier photo added');
+        fetched.set(url,await fetchImage(url));
+      } catch (error) {
+        for (const m of members.filter(m=>m.supplier_image_url===url)) skipped.push({webstore_product_id:m.webstore_product_id,error:`Skipped ${m.color || 'image'}: supplier photo unavailable. Add or replace the supplier photo and retry. ${error.message}`});
+      }
+    }
+    members = members.filter(m=>fetched.has(m.supplier_image_url));
+    if (!members.length) throw new Error(skipped[0]?.error || 'No usable supplier photos');
     const urls = [...new Set(members.map((m) => m.supplier_image_url))];
     if (urls.length > 16) throw new Error('This item has too many color references for one batch (maximum 16)');
     const checkCatalog = async () => {
@@ -174,10 +186,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       placements[id] ||= { x:d.x,y:d.y,w:d.w,supplier_index:urls.indexOf(m.supplier_image_url)+1 };
     }
     await checkCatalog();
-    const refs = await Promise.all(urls.map(async url => {
-      try { return await fetchImage(url); }
-      catch (error) { throw new Error(`Supplier photo for ${members.find(m=>m.supplier_image_url===url)?.color || 'this color'}: ${error.message}`); }
-    }));
+    const refs = urls.map(url=>fetched.get(url));
     const current = async () => { if (!await move('check')) throw new Error('Family was canceled or changed'); };
     await current();
     const preflight = await analyze({ product: job.inputs.source, decorations: [], images: refs,
@@ -205,7 +214,10 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       if (!await move('cache',master)) throw new Error('Family was canceled');
     }
     else {
-      const sourceImage = refs[urls.indexOf(job.inputs.source.supplier_image_url)] || await fetchImage(job.inputs.source.supplier_image_url);
+      if (!fetched.has(job.inputs.source.supplier_image_url)) {
+        job.inputs.source = members[0];
+      }
+      const sourceImage = fetched.get(job.inputs.source.supplier_image_url);
       const generated = await generate({ product:job.inputs.source,decorations:[],images:[sourceImage],editPrompt:masterPrompt(job.inputs.source) });
       await current();
       masterImage = generated;
@@ -219,7 +231,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Saved x/y/w coordinates and magenta guides are authoritative. Placement-editor preset names such as left_chest are intentionally omitted: staff can move a preset onto a trouser leg, so infer the physical garment panel from the reference guide, never from a preset name. For bottoms preserve the viewer-left or viewer-right leg shown in the reference; relaxed flat legs becoming naturally separated in the hero is an intentional pose change, not itself a construction mismatch. Other images are supplier photos in the exact editor frame. Magenta outlined squares and center crosses are placement guides, NOT garment features: labels are the complete placement ids (p1, p2, etc.). Return those exact keys in placements. Transfer each outlined square onto the same fabric area of the master, keeping its physical size and center relative to neckline, torso sides and pocket. Never copy the guide marks into protected regions or treat them as garment construction. Return JSON {supported:boolean,reason:string,protected_regions:[[[0.1,0.2],[0.12,0.2],[0.12,0.23]]],logo_occluders:[],logo_strands:[{points:[[x,y,width],...]}],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. The protected_regions example is SHAPE ONLY, not coordinates to copy. Every polygon vertex must have exactly two finite numeric values [x,y], at least 3 vertices and no more than 80. All output coordinates are normalized 0..1 to the FIRST image, never pixels or percentages. Use [] for absent regions. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Keep logo_occluders empty. For each actual drawstring or narrow zipper lying in front of the logo, trace a separate logo_strands centerline with at least 8 points from top to tip, following every bend. Each point is [x,y,full_width]; width is the actual visible strand width as a fraction of image WIDTH, excludes shadows and surrounding fabric, and must not exceed 0.025. Do not mask ordinary fabric folds: the logo continues over them. If no strands overlap artwork return an empty list. Return supported:false if accurate narrow traces cannot be identified. Never substitute bounding rectangles for paths. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the supplied 4:5 reference FRAME, including white padding, exactly as shown in the placement editor. Width is a percentage of frame WIDTH; y is a percentage of frame HEIGHT. The square therefore has normalized height w*0.8 in that reference. Preserve logo width relative to the torso and vertical distance from neckline and pocket; do not enlarge it to fill the chest or move it down toward the pocket. Map that same physical location and size onto the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. REVIEWER REVISION REQUEST=${JSON.stringify(job.inputs.source.settings?.revision_notes || "")}. Apply requested placement corrections without changing the original logo artwork. PLACEMENTS=${JSON.stringify(placements)}` };
     const mapping = await validatedMapping(analyze,mappingRequest,placements,current);
     const prepared = await render.prepareMaster(masterImage.bytes,mapping.analysis,2048);
-    const outputs = [];
+    const outputs = [...skipped];
     for (const member of members) {
       await current();
       const sampled = colors[urls.indexOf(member.supplier_image_url)];
