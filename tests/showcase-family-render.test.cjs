@@ -110,3 +110,22 @@ test('curved drawstring trace preserves logo beside the cord instead of cutting 
  isLogo(50,60);
  await assert.rejects(prepareMaster(bytes,{protected_regions:[],logo_occluders:[],logo_strands:[{points:[[.4,.3,.1],[.4,.4,.1],[.4,.5,.1]]}]}),/trace needs correction/);
 });
+
+test('heather removes smooth lighting without manufacturing striped texture',async()=>{
+  const data=Buffer.alloc(256*256*3);
+  for(let y=0;y<256;y++)for(let x=0;x<256;x++)for(let c=0;c<3;c++)data[(y*256+x)*3+c]=40+Math.floor(x/2)+Math.floor(y/8);
+  const bytes=await sharp(data,{raw:{width:256,height:256,channels:3}}).png().toBuffer();
+  const {grain}=await sampleFabric(bytes,[[.2,.2,.25,.25],[.5,.5,.25,.25]],'heather');
+  assert.equal(grain.length,4096);
+  assert.ok(Math.max(...grain.map(Math.abs))<=2,'smooth lighting must not become a repeating grain pattern');
+});
+test('heather retains real fine fabric variation at matching pixel coordinates',async()=>{
+  const data=Buffer.alloc(256*256*3);
+  for(let y=0;y<256;y++)for(let x=0;x<256;x++)for(let c=0;c<3;c++)data[(y*256+x)*3+c]=80+((x*13+y*7)%19);
+  const bytes=await sharp(data,{raw:{width:256,height:256,channels:3}}).png().toBuffer();
+  const {grain}=await sampleFabric(bytes,[[.25,.25,.25,.25],[.5,.5,.25,.25]],'heather');
+  const tile=await sharp(bytes).extract({left:64,top:64,width:64,height:64}).greyscale().raw().toBuffer();
+  const blur=await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).raw().toBuffer();
+  for(let i=0;i<4096;i++)assert.equal(grain[i],tile[i]-blur[i*3]);
+  assert.ok(grain.some(v=>v>3)&&grain.some(v=>v< -3));
+});
