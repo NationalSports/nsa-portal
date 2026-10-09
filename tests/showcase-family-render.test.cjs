@@ -108,7 +108,7 @@ test('curved drawstring trace preserves logo beside the cord instead of cutting 
  isLogo(46,50);
  isLogo(54,50);
  isLogo(50,60);
- await assert.rejects(prepareMaster(bytes,{protected_regions:[],logo_occluders:[],logo_strands:[{points:[[.4,.3,.1],[.4,.4,.1],[.4,.5,.1]]}]}),/trace needs correction/);
+ await assert.rejects(prepareMaster(bytes,{protected_regions:[],logo_occluders:[],logo_strands:[{points:[[.4,.3,.1],[.4,.4,.1],[.4,.5,.1]]}]}),/width .*at most 0.025/);
 });
 
 test('heather removes smooth lighting without manufacturing striped texture',async()=>{
@@ -128,4 +128,12 @@ test('heather retains real fine fabric variation at matching pixel coordinates',
   const blur=await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).raw().toBuffer();
   for(let i=0;i<4096;i++)assert.equal(grain[i],tile[i]-blur[i*3]);
   assert.ok(grain.some(v=>v>3)&&grain.some(v=>v< -3));
+});
+
+test('drawstring normalization accepts equivalent numbers without relaxing width protection',()=>{
+ const {validateStrands}=require('../netlify/functions/_showcaseFamilyRender');
+ const result=validateStrands([{points:[['0.4','0.2','0.01'],{x:.4,y:.3,width:.01},[.4,.4,.01]]}]);
+ assert.deepEqual(result[0].points[0],[.4,.2,.01]);
+ assert.deepEqual(result[0].points[1],[.4,.3,.01]);
+ assert.throws(()=>validateStrands([{points:[[.4,.2,.1],[.4,.3,.1],[.4,.4,.1]]}]),/point 1: width 0.1/);
 });

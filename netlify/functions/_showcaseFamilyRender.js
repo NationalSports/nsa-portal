@@ -72,10 +72,17 @@ function polygons(value) {
 // Reject broad or sparse traces rather than deleting an arbitrary strip of logo.
 function validateStrands(value = []) {
   if (!Array.isArray(value) || value.length > 12) throw new Error('Invalid drawstring paths');
-  for (const strand of value) {
-    if (!Array.isArray(strand.points) || strand.points.length < 3 || strand.points.length > 80 ||
-      strand.points.some(p => !Array.isArray(p) || p.length !== 3 || p.some(v => !Number.isFinite(v)) || p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1 || p[2] <= 0 || p[2] > .025))
-      throw new Error('Drawstring trace needs correction: use tight centerlines and actual widths');
+  for (const [index,strand] of value.entries()) {
+    if (!Array.isArray(strand?.points) || strand.points.length < 3 || strand.points.length > 80)
+      throw new Error(`Drawstring trace ${index+1}: provide 3–80 centerline points`);
+    strand.points = strand.points.map((p, j) => {
+      const raw = Array.isArray(p) ? p : p && typeof p === 'object' ? [p.x,p.y,p.width] : [];
+      const point = raw.map(v => typeof v === 'string' && v.trim() ? Number(v) : v);
+      if (point.length !== 3 || point.some(v => !Number.isFinite(v))) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: expected numeric [x,y,width]`);
+      if (point[0]<0 || point[0]>1 || point[1]<0 || point[1]>1) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: x/y must be normalized 0..1`);
+      if (point[2]<=0 || point[2]>.025) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: width ${point[2]} must be actual narrow strand width, greater than 0 and at most 0.025 of image width; exclude shadows and surrounding fabric`);
+      return point;
+    });
   }
   return value;
 }
