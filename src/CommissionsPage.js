@@ -15,6 +15,7 @@ import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
+import NetSuiteCommissionImport, { NetSuiteInvoiceTable } from './NetSuiteCommissionImport';
 import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
@@ -77,8 +78,9 @@ export default function CommissionsPage({adminReports=false}={}){
     const[repairedIds,setRepairedIds]=useState([]);
     const _resnapQueue=useRef({});
     const _resnapping=useRef(false);
-    // Admin Dashboard: which rep rows / invoice rows are expanded
-    const[dashOpen,setDashOpen]=useState({});
+    // Admin Dashboard: the rep whose own page is open (null = the all-reps table), and
+    // which invoice rows on that page are expanded to their line items
+    const[repPage,setRepPage]=useState(null);
     // Merged dashboard table: hide reps with no activity AND no draw/loan settings
     // (default on — the payout list carries every commission-eligible rep, most of them
     // $0 in any given month), plus which row's ⋯ action menu is open.
@@ -86,7 +88,8 @@ export default function CommissionsPage({adminReports=false}={}){
     const[rowMenu,setRowMenu]=useState(null);
     const[dashInvOpen,setDashInvOpen]=useState({});
     // Draw & loan settings modal ({id,draw,loan,pct} while open) and the send-report
-    // modal ({to,reps:{repId:bool}} while open)
+    // modal ({to,reps:{repId:bool},markPaid?:bool,single?:repId} while open; markPaid is
+    // only present when opened from a rep's page, where sending defaults to marking paid)
     const[compEdit,setCompEdit]=useState(null);
     const[emailModal,setEmailModal]=useState(null);
     const[emailSending,setEmailSending]=useState(false);
@@ -95,12 +98,15 @@ export default function CommissionsPage({adminReports=false}={}){
 
     // ── Rep comp settings (Admin Dashboard): monthly draw + employee loans ──
     // Stored in app_state under 'comm_rep_comp', written through the app_state_cas RPC
-    // (00181) so two open tabs can't clobber each other; falls back to a plain upsert
-    // while the RPC isn't deployed (same fallback App.js uses for comm_overrides).
+    // (00181) so two open tabs can't clobber each other. Never bypass the version check.
     // null = not loaded yet — the payout panel renders as loading and edits are
     // disabled, so a failed load can never cause a blind overwrite.
     const[repComp,setRepComp]=useState(null);
     const _repCompVer=useRef(0);
+    const _repCompCurrent=useRef(null);
+    _repCompCurrent.current=repComp;
+    const _compSaving=useRef(false);
+    const[compSaving,setCompSaving]=useState(false);
     // Whether this browser has a REAL Supabase auth session. The LoginGate
     // admin-override picker sets cu without one — the DB then sees anon and rejects
     // every write (RLS + function grants), while the UI quietly reverts on the next
@@ -122,38 +128,28 @@ export default function CommissionsPage({adminReports=false}={}){
       });
       return()=>{cancelled=true};
     },[isSteve]);
-    const saveRepComp=async(next)=>{
-      const prev=repComp;setRepComp(next);
-      if(!supabase)return;
-      const str=JSON.stringify(next);
-      // Writes need a real Supabase auth session. The LoginGate admin-override path
-      // (master password → user picker) sets cu WITHOUT one, so the DB sees anon and
-      // denies the RPC — detect that and say so instead of showing a bare SQL error.
-      const _failMsg=async(msg)=>{
-        let hint='';
-        try{const{data:sess}=await supabase.auth.getSession();if(!sess||!sess.session)hint='\n\nYou are signed in via the admin-override picker (no auth session), so the database rejects writes. Log out and sign in with your email + password, then retry.'}catch(_){/* ignore */}
-        alert('Draw/loan save failed: '+msg+hint);
-      };
+    const saveRepComp=async(change)=>{
+      if(!supabase||_repCompCurrent.current===null){alert('Commission settings are not loaded. Please retry after loading.');return false}
+      if(_compSaving.current){alert('A commission save is in progress. Please wait and retry.');return false}
+      _compSaving.current=true;setCompSaving(true);
       try{
-        const{data,error}=await supabase.rpc('app_state_cas',{p_key:'comm_rep_comp',p_expected:_repCompVer.current,p_value:str});
-        if(error){
-          const missingFn=error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'');
-          const denied=error.code==='42501'||/permission denied/i.test(error.message||'');
-          if(missingFn||denied){
-            const{error:e2}=await supabase.from('app_state').upsert({id:'comm_rep_comp',value:str,updated_at:new Date().toISOString()});
-            if(e2){await _failMsg(e2.message);setRepComp(prev)}
-            return;
-          }
-          await _failMsg(error.message);setRepComp(prev);return;
-        }
+        const next=typeof change==='function'?change(_repCompCurrent.current):change;
+        const{data,error}=await supabase.rpc('app_state_cas',{p_key:'comm_rep_comp',p_expected:_repCompVer.current,p_value:JSON.stringify(next)});
+        if(error)throw error;
         if(data===-1){
-          const{data:row}=await supabase.from('app_state').select('value,version').eq('id','comm_rep_comp').maybeSingle();
-          if(row){_repCompVer.current=row.version||0;try{setRepComp(JSON.parse(row.value||'{}'))}catch(_){setRepComp({})}}
-          alert('Draw/loan settings were changed in another tab — showing the latest. Re-apply your change.');
-          return;
+          const{data:row,error:loadError}=await supabase.from('app_state').select('value,version').eq('id','comm_rep_comp').maybeSingle();
+          if(loadError)throw loadError;
+          if(row){_repCompVer.current=row.version||0;const latest=JSON.parse(row.value||'{}');_repCompCurrent.current=latest;setRepComp(latest)}
+          alert('Commission settings changed in another tab. The latest data is loaded; review it and retry your change.');
+          return false;
         }
-        if(typeof data==='number')_repCompVer.current=data;
-      }catch(e){await _failMsg(e?.message||String(e));setRepComp(prev)}
+        if(typeof data!=='number')throw new Error('The database did not confirm the commission save.');
+        _repCompVer.current=data;_repCompCurrent.current=next;setRepComp(next);
+        return true;
+      }catch(e){
+        alert('Commission save failed: '+(e?.message||String(e))+(hasAuth===false?' Log out and sign in with your email and password to save changes.':''));
+        return false;
+      }finally{_compSaving.current=false;setCompSaving(false)}
     };
     useEffect(()=>{let cancelled=false;
       if(!supabase)return;
@@ -1004,6 +1000,7 @@ export default function CommissionsPage({adminReports=false}={}){
       {commTab==='adminDash'&&isSteve&&(()=>{
         const now=new Date();const nowYM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
         const isMTD=commMonth===nowYM;
+        const shiftMonth=d=>{const[y,m]=commMonth.split('-').map(Number);const dt=new Date(y,m-1+d,1);setCommMonth(dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0'))};
         const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
         // Whole company regardless of the header rep selector: null filter = all reps.
         const linesM=buildAllCommLines(null).filter(l=>{if(!l.paidDate)return false;const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');return ym===commMonth});
@@ -1014,7 +1011,6 @@ export default function CommissionsPage({adminReports=false}={}){
         promoM.forEach(l=>{const b=bucket(l.repId||'_none');b.promo.push(l);b.promoCost+=l.totalCost});
         const rows=Object.values(byRep).map(b=>({...b,rep:REPS.find(r=>r.id===b.repId),net:Math.round((b.comm-b.promoCost)*100)/100})).sort((a,b)=>b.net-a.net);
         const tot=rows.reduce((a,b)=>({rev:a.rev+b.rev,cost:a.cost+b.cost,gp:a.gp+b.gp,comm:a.comm+b.comm,promoCost:a.promoCost+b.promoCost,net:a.net+b.net,inv:a.inv+b.lines.length}),{rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0,inv:0});
-        const totGpPct=tot.rev>0?Math.round(tot.gp/tot.rev*100):0;
         const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
@@ -1085,42 +1081,51 @@ export default function CommissionsPage({adminReports=false}={}){
           // rep with activity this month and any rep carrying draw/loan settings.
           const ids=new Set(rows.map(b=>b.repId));
           salesReps.forEach(r=>ids.add(r.id));
-          Object.entries(repComp||{}).forEach(([id,c])=>{if(c&&(safeNum(c.draw)>0||safeNum(c.loanBalance)>0))ids.add(id)});
+          Object.entries(repComp||{}).forEach(([id,c])=>{if(c&&(safeNum(c.draw)>0||safeNum(c.loanBalance)>0||c.nsComm?.[commMonth]!=null||Object.values(c.nsInvoices||{}).some(i=>i.month===commMonth)))ids.add(id)});
           return[...ids].map(id=>{
             const b=rows.find(r=>r.repId===id)||{repId:id,rep:REPS.find(r=>r.id===id),lines:[],promo:[],rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0};
             const s=(repComp||{})[id]||{};
-            const gp=Math.round(b.gp*100)/100;
+
             const full=!!(s.fullMonths&&s.fullMonths[commMonth]);
             const appliedAmt=s.loanLog&&s.loanLog[commMonth]!=null?safeNum(s.loanLog[commMonth]):null;
             // Commission on NetSuite orders, which are still paid outside the portal.
-            const nsComm=s.nsComm&&s.nsComm[commMonth]!=null?safeNum(s.nsComm[commMonth]):0;
+            const nsManual=safeNum(s.nsComm?.[commMonth]);
+            const nsInvoices=Object.values(s.nsInvoices||{}).filter(i=>i.month===commMonth);
+            const nsImported=Math.round(nsInvoices.reduce((a,i)=>a+i.commission,0)*100)/100;
+            const nsComm=Math.round((nsManual+nsImported)*100)/100;
+            const reportRev=b.rev+nsInvoices.reduce((a,i)=>a+i.revenue,0);
+            const reportCost=b.cost+nsInvoices.reduce((a,i)=>a+i.cost,0);
+            const gp=Math.round((b.gp+nsInvoices.reduce((a,i)=>a+i.gp,0))*100)/100;
+            const invoiceCount=b.lines.length+nsInvoices.length;
+            const reportDays=avgDays([...b.lines,...nsInvoices]);
             // The draw/loan arithmetic lives in businessLogic.calcRepPayout so it is unit
             // tested against real paycheck cases rather than re-derived inside the render.
             const{netComm,draw,underBy,payable,loanBal,pct,withhold,payout}=calcRepPayout({
               netCommission:b.net,extraCommission:nsComm,draw:s.draw,loanBalance:s.loanBalance,loanPct:s.loanPct,payFull:full,appliedAmt,
             });
-            const hasComp=draw>0||loanBal>0||appliedAmt!=null||nsComm!==0;
+            const hasComp=draw>0||loanBal>0||appliedAmt!=null||nsComm!==0||nsInvoices.length>0;
             const paidRec=(s.paid&&s.paid[commMonth])||null;
-            return{b,s,id,draw,gp,netComm,nsComm,underBy,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp,paidRec};
+            return{b,s,id,draw,gp,netComm,nsComm,nsManual,nsImported,nsInvoices,reportRev,reportCost,reportDays,invoiceCount,underBy,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp,paidRec};
           }).sort((a,c)=>c.payout-a.payout);
         })();
         const totPayout=payoutRows.reduce((a,p)=>a+p.payout,0);
+        const reportTot={...tot,
+          rev:payoutRows.reduce((a,p)=>a+p.reportRev,0),cost:payoutRows.reduce((a,p)=>a+p.reportCost,0),gp:payoutRows.reduce((a,p)=>a+p.gp,0),
+          inv:payoutRows.reduce((a,p)=>a+p.invoiceCount,0),net:payoutRows.reduce((a,p)=>a+p.netComm,0),comm:tot.comm+payoutRows.reduce((a,p)=>a+p.nsComm,0)};
+        const totGpPct=reportTot.rev>0?Math.round(reportTot.gp/reportTot.rev*100):0;
         // ── One table: commission detail and draw/loan/payout on the same row ──
         // payoutRows already carries each rep's whole commission bundle on `p.b`, so the
         // two panels were only ever separate renders of the same joined data — Net
         // Commission was literally printed twice. The Loan column is conditional: once the
         // outstanding loans are paid off it disappears instead of sitting empty forever.
         const anyLoan=payoutRows.some(p=>p.loanBal>0||p.appliedAmt!=null);
-        // Draw, [Loan], Payout, ⋯ — appended to the 10 commission columns. Nested detail
-        // rows pad by this so their colSpans stay aligned when the Loan column comes and goes.
-        const PAYCOLS=anyLoan?4:3;
         const dashRows=payoutRows
           .filter(p=>!hideZeroReps||p.b.lines.length>0||p.b.promo.length>0||p.hasComp)
           .sort((a,c)=>(c.b.net+c.nsComm)-(a.b.net+a.nsComm));
         const hiddenReps=payoutRows.length-dashRows.length;
-        const updateComp=(id,patch)=>{const cur=(repComp||{})[id]||{};saveRepComp({...(repComp||{}),[id]:{...cur,...patch}})};
+        const updateComp=(id,patch)=>saveRepComp(current=>({...current,[id]:{...(current[id]||{}),...patch}}));
         const toggleFullMonth=(p)=>{
-          if(repComp===null)return;
+          if(repComp===null||_compSaving.current)return;
           if(p.appliedAmt!=null){alert('This month is already applied to the loan — undo it first.');return}
           const fm={...(p.s.fullMonths||{})};if(fm[commMonth])delete fm[commMonth];else fm[commMonth]=true;
           updateComp(p.id,{fullMonths:fm});
@@ -1138,11 +1143,11 @@ export default function CommissionsPage({adminReports=false}={}){
           updateComp(p.id,{loanBalance:Math.round((safeNum(p.s.loanBalance)+p.appliedAmt)*100)/100,loanLog:log});
         };
         // NetSuite orders are still being paid outside the portal. Their commission is
-        // entered here per rep per month — the AMOUNT (30% of the NetSuite gross profit),
-        // not the gross profit — and is added to portal commission before the draw applies.
+        // imported per invoice, with an optional manual adjustment per rep/month.
+        // The adjustment is added to imported and portal commission before the draw.
         const editNsComm=(p)=>{
-          if(repComp===null)return;
-          const raw=window.prompt('NetSuite commission for '+repName(p.b)+' — '+monthLabel+'\n\nEnter the commission AMOUNT (30% of the NetSuite gross profit), not the gross profit itself.\nIt is added to their portal commission before the draw is applied.\n\nBlank or 0 removes it.',p.nsComm?String(p.nsComm):'');
+          if(repComp===null||_compSaving.current)return;
+          const raw=window.prompt('Manual NetSuite commission adjustment for '+repName(p.b)+' — '+monthLabel+'\n\nEnter an additional commission amount in dollars. Imported invoices calculate their own 30% or 15% commission separately.\n\nBlank or 0 removes the manual adjustment.',p.nsManual?String(p.nsManual):'');
           if(raw==null)return;
           const t=String(raw).trim();
           const v=t===''?0:parseFloat(t.replace(/[$,\s]/g,''));
@@ -1158,12 +1163,21 @@ export default function CommissionsPage({adminReports=false}={}){
         // in comm_rep_comp, so the dashboard shows what was actually disbursed even
         // if the month's numbers move later.
         const markPaid=(p)=>{
-          if(repComp===null)return;
+          if(repComp===null||_compSaving.current)return;
           let msg='Mark '+repName(p.b)+"'s "+monthLabel+' commission as PAID?\n\nPayout: $'+p.payout.toFixed(2);
           if(p.withhold>0&&p.appliedAmt==null)msg+='\n\n⚠ $'+p.withhold.toFixed(2)+' loan withholding has NOT been applied to the loan balance yet — usually you Apply to loan first.';
           if(!window.confirm(msg))return;
-          const paid={...(p.s.paid||{})};paid[commMonth]={amount:p.payout,at:new Date().toISOString(),by:cu?.name||''};
-          updateComp(p.id,{paid});
+          recordPaid([p]);
+        };
+        // Writes the paid record for every rep in `list` in ONE comm_rep_comp save, so
+        // marking several reps at once can't race itself.
+        const recordPaid=(list)=>{
+          if(!list.length)return Promise.resolve(true);
+          return saveRepComp(current=>{
+            const next={...current};const at=new Date().toISOString();
+            list.forEach(p=>{const cur=next[p.id]||{};next[p.id]={...cur,paid:{...(cur.paid||{}),[commMonth]:{amount:p.payout,at,by:cu?.name||''}}}});
+            return next;
+          });
         };
         const unmarkPaid=(p)=>{
           const rec=p.paidRec;if(!rec)return;
@@ -1172,14 +1186,12 @@ export default function CommissionsPage({adminReports=false}={}){
           updateComp(p.id,{paid});
         };
         const markAllPaid=()=>{
-          if(repComp===null)return;
+          if(repComp===null||_compSaving.current)return;
           const unpaid=payoutRows.filter(p=>!p.paidRec);
           if(!unpaid.length){alert('Every rep is already marked paid for '+monthLabel+'.');return}
           const totalUnpaid=unpaid.reduce((a,p)=>a+p.payout,0);
           if(!window.confirm('Mark ALL '+unpaid.length+' remaining reps as PAID for '+monthLabel+'?\n\nTotal payout: $'+totalUnpaid.toFixed(2)))return;
-          const next={...(repComp||{})};const at=new Date().toISOString();
-          unpaid.forEach(p=>{const cur=next[p.id]||{};next[p.id]={...cur,paid:{...(cur.paid||{}),[commMonth]:{amount:p.payout,at,by:cu?.name||''}}}});
-          saveRepComp(next);
+          recordPaid(unpaid);
         };
         // ── Export / email ──
         const csvCell=v=>{const s=v==null?'':String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
@@ -1191,23 +1203,32 @@ export default function CommissionsPage({adminReports=false}={}){
             [...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).forEach(l=>out.push([name,l.type==='omg'?'OMG Store':'Invoice',l.inv.id,l.customer?.name||'',fmtD(l.paidDate),l.daysToPay??'',Math.round(l.commRate*100)+'%',l.gp.rev.toFixed(2),l.gp.cost.toFixed(2),l.gp.gp.toFixed(2),(l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0)+'%',l.commAmt.toFixed(2),l.snapped?'yes':'no']));
             b.promo.forEach(l=>out.push([name,'Promo deduction',l.so.id,l.customer?.name||'',l.soDate,'','','','','','',(-l.totalCost).toFixed(2),'']));
             const _ad=avgDays(b.lines);
-            out.push([name+' — TOTAL','','','','',_ad!=null?_ad+' avg':'','',b.rev.toFixed(2),b.cost.toFixed(2),b.gp.toFixed(2),(b.rev>0?Math.round(b.gp/b.rev*100):0)+'%',b.net.toFixed(2),'']);
+            out.push([name+' — PORTAL TOTAL','','','','',_ad!=null?_ad+' avg':'','',b.rev.toFixed(2),b.cost.toFixed(2),b.gp.toFixed(2),(b.rev>0?Math.round(b.gp/b.rev*100):0)+'%',b.net.toFixed(2),'']);
           });
-          const _adAll=avgDays(selRows.flatMap(b=>b.lines));
+          const selectedPay=payoutRows.filter(p=>!selIds||selIds.has(p.id));
+          selectedPay.forEach(p=>p.nsInvoices.forEach(i=>{
+            out.push([repName(p.b),'NetSuite Invoice',i.id,i.customer,i.paidDate,i.daysToPay,Math.round(i.rate*100)+'%',i.revenue.toFixed(2),i.cost.toFixed(2),i.gp.toFixed(2),i.marginPct==null?'':i.marginPct.toFixed(2)+'%',i.commission.toFixed(2),'imported']);
+            sTot.rev+=i.revenue;sTot.cost+=i.cost;sTot.gp+=i.gp;sTot.net+=i.commission;
+          }));
+          selectedPay.filter(p=>p.nsManual!==0).forEach(p=>{
+            out.push([repName(p.b),'NetSuite manual adjustment','','','','','','','','','',p.nsManual.toFixed(2),'']);
+            sTot.net+=p.nsManual;
+          });
+          const _adAll=avgDays([...selRows.flatMap(b=>b.lines),...selectedPay.flatMap(p=>p.nsInvoices)]);
           out.push(['TOTAL','','','','',_adAll!=null?_adAll+' avg':'','',sTot.rev.toFixed(2),sTot.cost.toFixed(2),sTot.gp.toFixed(2),(sTot.rev>0?Math.round(sTot.gp/sTot.rev*100):0)+'%',sTot.net.toFixed(2),'']);
           if(repComp!==null){
             const selPay=payoutRows.filter(p=>!selIds||selIds.has(p.id));
             out.push([]);
             out.push(['PAYOUTS — '+monthLabel,'Net Commission','GP','Monthly Draw','Under Draw By','Payable','To Loan','Loan Balance Remaining','PAYOUT','Paid']);
-            selPay.forEach(p=>out.push([repName(p.b),p.b.net.toFixed(2),p.gp.toFixed(2),p.draw>0?p.draw.toFixed(2):'',p.underBy>0?p.underBy.toFixed(2):'',p.payable.toFixed(2),p.withhold>0?p.withhold.toFixed(2):'',p.loanBal>0||p.appliedAmt!=null?p.loanBal.toFixed(2):'',p.payout.toFixed(2),p.paidRec?'paid '+String(p.paidRec.at).substring(0,10):'']));
+            selPay.forEach(p=>out.push([repName(p.b),p.netComm.toFixed(2),p.gp.toFixed(2),p.draw>0?p.draw.toFixed(2):'',p.underBy>0?p.underBy.toFixed(2):'',p.payable.toFixed(2),p.withhold>0?p.withhold.toFixed(2):'',p.loanBal>0||p.appliedAmt!=null?p.loanBal.toFixed(2):'',p.payout.toFixed(2),p.paidRec?'paid '+String(p.paidRec.at).substring(0,10):'']));
             out.push(['TOTAL PAYOUT','','','','','','','',selPay.reduce((a,p)=>a+p.payout,0).toFixed(2),'']);
           }
           return out.map(r=>r.map(csvCell).join(',')).join('\r\n');
         };
-        const downloadCsv=()=>{
-          const blob=new Blob(['\ufeff'+csvString(null)],{type:'text/csv;charset=utf-8;'});
+        const downloadCsv=(selIds=null,suffix='')=>{
+          const blob=new Blob(['\ufeff'+csvString(selIds)],{type:'text/csv;charset=utf-8;'});
           const url=URL.createObjectURL(blob);const a=document.createElement('a');
-          a.href=url;a.download='commissions-'+commMonth+'.csv';document.body.appendChild(a);a.click();a.remove();
+          a.href=url;a.download='commissions-'+commMonth+suffix+'.csv';document.body.appendChild(a);a.click();a.remove();
           setTimeout(()=>URL.revokeObjectURL(url),1500);
         };
         const openEmailModal=()=>{
@@ -1218,8 +1239,11 @@ export default function CommissionsPage({adminReports=false}={}){
           const reps={};payoutRows.forEach(p=>{const nm=(p.b.rep?.name||'').trim().toLowerCase();reps[p.id]=!DEFAULT_EXCLUDE.includes(nm)});
           setEmailModal({to:'accounting@nationalsportsapparel.com',reps});
         };
+        // From a rep's own page: that rep only, and "mark paid after sending" on by default
+        // (off when the month is already marked paid).
+        const openRepEmailModal=(p)=>setEmailModal({to:'accounting@nationalsportsapparel.com',reps:{[p.id]:true},single:p.id,markPaid:!p.paidRec});
         const sendReport=async()=>{
-          if(!emailModal||emailSending)return;
+          if(!emailModal||emailSending||_compSaving.current)return;
           const toList=emailModal.to.split(/[,;\s]+/).map(s=>s.trim()).filter(Boolean);
           if(!toList.length||toList.some(t=>!t.includes('@'))){alert('Enter one or more valid email addresses (comma-separated).');return}
           const selIds=new Set(Object.entries(emailModal.reps).filter(([,v])=>v).map(([k])=>k));
@@ -1230,8 +1254,8 @@ export default function CommissionsPage({adminReports=false}={}){
             const td='padding:6px 8px;border-bottom:1px solid #e2e8f0';
             const selPay=payoutRows.filter(p=>selIds.has(p.id));
             const anyComp=repComp!==null&&selPay.some(p=>p.hasComp);
-            const summary=selPay.map(p=>{const b=p.b;return`<tr><td style="${td};font-weight:700">${esc(repName(b))}</td><td style="${td};text-align:center">${b.lines.length}</td><td style="${td};text-align:right">${fmt0(b.rev)}</td><td style="${td};text-align:center">${b.rev>0?Math.round(b.gp/b.rev*100):0}%</td><td style="${td};text-align:right">${fmt(b.net)}</td>${anyComp?`<td style="${td};text-align:right;color:#92400e">${p.draw>0?(p.underBy>0?'under draw by '+fmt(p.underBy):'met ('+fmt(p.draw)+' draw)'):'\u2014'}</td><td style="${td};text-align:right;color:#dc2626">${p.withhold>0?'\u2212'+fmt(p.withhold):'\u2014'}</td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(repComp!==null?p.payout:b.net)}</td></tr>`}).join('');
-            const selTotNet=selPay.reduce((a,p)=>a+p.b.net,0);
+            const summary=selPay.map(p=>{const b=p.b;return`<tr><td style="${td};font-weight:700">${esc(repName(b))}</td><td style="${td};text-align:center">${p.invoiceCount}</td><td style="${td};text-align:right">${fmt0(p.reportRev)}</td><td style="${td};text-align:center">${p.reportRev>0?Math.round(p.gp/p.reportRev*100):0}%</td><td style="${td};text-align:right">${fmt(p.netComm)}</td>${anyComp?`<td style="${td};text-align:right;color:#92400e">${p.draw>0?(p.underBy>0?'under draw by '+fmt(p.underBy):'met ('+fmt(p.draw)+' draw)'):'\u2014'}</td><td style="${td};text-align:right;color:#dc2626">${p.withhold>0?'\u2212'+fmt(p.withhold):'\u2014'}</td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(repComp!==null?p.payout:b.net)}</td></tr>`}).join('');
+            const selTotNet=selPay.reduce((a,p)=>a+p.netComm,0);
             const selTotPay=selPay.reduce((a,p)=>a+(repComp!==null?p.payout:p.b.net),0);
             const html=`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;max-width:760px">
               <h2 style="margin:0 0 4px">Commission Report \u2014 ${monthLabel}${isMTD?' (Month to Date)':''}</h2>
@@ -1244,97 +1268,22 @@ export default function CommissionsPage({adminReports=false}={}){
               <p style="margin:16px 0 0;font-size:11px;color:#64748b">Policy: 30% of GP paid within 90 days, 15% after. Promo order costs deduct from net commission. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise).</p>
             </div>`;
             const b64=btoa(unescape(encodeURIComponent('\ufeff'+csvString(selIds))));
-            const res=await sendBrevoEmail({to:toList.map(email=>({email})),subject:'Commission Report \u2014 '+monthLabel+(isMTD?' (MTD)':''),htmlContent:html,senderName:'NSA Portal',senderEmail:'accounting@nationalsportsapparel.com',attachment:[{name:'commissions-'+commMonth+'.csv',content:b64}]});
-            if(res?.ok){alert('Report emailed to '+toList.join(', '));setEmailModal(null)}
+            const singleName=emailModal.single&&selIds.size===1?repName((selPay[0]||{}).b||{repId:emailModal.single}):'';
+            const res=await sendBrevoEmail({to:toList.map(email=>({email})),subject:'Commission Report \u2014 '+(singleName?singleName+' \u2014 ':'')+monthLabel+(isMTD?' (MTD)':''),htmlContent:html,senderName:'NSA Portal',senderEmail:'accounting@nationalsportsapparel.com',attachment:[{name:'commissions-'+commMonth+(singleName?'-'+singleName.toLowerCase().replace(/[^a-z0-9]+/g,'-'):'')+'.csv',content:b64}]});
+            if(res?.ok){
+              const toMark=emailModal.markPaid?selPay.filter(p=>!p.paidRec):[];
+              const recorded=toMark.length?await recordPaid(toMark):true;
+              if(!recorded){alert('Report emailed to '+toList.join(', ')+', but the payment was NOT recorded. Use Mark paid to retry without resending the email.');setEmailModal(null);return}
+              alert('Report emailed to '+toList.join(', ')+(toMark.length?'\n\nMarked paid: '+toMark.map(p=>repName(p.b)+' '+fmt(p.payout)).join(', '):''));
+              setEmailModal(null);
+            }
             else alert('Email failed: '+(res?.error||'unknown error'));
           }finally{setEmailSending(false)}
         };
-        return<>
-          {hasAuth===false&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',fontWeight:600}}>
-            ⚠ You're signed in via the admin-override picker — this session has no auth token, so the database rejects every save (cost edits, draw/loan, overrides, re-freezes) and the screen reverts on the next sync. Log out and sign in with your email + password to make changes stick.
-          </div>}
-          <div className="card">
-            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-              <h2>👑 Admin Dashboard — {monthLabel}{isMTD?' (Month to Date)':''}</h2>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
-                <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
-                <button className={`btn btn-sm ${isMTD?'btn-primary':'btn-secondary'}`} title="Jump to the current month (month to date)" onClick={()=>setCommMonth(nowYM)}>MTD</button>
-              </div>
-            </div>
-            <div className="card-body">
-              <div className="stats-row">
-                <div className="stat-card"><div className="stat-label">Commissions{tot.promoCost>0?' (Net)':''}</div><div className="stat-value" style={{color:'#166534'}}>{fmt(tot.net)}</div>{tot.promoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>{fmt(tot.comm)} earned − {fmt(tot.promoCost)} promo</div>}</div>
-                <div className="stat-card"><div className="stat-label">Overall GP%</div><div className="stat-value" style={{color:totGpPct>=30?'#166534':'#d97706'}}>{totGpPct}%</div></div>
-                <div className="stat-card"><div className="stat-label">Gross Profit</div><div className="stat-value" style={{color:'#166534'}}>{fmt0(tot.gp)}</div></div>
-                <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{fmt0(tot.rev)}</div></div>
-                <div className="stat-card"><div className="stat-label">Commission Lines</div><div className="stat-value">{tot.inv}</div></div>
-                {repComp!==null&&<div className="stat-card"><div className="stat-label">Payout</div><div className="stat-value" style={{color:'#0f766e'}}>{fmt(Math.round(totPayout*100)/100)}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>after draws & loans</div></div>}
-              </div>
-            </div>
-          </div>
-          <div className="card" style={{marginTop:16}}>
-            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-              <h2>Commissions &amp; Payouts — {monthLabel}{isMTD?' (MTD)':''}</h2>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                <span style={{fontSize:11,color:'#64748b'}}>Click a rep → invoices · click an invoice → line items</span>
-                {hiddenReps>0||!hideZeroReps?<label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}} title="Reps with no invoices, no promo orders and no draw or loan set for this month"><input type="checkbox" checked={hideZeroReps} onChange={()=>setHideZeroReps(v=>!v)}/>hide $0 reps{hideZeroReps&&hiddenReps>0?' ('+hiddenReps+')':''}</label>:null}
-                <button className="btn btn-sm btn-secondary" disabled={rows.length===0} title="Download this report as a CSV spreadsheet" onClick={downloadCsv}>⬇ Export CSV</button>
-                <button className="btn btn-sm btn-secondary" disabled={rows.length===0} title="Choose recipients and which reps to include, then email the report (CSV attached)" onClick={openEmailModal}>✉ Send Report…</button>
-                <button className="btn btn-sm btn-primary" disabled={repComp===null||payoutRows.length===0||payoutRows.every(p=>p.paidRec)} title="Mark every remaining rep's payout as paid for this month" onClick={markAllPaid}>💵 Mark month paid</button>
-              </div>
-            </div>
-            <div className="card-body" style={{padding:0}}>
-              {dashRows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
-              <table style={{fontSize:12}}><thead><tr>
-                <th>Rep</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Paid</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'right'}}>Promo</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw</th>{anyLoan?<th>Loan</th>:null}<th style={{textAlign:'right'}}>Payout</th><th/>
-              </tr></thead><tbody>
-                {dashRows.map(p=>{const b=p.b;const expandable=b.lines.length>0||b.promo.length>0;const open=expandable&&!!dashOpen[b.repId];const name=b.rep?.name||(b.repId==='_none'?'⚠ Unassigned':b.repId);
-                  return<Fragment key={b.repId}>
-                    <tr style={{cursor:expandable?'pointer':'default',background:open?'#f0f9ff':p.paidRec?'#f0fdf4':p.hasComp?'#f8fafc':''}} onClick={()=>{if(expandable)setDashOpen(q=>({...q,[b.repId]:!q[b.repId]}))}}>
-                      <td style={{fontWeight:800,color:'#0f172a'}}><span style={{display:'inline-block',width:14,color:'#64748b'}}>{expandable?(open?'▼':'▶'):''}</span>{name}</td>
-                      <td style={{textAlign:'center'}}>{b.lines.length}</td>
-                      <td style={{textAlign:'right'}}>{fmt0(b.rev)}</td>
-                      <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(b.cost)}</td>
-                      <td style={{textAlign:'right',fontWeight:700,color:b.gp>0?'#166534':'#dc2626'}}>{fmt0(b.gp)}</td>
-                      <td style={{textAlign:'center'}}>{gpBadge(b.gp,b.rev)}</td>
-                      <td style={{textAlign:'center'}} title="Average days from invoice to payment">{daysBadge(avgDays(b.lines))}</td>
-                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmt(b.comm)}</td>
-                      <td style={{textAlign:'right',color:b.promoCost>0?'#dc2626':'#94a3b8'}}>{b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td>
-                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:p.netComm>=0?'#166534':'#dc2626'}}>{fmt(p.netComm)}
-                        {p.nsComm?<div style={{fontSize:9,color:'#7c3aed'}} title="Commission on NetSuite orders, entered manually">{p.nsComm>0?'incl. ':'less '}{fmt(Math.abs(p.nsComm))} NetSuite</div>:null}
-                      </td>
-                      <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}} title={p.draw>0?(p.underBy>0?fmt(p.draw)+' draw − '+fmt(p.netComm)+' earned = '+fmt(p.underBy)+' short':fmt(p.draw)+' draw fully earned back'):'No draw set'}>
-                        {p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9}}>under {fmt(p.draw)} draw</div></>
-                          :<><span style={{color:'#166534',fontWeight:600}}>met</span><div style={{fontSize:9,color:'#166534'}}>{fmt(p.draw)} draw</div></>):'—'}
-                      </td>
-                      {anyLoan?<td style={{fontSize:11}}>{p.loanBal>0||p.appliedAmt!=null?<>
-                        <div style={{fontWeight:600,color:'#b45309'}}>{fmt(p.loanBal)}{p.withhold>0?<span style={{color:'#dc2626',marginLeft:4,fontWeight:700}}>−{fmt(p.withhold)}</span>:null}</div>
-                        {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied</div>:p.full?<div style={{fontSize:9,color:'#64748b'}}>paying full</div>:null}
-                      </>:'—'}</td>:null}
-                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>
-                        {repComp===null?<span style={{color:'#94a3b8',fontWeight:400,fontSize:11}}>…</span>:fmt(p.payout)}
-                        {p.payable>0&&p.payable!==p.payout?<div style={{fontSize:9,color:'#94a3b8'}}>{fmt(p.payable)} payable</div>:null}
-                        {p.paidRec?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</div>:null}
-                        {p.paidRec&&Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005?<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="The month's numbers changed after this was marked paid">⚠ paid {fmt(safeNum(p.paidRec.amount))}</div>:null}
-                      </td>
-                      <td style={{textAlign:'center',position:'relative',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
-                        <button className="btn btn-sm" style={{fontSize:13,lineHeight:1,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 8px'}} disabled={repComp===null} title="Draw & loan settings, apply to loan, mark paid" onClick={()=>setRowMenu(rowMenu===p.id?null:p.id)}>⋯</button>
-                        {rowMenu===p.id?<>
-                          <div style={{position:'fixed',inset:0,zIndex:40}} onClick={()=>setRowMenu(null)}/>
-                          <div style={{position:'absolute',right:6,top:'100%',zIndex:41,background:'white',border:'1px solid #cbd5e1',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,0.18)',padding:4,minWidth:200,textAlign:'left'}}>
-                            {menuItem('ns',p.nsComm?'✎ NetSuite commission '+fmt(p.nsComm):'➕ Add NetSuite commission…',()=>editNsComm(p),'#7c3aed')}
-                            {menuItem('cfg','⚙ Draw / loan settings…',()=>{const st=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:st.draw!=null?String(st.draw):'',loan:st.loanBalance!=null?String(st.loanBalance):'',pct:st.loanPct!=null?String(st.loanPct):'50'})})}
-                            {p.appliedAmt==null&&p.withhold>0?menuItem('apply','⬇ Apply '+fmt(p.withhold)+' to loan',()=>applyLoan(p),'#854d0e'):null}
-                            {p.appliedAmt!=null?menuItem('undoloan','↩ Undo loan application',()=>undoLoan(p)):null}
-                            {p.appliedAmt==null&&p.loanBal>0?menuItem('full',(p.full?'☑':'☐')+' Pay full this month (skip loan)',()=>toggleFullMonth(p)):null}
-                            {!p.paidRec?menuItem('paid','💵 Mark paid '+fmt(p.payout),()=>markPaid(p),'#166534'):menuItem('unpaid','↩ Undo paid',()=>unmarkPaid(p))}
-                          </div>
-                        </>:null}
-                      </td>
-                    </tr>
-                    {open&&[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=>{
+        // A rep's invoice lines (click → line items) and promo deductions, as rows of the
+        // 10-column jobs table on the rep page.
+        const jobRows=b=>[
+[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=>{
                       const iOpen=!!dashInvOpen[l.inv.id];
                       // Verification flags: red = no cost at all (missing purchase price →
                       // GP and commission overstated); yellow = GP over 60% (suspiciously
@@ -1361,7 +1310,6 @@ export default function CommissionsPage({adminReports=false}={}){
                             <button style={{...bs,background:at15?'#1e40af':'#f8fafc',color:at15?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
                             <button style={{...bs,background:at30?'#166534':'#f8fafc',color:at30?'white':'#64748b',border:'1px solid #86efac'}} title="Restore the full 30% rate on this late invoice" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
                           </span>})()}</td>
-                        <td colSpan={PAYCOLS}/>
                       </tr>
                       {iOpen&&(()=>{
                         const dtl=[];const g=calcGP(l.inv,dtl);
@@ -1386,7 +1334,7 @@ export default function CommissionsPage({adminReports=false}={}){
                         const rows2=dtl.filter(d=>!d._folded);
                         const dRev=rows2.reduce((a,d)=>a+(d.rev||0),0);const dCost=rows2.reduce((a,d)=>a+(d.cost||0),0);
                         const scaled=Math.abs((g.scale!=null?g.scale:1)-1)>0.02;
-                        return<tr><td colSpan={10+PAYCOLS} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
+                        return<tr><td colSpan={10} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
                           <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 0 4px',fontSize:10,color:'#64748b',flexWrap:'wrap'}}>
                             <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 8px',fontWeight:700}} title="Edit every cost on this job — item purchase costs, PO line costs, outside deco POs, shipping, freight" onClick={()=>openCostModal(l)}>✎ Edit job costs</button>
                             {l.snapped&&<>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button>{Math.abs(safeNum(l.gp.cost)-safeNum(g.cost))>0.5&&<span style={{color:'#b45309',fontWeight:700}}>Frozen cost {fmt(safeNum(l.gp.cost))} vs live {fmt(safeNum(g.cost))} — Re-freeze to pay on the corrected cost.</span>}</>}
@@ -1426,27 +1374,228 @@ export default function CommissionsPage({adminReports=false}={}){
                           {scaled&&<div style={{marginTop:6,fontSize:10,color:'#92400e'}}>This invoice covers ~{Math.round((g.scale||0)*100)}% of {l.so?.id} — line detail is the full order; the invoice totals above are scaled to this invoice's share.</div>}
                           {dtl.length===0&&<div style={{padding:'8px 0',fontSize:11,color:'#94a3b8'}}>No line detail available — the order behind this invoice isn't loaded or has no items.</div>}
                         </td></tr>})()}
-                      </Fragment>})}
-                    {open&&b.promo.map(l=><tr key={'p_'+l.so.id} style={{background:'#fef2f2'}}>
+                      </Fragment>}),
+                    ...b.promo.map(l=><tr key={'p_'+l.so.id} style={{background:'#fef2f2'}}>
                       <td style={{paddingLeft:28}}><span style={{fontWeight:700,color:'#dc2626',cursor:'pointer'}} onClick={()=>openSO(l)}>{l.so.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span><span style={{marginLeft:8,fontSize:9,fontWeight:700,color:'#dc2626'}}>PROMO</span></td>
                       <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>{l.soDate}</td>
                       <td colSpan={5}/>
                       <td colSpan={2} style={{textAlign:'right',fontSize:10,color:'#64748b'}}>promo cost deduction</td>
                       <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>−{fmt(l.totalCost)}</td>
-                      <td colSpan={PAYCOLS}/>
-                    </tr>)}
+                    </tr>)
+        ];
+        const monthNav=<div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <button className="btn btn-sm btn-secondary" onClick={()=>shiftMonth(-1)}>&#9664;</button>
+                <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
+                <button className="btn btn-sm btn-secondary" onClick={()=>shiftMonth(1)}>&#9654;</button>
+                <button className={`btn btn-sm ${isMTD?'btn-primary':'btn-secondary'}`} title="Jump to the current month (month to date)" onClick={()=>setCommMonth(nowYM)}>MTD</button>
+              </div>;
+        // ── One rep's page: their numbers, the payout worked out step by step with every
+        // action next to the line it changes, and their jobs for the month. Same payoutRows
+        // math and the same handlers as the all-reps table — nothing is recomputed here.
+        const repView=()=>{
+          const p=payoutRows.find(x=>x.id===repPage);
+          const nm=p?repName(p.b):(REPS.find(r=>r.id===repPage)?.name||repPage);
+          const header=<div className="card">
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <button className="btn btn-sm btn-secondary" onClick={()=>setRepPage(null)}>← All reps</button>
+                <h2>{nm} — {monthLabel}{isMTD?' (MTD)':''}</h2>
+                {p?.paidRec?<span style={{padding:'2px 8px',borderRadius:8,fontSize:11,fontWeight:700,background:'#dcfce7',color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</span>:null}
+              </div>
+              {monthNav}
+            </div>
+          </div>;
+          if(!p)return<>{header}<div className="card" style={{marginTop:16,padding:40,textAlign:'center',color:'#94a3b8'}}>No commission activity for {nm} in {monthLabel}.</div></>;
+          const b=p.b;
+          const locked=repComp===null||compSaving||emailSending;
+          const drawRecovered=p.draw>0?Math.max(0,Math.round((p.netComm-p.payable)*100)/100):0;
+          const actBtn=(label,onClick,o={})=><button className={'btn btn-sm '+(o.primary?'btn-primary':'btn-secondary')} style={{fontSize:11,padding:'3px 10px',...(o.style||{})}} disabled={locked||o.disabled} title={o.title} onClick={onClick}>{label}</button>;
+          // One line of the payout breakdown: label + note on the left, actions in the
+          // middle, amount on the right. `total` lines are the running subtotals.
+          const step=(key,label,amt,o={})=><div key={key} style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:o.total?'10px 14px':'8px 14px',borderTop:o.total?'1px solid #cbd5e1':'1px solid #f1f5f9',background:o.total?'#f8fafc':'white'}}>
+            <div style={{flex:'1 1 220px',minWidth:0}}>
+              <div style={{fontWeight:o.total?800:600,fontSize:o.total?13:12,color:'#0f172a'}}>{label}</div>
+              {o.note?<div style={{fontSize:10,color:'#64748b',marginTop:2}}>{o.note}</div>:null}
+            </div>
+            {o.actions?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{o.actions}</div>:null}
+            <div style={{minWidth:110,textAlign:'right',fontWeight:o.total?800:700,fontSize:o.total?15:13,color:o.color||(amt<0?'#dc2626':'#0f172a')}}>{amt==null?'—':(amt<0?'−':'')+fmt(Math.abs(amt))}</div>
+          </div>;
+          const editComp=()=>{const st=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:st.draw!=null?String(st.draw):'',loan:st.loanBalance!=null?String(st.loanBalance):'',pct:st.loanPct!=null?String(st.loanPct):'50'})};
+          const stat=(label,value,sub,color)=><div className="stat-card"><div className="stat-label">{label}</div><div className="stat-value" style={{color:color||'#0f172a'}}>{value}</div>{sub?<div style={{fontSize:10,color:'#64748b',marginTop:2}}>{sub}</div>:null}</div>;
+          return<>
+            {header}
+            <NetSuiteInvoiceTable invoices={p.nsInvoices} onRemove={async i=>{
+              if(!window.confirm('Remove imported NetSuite invoice '+i.id+' from commissions?'))return;
+              await saveRepComp(current=>{const next={...current};const cur=next[p.id]||{};const invoices={...(cur.nsInvoices||{})};delete invoices[i.id];next[p.id]={...cur,nsInvoices:invoices};return next});
+            }} disabled={locked}/>
+            <div className="card" style={{marginTop:16}}>
+              <div className="card-body">
+                <div className="stats-row">
+                  {stat('Invoices',p.invoiceCount,b.promo.length?b.promo.length+' promo order'+(b.promo.length===1?'':'s'):null)}
+                  {stat('Revenue',fmt0(p.reportRev))}
+                  {stat('Gross Profit',fmt0(p.gp),(p.reportRev>0?Math.round(p.gp/p.reportRev*100):0)+'% GP',p.gp>0?'#166534':'#dc2626')}
+                  {stat('Avg Days to Pay',p.reportDays??'—')}
+                  {stat('Net Commission',fmt(p.netComm),null,p.netComm>=0?'#166534':'#dc2626')}
+                  {stat('Payout',repComp===null?'…':fmt(p.payout),p.paidRec?'✓ paid':'not paid yet','#0f766e')}
+                </div>
+              </div>
+            </div>
+            <div className="card" style={{marginTop:16}}>
+              <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <h2>Payout</h2>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <button className="btn btn-sm btn-secondary" disabled={locked} title={"Download "+nm+"'s report as a CSV spreadsheet"} onClick={()=>downloadCsv(new Set([p.id]),'-'+String(nm).toLowerCase().replace(/[^a-z0-9]+/g,'-'))}>⬇ Export CSV</button>
+                  <button className="btn btn-sm btn-primary" disabled={locked} title={"Email "+nm+"'s report — marks them paid once it sends"} onClick={()=>openRepEmailModal(p)}>✉ Send report{p.paidRec?'…':' & mark paid…'}</button>
+                </div>
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                {repComp===null?<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>Loading draw & loan settings…</div>:<>
+                  {step('earned','Commission earned',b.comm,{note:b.lines.length+' paid invoice'+(b.lines.length===1?'':'s')+' this month — see jobs below',color:'#1e40af'})}
+                  {b.promoCost>0?step('promo','Promo order costs',-b.promoCost,{note:b.promo.length+' promo order'+(b.promo.length===1?'':'s')}):null}
+                  {step('ns','NetSuite commission',p.nsComm||null,{note:fmt(p.nsImported)+' from imported invoices + '+fmt(p.nsManual)+' manual adjustment',color:'#7c3aed',actions:actBtn('Edit manual adjustment',()=>editNsComm(p))})}
+                  {step('net','Net commission',p.netComm,{total:true,color:p.netComm>=0?'#166534':'#dc2626'})}
+                  {step('draw','Monthly draw',p.draw>0?-drawRecovered:null,{note:p.draw>0?(p.underBy>0?fmt(p.draw)+' draw already paid through payroll — under it by '+fmt(p.underBy)+', so nothing more is owed (no carryover)':fmt(p.draw)+' draw already paid through payroll — fully earned back'):'No draw set',color:'#92400e',actions:actBtn('⚙ Draw / loan settings',editComp)})}
+                  {step('payable','Payable',p.payable,{total:true})}
+                  {(p.loanBal>0||p.appliedAmt!=null)?step('loan','Loan withholding',p.withhold>0?-p.withhold:null,{
+                    note:p.appliedAmt!=null?'✓ Applied to the loan for '+monthLabel+' — balance now '+fmt(p.loanBal):p.full?'Paying in full this month — nothing withheld (balance '+fmt(p.loanBal)+')':p.pct+'% of payable, capped at the '+fmt(p.loanBal)+' balance → '+fmt(Math.round((p.loanBal-p.withhold)*100)/100)+' left after applying',
+                    color:'#b45309',
+                    actions:<>
+                      {p.appliedAmt==null&&p.withhold>0?actBtn('⬇ Apply '+fmt(p.withhold)+' to loan',()=>applyLoan(p),{style:{color:'#854d0e'}}):null}
+                      {p.appliedAmt!=null?actBtn('↩ Undo loan',()=>undoLoan(p)):null}
+                      {p.appliedAmt==null?actBtn((p.full?'☑':'☐')+' Pay full this month',()=>toggleFullMonth(p),{title:'Skip loan withholding for this month'}):null}
+                    </>})
+                    :step('loan','Loan',null,{note:'No loan balance'})}
+                  {step('payout','Payout',p.payout,{total:true,color:'#0f766e',
+                    note:p.paidRec?<span style={{color:'#166534',fontWeight:700}}>✓ Marked paid {fmt(safeNum(p.paidRec.amount))} on {String(p.paidRec.at).substring(0,10)}{p.paidRec.by?' by '+p.paidRec.by:''}{Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005?<span style={{color:'#dc2626'}}> — ⚠ the numbers changed after it was paid</span>:null}</span>:null,
+                    actions:!p.paidRec?actBtn('💵 Mark paid',()=>markPaid(p),{style:{color:'#166534'}}):actBtn('↩ Undo paid',()=>unmarkPaid(p))})}
+                </>}
+              </div>
+            </div>
+            <div className="card" style={{marginTop:16}}>
+              <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <h2>Jobs — {monthLabel}</h2>
+                <span style={{fontSize:11,color:'#64748b'}}>Click a job → line items · click the invoice # → open the order</span>
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                {b.lines.length===0&&b.promo.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders for {nm} in {monthLabel}.</div>:
+                <table style={{fontSize:12}}><thead><tr>
+                  <th>Invoice · Customer</th><th style={{textAlign:'center'}}>Paid</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Paid</th><th style={{textAlign:'right'}}>Commission</th><th colSpan={2} style={{textAlign:'center'}}>Late rate</th>
+                </tr></thead><tbody>
+                  {jobRows(b)}
+                  <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+                    <td>TOTAL</td><td/>
+                    <td style={{textAlign:'right'}}>{fmt0(b.rev)}</td>
+                    <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(b.cost)}</td>
+                    <td style={{textAlign:'right',color:'#166534'}}>{fmt0(b.gp)}</td>
+                    <td style={{textAlign:'center'}}>{gpBadge(b.gp,b.rev)}</td>
+                    <td style={{textAlign:'center'}}>{daysBadge(avgDays(b.lines))}</td>
+                    <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(b.comm)}</td>
+                    <td colSpan={2} style={{textAlign:'right',color:'#dc2626'}}>{b.promoCost>0?'−'+fmt(b.promoCost)+' promo':''}</td>
+                  </tr>
+                </tbody></table>}
+              </div>
+              <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
+                <span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying. <span style={{background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#1e40af'}}>Blue</span> = paid after 90 days (15% unless you pick 30%). 🔒 = frozen at payment.
+              </div>
+            </div>
+          </>;
+        };
+        return<>
+          {hasAuth===false&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',fontWeight:600}}>
+            ⚠ You're signed in via the admin-override picker — this session has no auth token, so the database rejects every save (cost edits, draw/loan, overrides, re-freezes) and the screen reverts on the next sync. Log out and sign in with your email + password to make changes stick.
+          </div>}
+          <NetSuiteCommissionImport reps={REPS} repComp={repComp} onSave={saveRepComp} currentUser={cu} disabled={repComp===null||compSaving||emailSending||hasAuth===false}/>
+          {repPage?repView():<>
+          <div className="card">
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <h2>👑 Admin Dashboard — {monthLabel}{isMTD?' (Month to Date)':''}</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                {monthNav}
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="stats-row">
+                <div className="stat-card"><div className="stat-label">Commissions{tot.promoCost>0?' (Net)':''}</div><div className="stat-value" style={{color:'#166534'}}>{fmt(reportTot.net)}</div>{tot.promoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>{fmt(reportTot.comm)} earned − {fmt(tot.promoCost)} promo</div>}</div>
+                <div className="stat-card"><div className="stat-label">Overall GP%</div><div className="stat-value" style={{color:totGpPct>=30?'#166534':'#d97706'}}>{totGpPct}%</div></div>
+                <div className="stat-card"><div className="stat-label">Gross Profit</div><div className="stat-value" style={{color:'#166534'}}>{fmt0(reportTot.gp)}</div></div>
+                <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{fmt0(reportTot.rev)}</div></div>
+                <div className="stat-card"><div className="stat-label">Commission Lines</div><div className="stat-value">{reportTot.inv}</div></div>
+                {repComp!==null&&<div className="stat-card"><div className="stat-label">Payout</div><div className="stat-value" style={{color:'#0f766e'}}>{fmt(Math.round(totPayout*100)/100)}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>after draws & loans</div></div>}
+              </div>
+            </div>
+          </div>
+          <div className="card" style={{marginTop:16}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <h2>Commissions &amp; Payouts — {monthLabel}{isMTD?' (MTD)':''}</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:11,color:'#64748b'}}>Click a rep to open their page — jobs, loan, report &amp; pay</span>
+                {hiddenReps>0||!hideZeroReps?<label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}} title="Reps with no invoices, no promo orders and no draw or loan set for this month"><input type="checkbox" checked={hideZeroReps} onChange={()=>setHideZeroReps(v=>!v)}/>hide $0 reps{hideZeroReps&&hiddenReps>0?' ('+hiddenReps+')':''}</label>:null}
+                <button className="btn btn-sm btn-secondary" disabled={repComp===null} title="Download this report as a CSV spreadsheet" onClick={()=>downloadCsv()}>⬇ Export CSV</button>
+                <button className="btn btn-sm btn-secondary" disabled={repComp===null||compSaving||emailSending} title="Choose recipients and which reps to include, then email the report (CSV attached)" onClick={openEmailModal}>✉ Send Report…</button>
+                <button className="btn btn-sm btn-primary" disabled={repComp===null||compSaving||emailSending||payoutRows.length===0||payoutRows.every(p=>p.paidRec)} title="Mark every remaining rep's payout as paid for this month" onClick={markAllPaid}>💵 Mark month paid</button>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:0}}>
+              {dashRows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
+              <table style={{fontSize:12}}><thead><tr>
+                <th>Rep</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Paid</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'right'}}>Promo</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw</th>{anyLoan?<th>Loan</th>:null}<th style={{textAlign:'right'}}>Payout</th><th/>
+              </tr></thead><tbody>
+                {dashRows.map(p=>{const b=p.b;const name=b.rep?.name||(b.repId==='_none'?'⚠ Unassigned':b.repId);
+                  return<Fragment key={b.repId}>
+                    <tr style={{cursor:'pointer',background:p.paidRec?'#f0fdf4':p.hasComp?'#f8fafc':''}} title={'Open '+name+"'s page"} onClick={()=>{setRowMenu(null);setRepPage(b.repId)}}>
+                      <td style={{fontWeight:800,color:'#1e40af'}}>{name}<span style={{marginLeft:6,color:'#94a3b8'}}>›</span></td>
+                      <td style={{textAlign:'center'}}>{p.invoiceCount}</td>
+                      <td style={{textAlign:'right'}}>{fmt0(p.reportRev)}</td>
+                      <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(p.reportCost)}</td>
+                      <td style={{textAlign:'right',fontWeight:700,color:p.gp>0?'#166534':'#dc2626'}}>{fmt0(p.gp)}</td>
+                      <td style={{textAlign:'center'}}>{gpBadge(p.gp,p.reportRev)}</td>
+                      <td style={{textAlign:'center'}} title="Average days from invoice to payment">{daysBadge(p.reportDays)}</td>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmt(b.comm+p.nsComm)}</td>
+                      <td style={{textAlign:'right',color:b.promoCost>0?'#dc2626':'#94a3b8'}}>{b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:p.netComm>=0?'#166534':'#dc2626'}}>{fmt(p.netComm)}
+                        {p.nsComm?<div style={{fontSize:9,color:'#7c3aed'}} title="Imported NetSuite invoice commissions plus manual adjustments">{p.nsComm>0?'incl. ':'less '}{fmt(Math.abs(p.nsComm))} NetSuite</div>:null}
+                      </td>
+                      <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}} title={p.draw>0?(p.underBy>0?fmt(p.draw)+' draw − '+fmt(p.netComm)+' earned = '+fmt(p.underBy)+' short':fmt(p.draw)+' draw fully earned back'):'No draw set'}>
+                        {p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9}}>under {fmt(p.draw)} draw</div></>
+                          :<><span style={{color:'#166534',fontWeight:600}}>met</span><div style={{fontSize:9,color:'#166534'}}>{fmt(p.draw)} draw</div></>):'—'}
+                      </td>
+                      {anyLoan?<td style={{fontSize:11}}>{p.loanBal>0||p.appliedAmt!=null?<>
+                        <div style={{fontWeight:600,color:'#b45309'}}>{fmt(p.loanBal)}{p.withhold>0?<span style={{color:'#dc2626',marginLeft:4,fontWeight:700}}>−{fmt(p.withhold)}</span>:null}</div>
+                        {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied</div>:p.full?<div style={{fontSize:9,color:'#64748b'}}>paying full</div>:null}
+                      </>:'—'}</td>:null}
+                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>
+                        {repComp===null?<span style={{color:'#94a3b8',fontWeight:400,fontSize:11}}>…</span>:fmt(p.payout)}
+                        {p.payable>0&&p.payable!==p.payout?<div style={{fontSize:9,color:'#94a3b8'}}>{fmt(p.payable)} payable</div>:null}
+                        {p.paidRec?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</div>:null}
+                        {p.paidRec&&Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005?<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="The month's numbers changed after this was marked paid">⚠ paid {fmt(safeNum(p.paidRec.amount))}</div>:null}
+                      </td>
+                      <td style={{textAlign:'center',position:'relative',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+                        <button className="btn btn-sm" style={{fontSize:13,lineHeight:1,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 8px'}} disabled={repComp===null||compSaving||emailSending} title="Draw & loan settings, apply to loan, mark paid" onClick={()=>setRowMenu(rowMenu===p.id?null:p.id)}>⋯</button>
+                        {rowMenu===p.id?<>
+                          <div style={{position:'fixed',inset:0,zIndex:40}} onClick={()=>setRowMenu(null)}/>
+                          <div style={{position:'absolute',right:6,top:'100%',zIndex:41,background:'white',border:'1px solid #cbd5e1',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,0.18)',padding:4,minWidth:200,textAlign:'left'}}>
+                            {menuItem('ns',p.nsManual?'✎ NetSuite adjustment '+fmt(p.nsManual):'➕ Manual NetSuite adjustment…',()=>editNsComm(p),'#7c3aed')}
+                            {menuItem('cfg','⚙ Draw / loan settings…',()=>{const st=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:st.draw!=null?String(st.draw):'',loan:st.loanBalance!=null?String(st.loanBalance):'',pct:st.loanPct!=null?String(st.loanPct):'50'})})}
+                            {p.appliedAmt==null&&p.withhold>0?menuItem('apply','⬇ Apply '+fmt(p.withhold)+' to loan',()=>applyLoan(p),'#854d0e'):null}
+                            {p.appliedAmt!=null?menuItem('undoloan','↩ Undo loan application',()=>undoLoan(p)):null}
+                            {p.appliedAmt==null&&p.loanBal>0?menuItem('full',(p.full?'☑':'☐')+' Pay full this month (skip loan)',()=>toggleFullMonth(p)):null}
+                            {!p.paidRec?menuItem('paid','💵 Mark paid '+fmt(p.payout),()=>markPaid(p),'#166534'):menuItem('unpaid','↩ Undo paid',()=>unmarkPaid(p))}
+                          </div>
+                        </>:null}
+                      </td>
+                    </tr>
                   </Fragment>})}
                 <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
                   <td>TOTAL</td>
-                  <td style={{textAlign:'center'}}>{tot.inv}</td>
-                  <td style={{textAlign:'right'}}>{fmt0(tot.rev)}</td>
-                  <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(tot.cost)}</td>
-                  <td style={{textAlign:'right',color:'#166534'}}>{fmt0(tot.gp)}</td>
+                  <td style={{textAlign:'center'}}>{reportTot.inv}</td>
+                  <td style={{textAlign:'right'}}>{fmt0(reportTot.rev)}</td>
+                  <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(reportTot.cost)}</td>
+                  <td style={{textAlign:'right',color:'#166534'}}>{fmt0(reportTot.gp)}</td>
                   <td style={{textAlign:'center',color:totGpPct>=30?'#166534':'#92400e'}}>{totGpPct}%</td>
-                  <td style={{textAlign:'center'}}>{daysBadge(avgDays(rows.flatMap(b=>b.lines)))}</td>
-                  <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(tot.comm)}</td>
+                  <td style={{textAlign:'center'}}>{daysBadge(avgDays(payoutRows.flatMap(p=>[...p.b.lines,...p.nsInvoices])))}</td>
+                  <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(reportTot.comm)}</td>
                   <td style={{textAlign:'right',color:tot.promoCost>0?'#dc2626':'#94a3b8'}}>{tot.promoCost>0?'−'+fmt(tot.promoCost):'—'}</td>
-                  <td style={{textAlign:'right',fontSize:15,color:tot.net>=0?'#166534':'#dc2626'}}>{(()=>{const ns=dashRows.reduce((a,q)=>a+q.nsComm,0);return<>{fmt(tot.net+ns)}{ns?<div style={{fontSize:9,color:'#7c3aed'}}>incl. {fmt(ns)} NetSuite</div>:null}</>})()}</td>
+                  <td style={{textAlign:'right',fontSize:15,color:reportTot.net>=0?'#166534':'#dc2626'}}>{(()=>{const ns=dashRows.reduce((a,q)=>a+q.nsComm,0);return<>{fmt(reportTot.net)}{ns?<div style={{fontSize:9,color:'#7c3aed'}}>incl. {fmt(ns)} NetSuite</div>:null}</>})()}</td>
                   <td style={{textAlign:'right',color:'#92400e',fontSize:11}}>{(()=>{const d=dashRows.reduce((a,q)=>a+q.underBy,0);return d>0?'−'+fmt(Math.round(d*100)/100)+' under':'—'})()}</td>
                   {anyLoan?<td style={{color:'#dc2626',fontSize:11}}>{(()=>{const w=dashRows.reduce((a,q)=>a+q.withhold,0);return w>0?'−'+fmt(Math.round(w*100)/100):'—'})()}</td>:null}
                   <td style={{textAlign:'right',fontSize:15,color:'#0f766e'}}>{repComp===null?'—':fmt(Math.round(dashRows.reduce((a,q)=>a+q.payout,0)*100)/100)}</td>
@@ -1516,6 +1665,7 @@ export default function CommissionsPage({adminReports=false}={}){
               </div>
             </div>;
           })()}
+          </>}
 
           {/* Draw & loan settings modal */}
           {compEdit&&(()=>{const r=REPS.find(x=>x.id===compEdit.id);
@@ -1604,10 +1754,11 @@ export default function CommissionsPage({adminReports=false}={}){
           {/* Send-report modal: pick recipients + which reps to include */}
           {emailModal&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,0.45)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>!emailSending&&setEmailModal(null)}>
             <div className="card" style={{width:440,maxWidth:'92vw',maxHeight:'85vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
-              <div className="card-header"><h2>✉ Send Commission Report — {monthLabel}</h2></div>
+              <div className="card-header"><h2>✉ Send {emailModal.single?repName((payoutRows.find(p=>p.id===emailModal.single)||{}).b||{repId:emailModal.single})+"'s":'Commission'} Report — {monthLabel}</h2></div>
               <div className="card-body">
                 <label className="form-label">Send to (comma-separated)</label>
                 <input type="text" className="form-input" style={{width:'100%',marginBottom:12}} value={emailModal.to} onChange={e=>setEmailModal(p=>({...p,to:e.target.value}))} placeholder="accounting@nationalsportsapparel.com"/>
+                {!emailModal.single&&<>
                 <label className="form-label" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>Reps to include
                   <span style={{fontSize:10}}>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px',marginRight:4}} onClick={()=>setEmailModal(p=>({...p,reps:Object.fromEntries(Object.keys(p.reps).map(k=>[k,true]))}))}>All</button>
@@ -1621,10 +1772,22 @@ export default function CommissionsPage({adminReports=false}={}){
                     <span style={{marginLeft:'auto',color:'#64748b',fontSize:11}}>{repComp!==null?'payout '+fmt(p.payout):fmt(p.b.net)}</span>
                   </label>)}
                 </div>
+                </>}
+                {emailModal.markPaid!==undefined&&(()=>{
+                  // Rep-page send: mark the included, not-yet-paid reps paid once the email goes out.
+                  const sel=payoutRows.filter(p=>emailModal.reps[p.id]&&!p.paidRec);
+                  const unapplied=sel.filter(p=>p.withhold>0&&p.appliedAmt==null);
+                  return<div style={{padding:'8px 10px',background:'#f0fdf4',border:'1px solid #86efac',borderRadius:6,marginBottom:12,fontSize:12}}>
+                    <label style={{display:'flex',alignItems:'center',gap:8,cursor:sel.length?'pointer':'default',fontWeight:600,color:'#166534'}}>
+                      <input type="checkbox" disabled={!sel.length} checked={!!emailModal.markPaid&&sel.length>0} onChange={()=>setEmailModal(prev=>({...prev,markPaid:!prev.markPaid}))}/>
+                      {sel.length?'Mark paid after sending — '+sel.map(p=>fmt(p.payout)).join(', '):'Already marked paid for '+monthLabel}
+                    </label>
+                    {emailModal.markPaid&&unapplied.length>0&&<div style={{marginTop:6,fontSize:11,color:'#92400e'}}>⚠ {unapplied.map(p=>fmt(p.withhold)).join(', ')} loan withholding has NOT been applied to the loan balance yet — usually you Apply to loan first.</div>}
+                  </div>})()}
                 <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>The email carries a per-rep summary (net commission, draw, loan, payout) for the checked reps only; the attached CSV has their invoice-level detail plus the payout sheet.</div>
                 <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
                   <button className="btn btn-sm btn-secondary" disabled={emailSending} onClick={()=>setEmailModal(null)}>Cancel</button>
-                  <button className="btn btn-sm btn-primary" disabled={emailSending} onClick={sendReport}>{emailSending?'Sending…':'Send Report'}</button>
+                  <button className="btn btn-sm btn-primary" disabled={emailSending} onClick={sendReport}>{emailSending?'Sending…':emailModal.markPaid&&payoutRows.some(p=>emailModal.reps[p.id]&&!p.paidRec)?'Send & mark paid':'Send Report'}</button>
                 </div>
               </div>
             </div>
