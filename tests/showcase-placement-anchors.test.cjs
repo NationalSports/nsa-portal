@@ -38,3 +38,25 @@ test('mapping overrides an incorrect guessed quad with anchored coordinates and 
   assert.equal(calls,2);
   assert.deepEqual(result.analysis.placements.p1,anchoredPlacement(p,{source,target}));
 });
+
+test('visual placement rejection corrects the mapper before a candidate can be returned',async()=>{
+ let calls=0,checks=0;
+ const requests=[];
+ const analyze=async request=>{requests.push(request);calls++;return {analysis:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],torso_anchors:{p1:{source,target}},placements:{}}};};
+ const verify=async()=>({model:'checker',analysis:{supported:++checks===2,reason:checks===1?'p1 is shifted right of the front panel center':'Aligned'}});
+ const result=await validatedMapping(analyze,{analysisPrompt:'Map'},{p1:p},async()=>{},verify);
+ assert.equal(calls,2);assert.equal(checks,2);
+ assert.match(requests[1].analysisPrompt,/shifted right/);
+ assert.equal(result.analysis.placement_check.supported,true);
+});
+
+test('repeated visual failure retains the actual bad map as diagnostic evidence',async()=>{
+ const analyze=async()=>({analysis:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],torso_anchors:{p1:{source,target}},placements:{}}});
+ await assert.rejects(validatedMapping(analyze,{analysisPrompt:'Map'},{p1:p},async()=>{},async()=>({analysis:{supported:false,reason:'p1 is right of the pocket center'}})),error=>{
+   assert.equal(error.mappingDiagnostics.attempts.length,2);
+   assert.equal(error.mappingDiagnostics.attempts[1].stage,'visual_placement');
+   assert.deepEqual(error.mappingDiagnostics.attempts[1].torso_anchors.p1.source,source);
+   assert.equal(error.mappingDiagnostics.attempts[1].placement_quads.p1.length,4);
+   return true;
+ });
+});

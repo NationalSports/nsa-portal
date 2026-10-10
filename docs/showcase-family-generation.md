@@ -107,3 +107,11 @@ for diagnosis. Existing approved images and cached master signatures are unchang
 The geometry and worker tests use controlled landmarks. They do not establish
 that a live analyzer identifies the correct landmarks: visually check a newly
 rendered hood-down example against the original before releasing this change.
+
+The worker also runs a separate visual placement check on the master with the
+calculated magenta outlines and center crosses. It compares these with the saved
+reference guides. A rejected check feeds its reason back into the second mapping
+attempt. Repeated visual failures save the rejected landmarks and quads in the
+family's mapping diagnostics. This adds one analysis call per mapping attempt for
+anchored tops; it uses the existing analyzer and therefore still needs visual
+validation with real outputs before release.

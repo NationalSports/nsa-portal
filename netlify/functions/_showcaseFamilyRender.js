@@ -14,6 +14,21 @@ async function placementReference(bytes, placements = []) {
   }).join('');
   return sharp(framed).composite([{input:Buffer.from(`<svg width="1000" height="1250">${guides}</svg>`)}]).png().toBuffer();
 }
+// Overlay the calculated placement on the actual target pixels for a separate
+// visual check. Preserve its native aspect ratio and coordinate frame.
+async function placementCheck(bytes, layout) {
+  const base = await sharp(bytes).rotate().png().toBuffer();
+  const { width, height } = await sharp(base).metadata();
+  const marks = Object.entries(layout.placements || {}).map(([id, quad]) => {
+    validateQuad(quad);
+    const label = String(id).replace(/[^a-zA-Z0-9]/g,'').slice(0,8);
+    const center = quad.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);
+    const x=center[0]*width, y=center[1]*height;
+    const points=quad.map(([px,py])=>`${px*width},${py*height}`).join(' ');
+    return `<polygon points="${points}" fill="none" stroke="#ff00ff" stroke-width="3"/><path d="M${x-12},${y}h24 M${x},${y-12}v24" stroke="#ff00ff" stroke-width="3"/><text x="${x+14}" y="${y}" fill="#ff00ff" font-size="20">${label}</text>`;
+  }).join('');
+  return sharp(base).composite([{input:Buffer.from(`<svg width="${width}" height="${height}">${marks}</svg>`)}]).png().toBuffer();
+}
 async function pixels(bytes) {
   return sharp(bytes, { limitInputPixels: 40000000 }).rotate().toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 }
@@ -268,4 +283,4 @@ async function decorationDetail(output, master, quad) {
   return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
     .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
 }
-module.exports = { placementReference, normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+module.exports = { placementReference, placementCheck, normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
