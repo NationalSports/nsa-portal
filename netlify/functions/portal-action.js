@@ -10,6 +10,7 @@
 // Brevo using the server-side key so it isn't exposed to the browser.
 
 const { createClient } = require('@supabase/supabase-js');
+const { safePush } = require('./_push');
 
 // Only these columns may be written from the portal — defends against a crafted
 // payload setting arbitrary columns. Target rows are additionally verified to
@@ -76,6 +77,41 @@ async function resolveNotificationRep(admin, primaryRepId, creatorId) {
   }
 
   return { email: MONITORED_INBOX, name: 'Steve Peterson', id: null, source: 'fallback' };
+}
+
+// Coach approved / asked for changes on art, or approved an estimate → the account's rep.
+async function pushCoachDecisions(admin, { artDecision, estimates, allowedSODocs, allowedEstDocs, primaryRepByCustomer }) {
+  try {
+    const repOf = (doc) => (doc && (primaryRepByCustomer.get(doc.customer_id) || doc.created_by)) || null;
+    const nameOf = async (customerId) => {
+      if (!customerId) return '';
+      const { data } = await admin.from('customers').select('name').eq('id', customerId).maybeSingle();
+      return (data && data.name) || '';
+    };
+    if (artDecision && artDecision.so_id) {
+      const so = allowedSODocs.get(artDecision.so_id);
+      const who = await nameOf(so && so.customer_id);
+      const approved = artDecision.decision === 'approve';
+      await safePush(admin, [repOf(so)], {
+        title: approved ? '🎨 Coach approved art · ' + artDecision.so_id : '✏️ Coach wants art changes · ' + artDecision.so_id,
+        body: (who ? who + ': ' : '') + (approved ? 'Ready to move to production.' : String(artDecision.comment || 'See the order for their notes.')),
+        url: '/?so=' + encodeURIComponent(artDecision.so_id),
+        tag: 'art-' + artDecision.so_id,
+      });
+    }
+    for (const row of estimates || []) {
+      if (!row || row.status !== 'approved') continue;
+      const est = allowedEstDocs.get(row.id);
+      if (!est) continue;
+      const who = await nameOf(est.customer_id);
+      await safePush(admin, [repOf(est)], {
+        title: '✅ Coach approved ' + row.id,
+        body: (who ? who + ' approved the quote. ' : '') + 'Create the sales order when you’re ready.',
+        url: '/?est=' + encodeURIComponent(row.id),
+        tag: 'est-' + row.id,
+      }, { onceKey: 'est-approved:' + row.id });
+    }
+  } catch (e) { console.warn('[portal-action] push skipped:', e.message); }
 }
 
 // ── Coach art decision — ONE guarded transaction (migration 00172) ──
@@ -283,6 +319,9 @@ exports.handler = async (event) => {
   }
 
   if (errors.length) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: errors.join('; ') }) };
+
+  // Push the rep's phone (NSA Connect). Best-effort, like the email below.
+  await pushCoachDecisions(admin, { artDecision, estimates, allowedSODocs, allowedEstDocs, primaryRepByCustomer });
 
   // Notify the rep. Failure here must not fail the approval — the write already succeeded.
   let emailSent = false, emailError = null;

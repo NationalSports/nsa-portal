@@ -2,11 +2,20 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import BarcodeScanner from './BarcodeScanner';
+import MeetingNotes, { AccountNotes } from './MeetingNotes';
+import MobileQuickCreate from './MobileQuickCreate';
+import { linesToEstimateItems, noteEstimateLines } from './estimateLines';
+import { supabase } from './lib/supabase';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
+import { calcSOStatus } from './components';
+import { orderProgress } from './lib/orderProgress';
+import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
+import { isIOS, isAndroid, isStandalone, pushSupported, currentSubscription, enablePush, disablePush, callPush, NO_SESSION, canPromptInstall, onInstallAvailable, promptInstall } from './lib/pushClient';
+import { fetchStockForItems, stockCacheKey, normStockSize, shortSizes, SOURCE_LABEL } from './lib/mobileStock';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
 // ─── Inline Icon (same SVG paths as main app) ───
@@ -32,9 +41,43 @@ const statusBadge=(status)=>{
 
 // ─── FORMAT HELPERS ───
 const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'})}catch{return'—'}};
+const fmtMoney2=(n)=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
 const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
+
+// Where an order is: Ordered → Blanks in → Production → Shipped → Done (src/lib/orderProgress.js).
+// compact = a thin bar + one line for lists; full = steps, blanks/art chips and tracking links.
+const OrderProgress=({so,compact})=>{
+  const p=orderProgress(so,calcSOStatus(so));
+  if(!p||p.cancelled)return null;
+  const col=(st)=>st==='done'?'#16a34a':st==='current'?'#2563eb':'#e2e8f0';
+  const artNote=p.art.needsApproval?p.art.needsApproval+' art waiting for approval':p.art.waitingForArt?'waiting for art':'';
+  if(compact)return<div style={{marginTop:8}}>
+    <div style={{display:'flex',gap:3}}>{p.steps.map((s,i)=><div key={i} style={{flex:1,height:5,borderRadius:3,background:col(s.state)}}/>)}</div>
+    <div style={{fontSize:11,color:'#475569',marginTop:4,fontWeight:600}}>{p.headline}{artNote?<span style={{color:'#b45309'}}> · {artNote}</span>:null}</div>
+  </div>;
+  const chip=(bg,fg,txt)=><span style={{fontSize:11,fontWeight:700,padding:'3px 9px',borderRadius:8,background:bg,color:fg}}>{txt}</span>;
+  return<div className="mp-item-card" style={{marginTop:12}}>
+    <div style={{fontSize:15,fontWeight:800,color:'#0f172a'}}>{p.headline}</div>
+    <div style={{display:'flex',alignItems:'flex-start',marginTop:12}}>
+      {p.steps.map((s,i)=><div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',position:'relative'}}>
+        {i>0&&<div style={{position:'absolute',top:9,right:'50%',width:'100%',height:3,background:s.state==='todo'?'#e2e8f0':'#16a34a'}}/>}
+        <div style={{position:'relative',width:20,height:20,borderRadius:10,boxSizing:'border-box',background:s.state==='done'?'#16a34a':'#fff',border:'3px solid '+col(s.state),display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:11,fontWeight:800}}>{s.state==='done'?'✓':''}</div>
+        <div style={{fontSize:10,fontWeight:700,marginTop:4,color:s.state==='todo'?'#94a3b8':'#0f172a',textAlign:'center'}}>{s.label}</div>
+      </div>)}
+    </div>
+    {(p.blanks.ordered>0||p.art.total>0)&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:12}}>
+      {p.blanks.ordered>0&&chip(p.blanks.received>=p.blanks.ordered?'#dcfce7':'#fef3c7',p.blanks.received>=p.blanks.ordered?'#166534':'#92400e','📦 '+p.blanks.received+'/'+p.blanks.ordered+' blanks in')}
+      {p.art.total>0&&(artNote?chip('#fef3c7','#92400e','🎨 '+artNote):chip('#dcfce7','#166534','🎨 Art approved'))}
+    </div>}
+    {p.tracking.length>0&&<div style={{marginTop:12,display:'grid',gap:6}}>
+      {p.tracking.map((t,i)=><a key={i} href={t.url} target="_blank" rel="noopener noreferrer" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1e40af',fontSize:12,fontWeight:700,textDecoration:'none',minHeight:40}}>
+        <span>🚚 {t.carrier?t.carrier+' ':''}{t.number}</span><span style={{color:'#64748b',fontWeight:600}}>{t.date?fmtDate(t.date)+' · ':''}Track →</span>
+      </a>)}
+    </div>}
+  </div>;
+};
 const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
@@ -43,21 +86,33 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // visited sections. 'home' is the default (clean URL). Distinct params from the desktop ?pg=
 // so the two portals never clash. Page-level only — opening a record/detail is not a history entry.
 const _MTABS=new Set(['home','orders','messages','customers','more']);
-const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports']);
+const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports','notes','app']);
 const _mtabFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('mtab');return v&&_MTABS.has(v)?v:null}catch{return null}};
 const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('msub');return v&&_MSUBS.has(v)?v:null}catch{return null}};
 
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded,onConvertEstimate,onAddTodo,onSaveCustomer}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
+  // AI Notes (voice memo / meeting / paste) — sales roles only.
+  const canNotes=['admin','super_admin','gm','rep','csr'].includes(cu?.role);
+  const[noteInit,setNoteInit]=useState(null);// {mode, customerId?}
+  const openNotes=(init)=>{setNoteInit(init||null);setDetail(null);setTab('more');setMoreSubPage('notes')};
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null);
+  const[custTab,setCustTab]=useState({id:null,tab:'overview'});// account page tab, per account
+  // Vendor stock for lines in the quote builder, keyed by stockCacheKey (null = no feed for that style).
+  const[stockMap,setStockMap]=useState({});
+  const[convertAsk,setConvertAsk]=useState(null);// {est, date, busy} — in-hands date for estimate → sales order
+  const[convertedFrom,setConvertedFrom]=useState(null);// estimate id just converted; opens its new order once it appears
+  const[quickOpen,setQuickOpen]=useState(false);// the "+" create menu
+  const[todoAll,setTodoAll]=useState(false);// home To-do: first 6, then all
+  const[payLink,setPayLink]=useState(null);// {inv, url, qr} — pay-link sheet with QR code
   // Hamburger drawer
   const[drawerOpen,setDrawerOpen]=useState(false);
   // Filters & sorts (lifted to top level)
@@ -226,6 +281,38 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return()=>{cancelled=true;clearTimeout(t);};
   },[newEstProdQ,searchProducts]);
 
+  // AI Notes drafts waiting for this rep's review (Today card). Quietly 0 before AI Notes is set up.
+  const[notesToReview,setNotesToReview]=useState(0);
+  useEffect(()=>{
+    if(!canNotes||!supabase||!cu?.id)return;let off=false;
+    supabase.from('meetings').select('id',{count:'exact',head:true}).eq('team_member_id',cu.id).eq('status','ready')
+      .then(({count,error})=>{if(!off)setNotesToReview(error?0:(count||0))},()=>{});
+    return()=>{off=true};
+  },[cu?.id,tab]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Installed app + notifications state (App & notifications screen, home nudge).
+  const[appState,setAppState]=useState({installed:false,push:'unknown',busy:false,msg:'',canInstall:false});
+  const[appNudgeHidden,setAppNudgeHidden]=useState(()=>{try{return localStorage.getItem('nsa_app_nudge')==='hidden'}catch{return false}});
+  const refreshAppState=async()=>{
+    const installed=isStandalone();let push='unsupported';
+    try{if(pushSupported()){const sub=await currentSubscription();push=Notification.permission==='denied'?'blocked':sub?'on':'off'}}catch(e){}
+    setAppState(a=>({...a,installed,push,canInstall:canPromptInstall()}));
+  };
+  useEffect(()=>{refreshAppState();return onInstallAvailable(()=>setAppState(a=>({...a,canInstall:true})))},[]);// eslint-disable-line react-hooks/exhaustive-deps
+  // After converting an estimate, open the new sales order as soon as it shows up.
+  useEffect(()=>{
+    if(!convertedFrom)return;
+    const so=sos.find(s=>s.estimate_id===convertedFrom);
+    if(so){setConvertedFrom(null);setDetail({type:'order',data:so});}
+  },[convertedFrom,sos]);
+  // Look up vendor stock for builder lines we haven't checked yet.
+  const _stockAsked=useRef(new Set());
+  useEffect(()=>{
+    const todo=(newEst?.items||[]).filter(it=>{const k=stockCacheKey(it);return k&&!_stockAsked.current.has(k)});
+    if(!todo.length)return;
+    todo.forEach(it=>_stockAsked.current.add(stockCacheKey(it)));
+    fetchStockForItems(todo).then(res=>setStockMap(m=>({...m,...res}))).catch(()=>{todo.forEach(it=>_stockAsked.current.delete(stockCacheKey(it)))});
+  },[newEst?.items]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Merge portal invoices with NetSuite-imported history (customer_invoices), normalized
   // to the portal invoice shape. History is read-only; status 'void' maps to 'cancelled'
   // so it stays out of open/AR views. Paid history has no true paid_date, so we fall back
@@ -245,6 +332,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const seen=new Set((invsPortal||[]).map(i=>i.id));
     return[...(invsPortal||[]),...norm.filter(i=>!seen.has(i.id))];
   },[invsPortal,histInvs]);
+  // Notification links (?so= / ?est= / ?inv= / ?cust=) open that record once it has loaded.
+  const _deepLink=useRef((()=>{try{const p=new URLSearchParams(window.location.search);const k=['so','est','inv','cust'].find(x=>p.get(x));return k?{k,id:p.get(k)}:null}catch(e){return null}})());
+  useEffect(()=>{
+    const d=_deepLink.current;if(!d)return;
+    const list=d.k==='so'?sos:d.k==='est'?ests:d.k==='inv'?invs:cust;
+    const hit=(list||[]).find(x=>String(x.id)===String(d.id));
+    if(!hit)return;
+    _deepLink.current=null;
+    setDetail({type:d.k==='so'?'order':d.k==='est'?'estimate':d.k==='inv'?'invoice':'customer',data:hit});
+    try{const u=new URL(window.location.href);['so','est','inv','cust'].forEach(x=>u.searchParams.delete(x));window.history.replaceState(null,'',u.pathname+u.search+u.hash)}catch(e){}
+  },[sos,ests,invs,cust]);
 
   // Rep scoping — default to the logged-in rep's own customers/work. Falls back to
   // everything when the rep has no assigned customers (e.g. admins/CSRs).
@@ -311,8 +409,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     // i.e. sales orders written this month rather than invoices paid this month.
     const monthRevenue=sScoped.filter(s=>(s.status||'')!=='cancelled'&&thisMonth(s.created_at)).reduce((a,s)=>{const c=custObj(s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
     const urgentOrders=sScoped.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
-    return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length};
-  },[sos,invs,scope,myCustIds]);
+    // Same point last month (1st → today's day-of-month), so the trend compares like with like.
+    const pm=new Date(now.getFullYear(),now.getMonth()-1,1);const pmEnd=new Date(now.getFullYear(),now.getMonth()-1,Math.min(now.getDate(),new Date(now.getFullYear(),now.getMonth(),0).getDate()),23,59,59);
+    const lastMonthToDate=sScoped.filter(s=>{if((s.status||'')==='cancelled'||!s.created_at)return false;const d=new Date(s.created_at);return d>=pm&&d<=pmEnd}).reduce((a,s)=>{const c=custObj(s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+    const openQuotes=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['draft','open','sent'].includes(e.status||''));
+    const openQuoteValue=openQuotes.reduce((a,e)=>{try{const c=custObj(e.customer_id);return a+(calcOrderTotals(e,c?.tax_rate||0).rev||0)}catch(_){return a}},0);
+    const owedInvs=openInvoices.filter(i=>!i._hist&&Math.max(0,(+i.total||0)-(+i.paid||0))>0.005);
+    const owed=owedInvs.reduce((a,i)=>a+Math.max(0,(+i.total||0)-(+i.paid||0)),0);
+    const wk=new Date(now.getTime()+7*864e5);
+    const dueWeek=activeOrders.filter(s=>s.expected_date&&new Date(s.expected_date)<=wk).length;
+    return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length,lastMonthToDate,openQuotes:openQuotes.length,openQuoteValue,owed,owedCount:owedInvs.length,dueWeek};
+  },[sos,invs,ests,scope,myCustIds]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
@@ -349,6 +456,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((s,v)=>s+v,0),0);
     const saleTotal=so.total>0?so.total:calcOrderTotals(so,cc?.tax_rate||0).grand;
     const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+    // Invoices billed against this order and what is still owed on them.
+    const soInvs=invs.filter(i=>i.so_id===so.id&&!['cancelled','void','deleted'].includes(i.status));
+    const soBal=soInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+Math.max(0,(+i.total||0)-(+i.paid||0)),0);
     return<div className="mp-detail">
       <div className="mp-detail-header">
         <button className="mp-back-btn" onClick={()=>setDetail(null)}><MIcon name="back" size={22}/></button>
@@ -362,7 +472,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val" style={daysOut!=null&&daysOut<=3?{color:'#dc2626',fontWeight:700}:{}}>{fmtDate(so.expected_date)}{daysOut!=null?` (${daysOut}d)`:'  '}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(so.created_at)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Total Sale</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(saleTotal)}</div></div>
+          {soInvs.length>0&&<div className="mp-info-item"><div className="mp-info-label">Balance due</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:soBal>0.005?'#dc2626':'#16a34a'}}>{soBal>0.005?fmtMoney(soBal):'Paid'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2}}>{fmtMoney(soInvs.reduce((a,i)=>a+(+i.total||0),0))} invoiced</div></div>}
         </div>
+        <OrderProgress so={so}/>
+        {soInvs.filter(i=>!i._hist&&invBalance(i)>0.005).map(i=><button key={i.id} onClick={()=>openPayLink(i)} style={{width:'100%',marginTop:10,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Get paid · {i.id} · {fmtMoney(invBalance(i))} due</button>)}
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
           {onSaveSO&&<button onClick={()=>startAddToSO(so)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer',minHeight:44}}>
@@ -535,6 +648,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Total</div><div className="mp-info-val">{fmtMoney(est.total)}</div></div>
         </div>
         {est.memo&&<div className="mp-memo">{est.memo}</div>}
+        {(()=>{const editable=['draft','open','pending','sent'].includes(est.status||'draft');const btn={flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 10px',borderRadius:10,fontWeight:700,fontSize:14,cursor:'pointer',minHeight:44};
+          if(!onSaveEstimate||(!editable&&est.status!=='approved'))return null;
+          return<div style={{display:'flex',gap:8,marginBottom:8}}>
+            {editable&&<button onClick={()=>startEditEstimate(est)} style={{...btn,background:'white',color:'#1e293b',border:'1px solid #e2e8f0'}}>✏️ Edit</button>}
+            {editable&&<button onClick={()=>{if(window.confirm('Mark '+est.id+' approved? Do this when the customer has said yes.'))markEstimateApproved(est)}} style={{...btn,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0'}}>✓ Mark approved</button>}
+            {est.status==='approved'&&onConvertEstimate&&<button onClick={()=>setConvertAsk({est,date:'',busy:false})} style={{...btn,background:'#7c3aed',color:'white',border:'none'}}>→ Create sales order</button>}
+          </div>})()}
         {/* Send Estimate button */}
         <div style={{display:'flex',gap:8,marginBottom:16}}>
           <button onClick={()=>setSendEstModal(est)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
@@ -560,58 +680,128 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   };
 
   // ─── DETAIL VIEW (CUSTOMER) ───
+  // The rep's account page on the phone: a brief up top (balance, open orders,
+  // open quotes, last order), quick actions, then Overview / Orders / Quotes /
+  // People / Notes. A school's sub-teams roll up into the parent's numbers.
   const renderCustDetail=(cc)=>{
-    const custSOs=sos.filter(s=>s.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    const custEsts=ests.filter(e=>e.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    const custInvs=invs.filter(i=>i.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    const kids=cust.filter(c=>c.parent_id===cc.id);
+    const parent=cc.parent_id?custObj(cc.parent_id):null;
+    const fam=new Set([cc.id,...kids.map(k=>k.id)]);
+    const teamName=(id)=>id===cc.id?null:(custObj(id)?.alpha_tag||custObj(id)?.name||null);
+    const byNewest=(a,b)=>(b.created_at||'').localeCompare(a.created_at||'');
+    const custSOs=sos.filter(s=>fam.has(s.customer_id)).sort(byNewest);
+    const custEsts=ests.filter(e=>fam.has(e.customer_id)).sort(byNewest);
+    const custInvs=invs.filter(i=>fam.has(i.customer_id)).sort(byNewest);
+    const openSOs=custSOs.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    const nextDue=openSOs.map(s=>s.expected_date).filter(Boolean).sort()[0]||null;
+    const openEsts=custEsts.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
+    const openEstTotal=openEsts.reduce((a,e)=>a+(+e.total||0),0);
+    const openInvs=custInvs.filter(i=>i.status!=='paid'&&i.status!=='cancelled').map(i=>({...i,_bal:Math.max(0,(+i.total||0)-(+i.paid||0))})).filter(i=>i._bal>0.005);
+    const balance=openInvs.reduce((a,i)=>a+i._bal,0);
+    const lastOrder=custSOs.find(s=>(s.status||'')!=='cancelled');
+    const todos=(assignedTodos||[]).filter(t=>t.status==='open'&&fam.has(t.customer_id)).sort((a,b)=>(a.due_date||'9').localeCompare(b.due_date||'9'));
+    const contacts=[...(cc.contacts||[]).map(p=>({...p,_team:null})),...kids.flatMap(k=>(k.contacts||[]).map(p=>({...p,_team:k.alpha_tag||k.name})))].filter(p=>p&&(p.name||p.email||p.phone));
+    const mainEmail=(cc.contacts||[]).find(p=>p.email)?.email||cc.email||'';
+    const tab=custTab.id===cc.id?custTab.tab:'overview';
+    const setT=(t)=>setCustTab({id:cc.id,tab:t});
+    const tile=(label,val,sub,color)=><div className="mp-info-item"><div className="mp-info-label">{label}</div><div className="mp-info-val" style={{fontSize:17,fontWeight:800,color:color||'#0f172a'}}>{val}</div>{sub&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{sub}</div>}</div>;
+    const act={flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,padding:'10px 4px',borderRadius:10,fontWeight:700,fontSize:12,textDecoration:'none',border:'1px solid #e2e8f0',background:'white',color:'#1e293b',cursor:'pointer',minHeight:58};
+    const pill={display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:44,minHeight:36,padding:'0 10px',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc',color:'#1e40af',fontWeight:700,fontSize:12,textDecoration:'none'};
+    const team=(id)=>{const n=teamName(id);return n?<span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#f1f5f9',color:'#475569',marginLeft:6}}>{n}</span>:null};
+    const soCard=(so)=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+        <div style={{minWidth:0}}><div style={{fontWeight:700,color:'#1e40af'}}>{so.id}{team(so.customer_id)}</div><div style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'—'}</div></div>
+        <div style={{textAlign:'right',flexShrink:0}}><span style={statusBadge(so.status||'new')}>{(so.status||'new').replace(/_/g,' ')}</span>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>{so.expected_date?'In-hands '+fmtDate(so.expected_date):fmtDate(so.created_at)}</div></div>
+      </div>
+      {!['cancelled'].includes(so.status||'')&&<OrderProgress so={so} compact/>}
+    </div>;
     return<div className="mp-detail">
       <div className="mp-detail-header">
         <button className="mp-back-btn" onClick={()=>setDetail(null)}><MIcon name="back" size={22}/></button>
-        <div style={{flex:1}}><div className="mp-detail-id">{cc.name}</div>{cc.alpha_tag&&<div className="mp-detail-sub">{cc.alpha_tag}</div>}</div>
+        <div style={{flex:1,minWidth:0}}><div className="mp-detail-id">{cc.name}</div><div className="mp-detail-sub">{[cc.alpha_tag,repName(cc.primary_rep_id),kids.length?kids.length+' team'+(kids.length===1?'':'s'):null].filter(Boolean).join(' · ')}</div></div>
       </div>
       <div className="mp-detail-body">
+        {parent&&<div className="mp-list-card" style={{padding:'8px 12px',fontSize:12,color:'#475569'}} onClick={()=>setDetail({type:'customer',data:parent})}>Part of <b style={{color:'#1e40af'}}>{parent.name}</b> →</div>}
         <div className="mp-info-grid">
-          <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(cc.primary_rep_id)}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Phone</div><div className="mp-info-val">{cc.phone?<a href={'tel:'+cc.phone} style={{color:'#1e40af',textDecoration:'none',fontWeight:700}}>{cc.phone}</a>:'—'}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Email</div><div className="mp-info-val" style={{fontSize:12,wordBreak:'break-all'}}>{cc.email||'—'}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Orders</div><div className="mp-info-val">{custSOs.length}</div></div>
+          {tile('Balance due',fmtMoney(balance),openInvs.length?openInvs.length+' open invoice'+(openInvs.length===1?'':'s'):'All paid',balance>0?'#dc2626':'#16a34a')}
+          {tile('Open orders',openSOs.length,nextDue?'Next in-hands '+fmtDate(nextDue):null)}
+          {tile('Open quotes',openEsts.length,openEsts.length?fmtMoney(openEstTotal):null)}
+          {tile('Last order',lastOrder?fmtDate(lastOrder.created_at):'—',lastOrder?timeAgo(lastOrder.created_at)+' ago':'No orders yet')}
         </div>
-        {/* Action buttons */}
-        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12,marginBottom:12}}>
-          {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
-            return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
-          {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag),'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
-          {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
+        <div style={{display:'flex',gap:8,margin:'12px 0'}}>
+          {canNotes&&<button style={{...act,background:'#1e40af',color:'white',border:'none'}} onClick={()=>openNotes({customerId:cc.id,mode:'dictated'})}><span style={{fontSize:18}}>🎙️</span>Voice note</button>}
+          {onSaveEstimate&&<button style={act} onClick={()=>{setNewEst({customer_id:cc.id,memo:'',items:[],art_files:[]});setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null)}}><MIcon name="file" size={18}/>New quote</button>}
+          {cc.phone&&<a style={act} href={'tel:'+cc.phone}><MIcon name="phone" size={18}/>Call</a>}
+          {mainEmail&&<a style={act} href={'mailto:'+mainEmail}><MIcon name="mail" size={18}/>Email</a>}
         </div>
-        {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
-        {custSOs.length>0&&<>
-          <div className="mp-section-title">Recent Orders</div>
-          {custSOs.slice(0,5).map(so=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{so.id}</div><div style={{fontSize:12,color:'#64748b'}}>{so.memo||'—'}</div></div>
-              <div style={{textAlign:'right'}}><span style={statusBadge(so.status||'new')}>{so.status||'new'}</span>
-              <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>{fmtDate(so.created_at)}</div></div>
+        <div className="mp-filter-row">
+          {[['overview','Overview'],['orders','Orders'],['quotes','Quotes'],['people','People'],...(canNotes?[['notes','Notes']]:[])].map(([k,l])=>
+            <button key={k} className={'mp-filter-btn'+(tab===k?' active':'')} style={{flex:'1 0 auto',padding:'6px 8px'}} onClick={()=>setT(k)}>{l}</button>)}
+        </div>
+
+        {tab==='overview'&&<>
+          {todos.length>0&&<>
+            <div className="mp-section-title">To-dos ({todos.length})</div>
+            {todos.slice(0,4).map(t=><div key={t.id} className="mp-list-card" style={{padding:'8px 12px'}}>
+              <div style={{fontSize:13,fontWeight:600,color:'#0f172a'}}>{t.title}</div>
+              <div style={{fontSize:11,color:t.due_date&&t.due_date<new Date().toISOString().slice(0,10)?'#dc2626':'#64748b'}}>{t.due_date?'Due '+fmtDate(String(t.due_date).length===10?t.due_date+'T12:00:00':t.due_date):'No due date'}{team(t.customer_id)}</div>
+            </div>)}
+          </>}
+          {openSOs.length>0&&<>
+            <div className="mp-section-title">Open orders</div>
+            {openSOs.slice(0,3).map(soCard)}
+            {openSOs.length>3&&<button className="mp-filter-btn" style={{width:'100%'}} onClick={()=>setT('orders')}>All {custSOs.length} orders</button>}
+          </>}
+          {openInvs.length>0&&<>
+            <div className="mp-section-title">Open invoices</div>
+            {openInvs.slice(0,5).map(i=><div key={i.id} className="mp-list-card" onClick={()=>setDetail({type:'invoice',data:i})}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,color:'#1e40af'}}>{i.id}{team(i.customer_id)}</div><div style={{fontSize:12,color:'#64748b'}}>{fmtDate(i.created_at)}{i.due_date?' · due '+fmtDate(i.due_date):''}</div></div>
+                <div style={{fontWeight:800,color:'#dc2626'}}>{fmtMoney(i._bal)}</div>
+              </div>
+            </div>)}
+          </>}
+          {kids.length>0&&<>
+            <div className="mp-section-title">Teams ({kids.length})</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+              {kids.map(k=><button key={k.id} className="mp-filter-btn" onClick={()=>setDetail({type:'customer',data:k})}>{k.alpha_tag||k.name}</button>)}
             </div>
-          </div>)}
+          </>}
+          <div className="mp-section-title">Account</div>
+          <div className="mp-info-grid">
+            <div className="mp-info-item"><div className="mp-info-label">Phone</div><div className="mp-info-val">{cc.phone?<a href={'tel:'+cc.phone} style={{color:'#1e40af',textDecoration:'none',fontWeight:700}}>{cc.phone}</a>:'—'}</div></div>
+            <div className="mp-info-item"><div className="mp-info-label">Email</div><div className="mp-info-val" style={{fontSize:12,wordBreak:'break-all'}}>{cc.email||'—'}</div></div>
+          </div>
+          {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}>
+            {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
+              return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
+            {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag),'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
+          </div>
         </>}
-        {custEsts.length>0&&<>
-          <div className="mp-section-title">Recent Estimates</div>
-          {custEsts.slice(0,3).map(e=><div key={e.id} className="mp-list-card" onClick={()=>setDetail({type:'estimate',data:e})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{e.id}</div></div>
-              <span style={statusBadge(e.status||'draft')}>{e.status||'draft'}</span>
-            </div>
-          </div>)}
-        </>}
-        {custInvs.length>0&&<>
-          <div className="mp-section-title">Recent Invoices</div>
-          {custInvs.slice(0,3).map(i=><div key={i.id} className="mp-list-card" onClick={()=>setDetail({type:'invoice',data:i})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{i.id}</div><div style={{fontSize:12,color:'#64748b'}}>{fmtMoney(i.total)}</div></div>
-              <span style={statusBadge(i.status||'open')}>{i.status||'open'}</span>
-            </div>
-          </div>)}
-        </>}
+
+        {tab==='orders'&&(custSOs.length?custSOs.map(soCard):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No orders yet</div>)}
+
+        {tab==='quotes'&&(custEsts.length?custEsts.map(e=><div key={e.id} className="mp-list-card" onClick={()=>setDetail({type:'estimate',data:e})}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <div style={{minWidth:0}}><div style={{fontWeight:700,color:'#1e40af'}}>{e.id}{team(e.customer_id)}</div><div style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{e.memo||'—'} · {fmtDate(e.created_at)}</div></div>
+            <div style={{textAlign:'right',flexShrink:0}}><span style={statusBadge(e.status||'draft')}>{e.status||'draft'}</span><div style={{fontSize:12,fontWeight:700,marginTop:4}}>{fmtMoney(e.total)}</div></div>
+          </div>
+        </div>):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No quotes yet</div>)}
+
+        {tab==='people'&&(contacts.length?contacts.map((p,i)=><div key={i} className="mp-list-card" style={{cursor:'default'}}>
+          <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{p.name||p.email}{p._team?<span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#f1f5f9',color:'#475569',marginLeft:6}}>{p._team}</span>:null}</div>
+          {(p.role||p.sport)&&<div style={{fontSize:12,color:'#64748b'}}>{[p.role,p.sport].filter(Boolean).join(' · ')}</div>}
+          <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+            {p.phone&&<a style={pill} href={'tel:'+p.phone}>Call</a>}
+            {p.phone&&<a style={pill} href={'sms:'+p.phone}>Text</a>}
+            {p.email&&<a style={pill} href={'mailto:'+p.email}>Email</a>}
+            {!p.phone&&!p.email&&<span style={{fontSize:12,color:'#94a3b8'}}>No phone or email saved</span>}
+          </div>
+        </div>):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No contacts yet. Record a voice note after a visit and new people you mention can be added.</div>)}
+
+        {tab==='notes'&&canNotes&&<AccountNotes supabase={supabase} customer={cc} allCustomers={cust} reps={REPS} onNewNote={(c,mode)=>openNotes({customerId:c.id,mode})} onStartEstimate={startEstimateFromNote}/>}
       </div>
     </div>;
   };
@@ -636,6 +826,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button onClick={()=>setSendInvModal(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
             <MIcon name="mail" size={16}/> Send Invoice
           </button>
+          {invBalance(inv)>0.005&&<button onClick={()=>openPayLink(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Get paid · QR / link</button>}
         </div>}
         {inv.so_id&&<div className="mp-list-card" onClick={()=>{const so=sos.find(s=>s.id===inv.so_id);if(so)setDetail({type:'order',data:so})}}>
           <div style={{fontSize:12,color:'#64748b'}}>Linked Order</div>
@@ -788,6 +979,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     setNewEstEditItem(newEst.items.length); // open size editor for new item
     setNewEstStep('sizes');
   };
+  // AI Notes "Start estimate": open the estimate builder with the note's garments.
+  const startEstimateFromNote=(note)=>{
+    const cc=note?.customer_id?custObj(note.customer_id):null;
+    if(!cc){if(nf)nf('Pick the account for this note first','error');return}
+    setNewEst({customer_id:cc.id,memo:String(note.final?.headline||note.title||'').slice(0,180),items:linesToEstimateItems(cc,noteEstimateLines(note),prod),art_files:[]});
+    setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null);
+  };
   // ─── ADD ITEMS TO AN EXISTING SALES ORDER ───
   // Reuses the estimate item/size/decoration builder, seeded to append onto a saved SO. New items are
   // collected in a scratch draft (so existing SO items / pick / PO data are never touched) and appended on save.
@@ -815,15 +1013,50 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const saveNewEstimate=()=>{
     if(!newEst||!onSaveEstimate)return;
     const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+    if(newEst._editId){
+      // Editing a saved estimate: keep everything else on it (art, shipping, promo, status) and
+      // replace only what the phone edits: memo and lines.
+      const orig=ests.find(e=>e.id===newEst._editId);
+      if(!orig){if(nf)nf('That estimate is no longer loaded. Reopen it and try again.','error');return}
+      const upd={...orig,memo:newEst.memo,items:newEst.items,art_files:newEst.art_files||orig.art_files||[],updated_at:new Date().toLocaleString()};
+      upd.total=calcOrderTotals(upd,cc?.tax_rate||0).grand;
+      const saved=onSaveEstimate(upd);
+      if(!saved)return;// save was refused; the reason is already on screen
+      setNewEst(null);
+      if(nf)nf(upd.id+' saved');
+      setDetail({type:'estimate',data:saved&&saved.id?saved:upd});
+      return;
+    }
     const mk=cc?.catalog_markup||1.65;
     const est={id:nextEstId(),customer_id:newEst.customer_id,memo:newEst.memo,status:'draft',created_by:cu.id,
       created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,
       shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:newEst.art_files||[],items:newEst.items};
     est.total=calcOrderTotals(est,cc?.tax_rate||0).grand;
     const saved=onSaveEstimate(est);
+    if(!saved)return;
     setNewEst(null);
-    if(nf)nf(saved.id+' created');
-    setDetail({type:'estimate',data:saved});
+    if(nf)nf((saved.id||est.id)+' created');
+    setDetail({type:'estimate',data:saved.id?saved:est});
+  };
+  // Open a saved estimate in the builder. Blocked while its lines are still loading so a
+  // half-loaded estimate can't be saved back without its decorations.
+  const startEditEstimate=(est)=>{
+    if(est._itemsHydrated===false||est._decosHydrated===false){if(nf)nf('This estimate is still loading. Try again in a moment.','error');return}
+    setNewEst({customer_id:est.customer_id,memo:est.memo||'',items:JSON.parse(JSON.stringify(est.items||[])),art_files:est.art_files||[],_editId:est.id});
+    setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null);
+  };
+  const markEstimateApproved=(est)=>{
+    if(!onSaveEstimate)return;
+    const saved=onSaveEstimate({...est,status:'approved',updated_at:new Date().toLocaleString()});
+    if(!saved)return;
+    if(nf)nf(est.id+' marked approved');
+    setDetail({type:'estimate',data:saved.id?saved:{...est,status:'approved'}});
+  };
+  const runConvert=async()=>{
+    const a=convertAsk;if(!a||a.busy||!a.date||!onConvertEstimate)return;
+    setConvertAsk({...a,busy:true});
+    try{await onConvertEstimate(a.est,a.date);setConvertedFrom(a.est.id);setConvertAsk(null);}
+    catch(e){if(nf)nf('Could not create the order: '+(e.message||e),'error');setConvertAsk({...a,busy:false});}
   };
 
   const renderNewEstimate=()=>{
@@ -863,7 +1096,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       return<div className="mp-detail">
         <div className="mp-detail-header">
           <button className="mp-back-btn" onClick={()=>{if(soMode){if(newEst.items.length>0&&!window.confirm('Discard added items?'))return;setNewEst(null)}else if(newEst.items.length===0)setNewEstStep('customer');else if(!window.confirm('Discard this estimate?'))return;else setNewEst(null)}}><MIcon name="back" size={22}/></button>
-          <div style={{flex:1}}><div className="mp-detail-id">{soMode?'Add Items':'New Estimate'}</div><div className="mp-detail-sub">{soMode?newEst._soId:(cc?.name||'No Customer')}</div></div>
+          <div style={{flex:1}}><div className="mp-detail-id">{soMode?'Add Items':newEst._editId?'Edit '+newEst._editId:'New Estimate'}</div><div className="mp-detail-sub">{soMode?newEst._soId:(cc?.name||'No Customer')}</div></div>
           {newEst.items.length>0&&<button style={{background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={onSave}>Save</button>}
         </div>
         <div className="mp-detail-body">
@@ -898,6 +1131,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                         <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>)}
                     </div>}
                     {qty===0&&<div style={{fontSize:12,color:'#d97706',marginTop:4}}>Tap to set sizes</div>}
+                    {(()=>{const st=stockMap[stockCacheKey(it)];if(!st)return null;const short=shortSizes(it,st);
+                      return<div style={{fontSize:11,fontWeight:700,marginTop:4,color:short.length?'#b45309':'#166534'}}>{short.length?'⚠ Vendor short on '+short.join(', '):qty>0?'✓ In stock at '+(SOURCE_LABEL[st.source]||'vendor'):'Stock available, tap to see sizes'}</div>})()}
                     {(it.decorations||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>
                       {(it.decorations||[]).map((d,di)=>{const dk=DECO_KINDS.find(x=>x.k===d.kind);return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:dk?.color+'20',color:dk?.color}}>{d.position} · {dk?.label}</span>})}
                     </div>}
@@ -947,12 +1182,23 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button style={{background:'#1e40af',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>{setNewEstStep('details');setNewEstEditItem(null)}}>Done</button>
         </div>
         <div className="mp-detail-body">
-          <div style={{fontSize:13,fontWeight:600,color:'#334155',marginBottom:12}}>Enter quantity per size:</div>
+          <div style={{fontSize:13,fontWeight:600,color:'#334155',marginBottom:item&&stockMap[stockCacheKey(item)]?4:12}}>Enter quantity per size:</div>
+          {(()=>{const st=item?stockMap[stockCacheKey(item)]:null;const k=item?stockCacheKey(item):'';
+            if(st)return<div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Stock at {SOURCE_LABEL[st.source]||'vendor'}{st.lastSynced?' · updated '+fmtDate(st.lastSynced):''}</div>;
+            if(k&&k in stockMap)return<div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>No vendor stock feed for this style. Check stock on desktop.</div>;
+            return null})()}
           <div style={{display:'flex',gap:8,overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:4}}>
-            {sizes.map(sz=><div key={sz} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'8px 10px',textAlign:'center',minWidth:80,flexShrink:0}}>
+            {sizes.map(sz=><div key={sz} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'8px 10px',textAlign:'center',width:88,boxSizing:'border-box',flexShrink:0}}>
               <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz}</div>
               <input type="number" inputMode="numeric" min="0" value={item.sizes?.[sz]||''} onChange={e=>updateSize(sz,e.target.value)} placeholder="0"
                 style={{width:'100%',textAlign:'center',border:'1px solid #e2e8f0',borderRadius:6,padding:'10px 4px',fontSize:18,fontWeight:700,boxSizing:'border-box',minHeight:44}}/>
+              {(()=>{const st=stockMap[stockCacheKey(item)];const s2=st?.sizes[normStockSize(sz)];if(!st)return null;
+                if(!s2)return<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>no data</div>;
+                const want=Number(item.sizes?.[sz])||0;const short=want>s2.qty;
+                return<div style={{marginTop:4,lineHeight:1.2}}>
+                  <div style={{fontSize:11,fontWeight:700,color:short?'#dc2626':s2.qty>0?'#166534':'#94a3b8'}}>{s2.qty.toLocaleString()} in stock</div>
+                  {(short||s2.qty===0)&&s2.futureDate&&<div style={{fontSize:10,color:'#64748b'}}>+{s2.futureQty||''} {fmtDate(String(s2.futureDate).length===10?s2.futureDate+'T12:00:00':s2.futureDate)}</div>}
+                </div>})()}
             </div>)}
           </div>
           <div style={{marginTop:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -1105,13 +1351,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   if(newEst)return renderNewEstimate();
 
   // ─── RENDER DETAIL ROUTER ───
-  if(detail){
-    if(detail.type==='order')return renderOrderDetail(detail.data);
-    if(detail.type==='estimate')return renderEstDetail(detail.data);
-    if(detail.type==='customer')return renderCustDetail(detail.data);
-    if(detail.type==='invoice')return renderInvDetail(detail.data);
-    if(detail.type==='message')return renderMsgDetail(detail.data);
-  }
 
   // ─── HOME TAB ───
   // Warehouse staff get a quick-navigation grid (like the More page) instead of the
@@ -1147,48 +1386,89 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       </div>
     </div>;
   };
+  // "Today": what needs the rep now: overdue / due-today to-dos, AI notes to review,
+  // orders due this week, and quotes that have gone quiet. Rows tap through to the item.
+  const renderToday=()=>{
+    const today=new Date().toISOString().slice(0,10);
+    const wk=new Date(Date.now()+7*864e5).toISOString().slice(0,10);
+    const ymd=v=>{if(!v)return'';const s2=String(v);if(/^\d{4}-\d{2}-\d{2}/.test(s2))return s2.slice(0,10);const d=new Date(s2);return isNaN(d)?'':d.toISOString().slice(0,10)};
+    const dueTodos=myAssignedTodos.filter(t=>t.due_date&&ymd(t.due_date)<=today).sort((a,b)=>ymd(a.due_date).localeCompare(ymd(b.due_date)));
+    const dueSOs=sos.filter(s2=>inScope(s2.customer_id,s2.created_by)&&!['completed','complete','shipped','cancelled'].includes(s2.status||'')&&s2.expected_date&&ymd(s2.expected_date)<=wk).sort((a,b)=>ymd(a.expected_date).localeCompare(ymd(b.expected_date)));
+    const quiet=new Date(Date.now()-5*864e5).toISOString().slice(0,10);
+    const followUps=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['sent','open'].includes(e.status||'')&&ymd(e.updated_at||e.created_at)&&ymd(e.updated_at||e.created_at)<=quiet).sort((a,b)=>ymd(a.updated_at||a.created_at).localeCompare(ymd(b.updated_at||b.created_at)));
+    const total=dueTodos.length+dueSOs.length+followUps.length+(notesToReview>0?1:0)+(unreadForMeCount>0?1:0);
+    const row=(key,icon,label,sub,color,onClick)=><div key={key} className="mh-row" onClick={onClick} style={{cursor:onClick?'pointer':'default'}}>
+      <span style={{fontSize:16,width:22,textAlign:'center'}}>{icon}</span>
+      <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{label}</div>{sub&&<div style={{fontSize:11,color:color||'#64748b'}}>{sub}</div>}</div>
+      {onClick&&<span style={{color:'#cbd5e1',fontSize:16}}>›</span>}
+    </div>;
+    const cname=id=>{const c2=custObj(id);return c2?.alpha_tag||c2?.name||''};
+    return<div className="mh-card">
+      <div className="mh-card-head"><h3>Today</h3>{total>0&&<span className="mh-badge is-red">{total}</span>}</div>
+      {!total&&<div className="mh-empty">✓ You’re all caught up</div>}
+      {unreadForMeCount>0&&row('msgs','💬',unreadForMeCount+' unread message'+(unreadForMeCount===1?'':'s')+' for you','Tap to read','#1e40af',()=>setTab('messages'))}
+      {notesToReview>0&&row('notes','🎙️',notesToReview+' AI note'+(notesToReview===1?'':'s')+' to review','Nothing is saved to the account until you approve','#b45309',()=>openNotes())}
+      {dueTodos.slice(0,4).map(t=>row('t'+t.id,'☑️',t.title,(ymd(t.due_date)<today?'Overdue · was due ':'Due today · ')+fmtDate(ymd(t.due_date)+'T12:00:00')+(t.customer_id?' · '+cname(t.customer_id):''),ymd(t.due_date)<today?'#dc2626':'#b45309',t.customer_id&&custObj(t.customer_id)?()=>setDetail({type:'customer',data:custObj(t.customer_id)}):null))}
+      {dueSOs.slice(0,4).map(s2=>row('s'+s2.id,'📦',s2.id+' · '+(cname(s2.customer_id)||'—'),(ymd(s2.expected_date)<today?'Past in-hands date ':'In-hands ')+fmtDate(ymd(s2.expected_date)+'T12:00:00')+' · '+(orderProgress(s2,calcSOStatus(s2))?.headline||''),ymd(s2.expected_date)<today?'#dc2626':'#64748b',()=>setDetail({type:'order',data:s2})))}
+      {followUps.slice(0,3).map(e=>row('e'+e.id,'📨','Follow up: '+e.id+' · '+(cname(e.customer_id)||'—'),'Quote '+(e.status==='sent'?'sent':'open')+' since '+fmtDate(ymd(e.updated_at||e.created_at)+'T12:00:00')+' · '+fmtMoney(e.total),'#64748b',()=>setDetail({type:'estimate',data:e})))}
+      {(dueTodos.length>4||dueSOs.length>4||followUps.length>3)&&<div style={{fontSize:11,color:'#94a3b8',paddingTop:6}}>{[dueTodos.length>4&&dueTodos.length+' to-dos',dueSOs.length>4&&dueSOs.length+' orders due',followUps.length>3&&followUps.length+' quotes to follow up'].filter(Boolean).join(' · ')}</div>}
+    </div>;
+  };
   const renderHome=()=>{
     if(cu.role==='warehouse')return renderWhHome();
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
-    return<div className="mp-page">
-      <div className="mp-greeting" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-        <div>
-          <div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
-          <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+    const hr=new Date().getHours();
+    const greet=hr<12?'Good morning':hr<17?'Good afternoon':'Good evening';
+    const compact=(n)=>{const a=Math.abs(+n||0);return a>=1e6?'$'+(a/1e6).toFixed(a>=1e7?0:1)+'M':a>=1e3?'$'+(a/1e3).toFixed(a>=1e5?0:1)+'k':'$'+Math.round(a)};
+    const trend=stats.lastMonthToDate>0?Math.round((stats.monthRevenue-stats.lastMonthToDate)/stats.lastMonthToDate*100):null;
+    const goSub=(sp)=>{setTab('more');setDetail(null);setMoreSubPage(sp)};
+    const kpis=isOps?[
+      {k:'orders',label:'Active orders',num:stats.activeOrders,foot:stats.dueWeek+' due this week',on:()=>setTab('orders')},
+      {k:'urgent',label:'Due in 3 days',num:stats.urgentOrders,foot:stats.urgentOrders?'Needs attention':'Nothing urgent',hot:stats.urgentOrders>0,on:()=>setTab('orders')},
+      {k:'msgs',label:'Messages',num:unreadForMeCount,foot:'Unread for you',hot:unreadForMeCount>0,on:()=>setTab('messages')},
+      {k:'todo',label:'To-dos',num:myTodos.length,foot:'Open tasks',on:()=>{try{document.getElementById('mh-todo')?.scrollIntoView({behavior:'smooth'})}catch(e){}}},
+    ]:[
+      {k:'sales',label:'Sales this month',num:compact(stats.monthRevenue),trend,foot:'vs last month',on:()=>goSub('reports')},
+      {k:'quotes',label:'Open quotes',num:stats.openQuotes,foot:compact(stats.openQuoteValue)+' outstanding',on:()=>goSub('estimates')},
+      {k:'orders',label:'Active orders',num:stats.activeOrders,foot:stats.urgentOrders?stats.urgentOrders+' due in 3 days':stats.dueWeek+' due this week',hot:stats.urgentOrders>0,on:()=>setTab('orders')},
+      {k:'owed',label:'Owed to us',num:compact(stats.owed),foot:stats.owedCount+' open invoice'+(stats.owedCount===1?'':'s'),on:()=>goSub('invoices')},
+    ];
+    return<div className="mp-page mh-page">
+      <section className="mh-hero" aria-label="Your numbers">
+        <div className="mh-hero-top">
+          <div style={{minWidth:0}}>
+            <div className="mh-eyebrow">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+            <h1 className="mh-title">{greet}, {cu.name?.split(' ')[0]||'there'}.</h1>
+          </div>
+          {myCustIds.size>0&&<div className="mh-scope" role="group" aria-label="Show">
+            {[['mine','Mine'],['all','All']].map(([v,l])=><button key={v} className={scope===v?'on':''} onClick={()=>setScope(v)}>{l}</button>)}
+          </div>}
         </div>
-        <ScopeToggle/>
-      </div>
-      {/* Global search bar */}
-      <div className="mp-search-inline" onClick={()=>setShowSearch(true)} style={{cursor:'pointer'}}>
+        <div className="mh-kpis">
+          {kpis.map(t=><button key={t.k} className="mh-kpi" onClick={t.on}>
+            <span className="mh-kpi-label">{t.label}</span>
+            <strong className="mh-kpi-num">{t.num}</strong>
+            <span className="mh-kpi-foot">{t.trend!=null&&<span className={'mh-trend '+(t.trend>=0?'up':'down')}>{t.trend>=0?'▲':'▼'} {Math.abs(t.trend)}%</span>}<span className={t.hot?'mh-hot':''}>{t.foot}</span></span>
+          </button>)}
+        </div>
+      </section>
+      <button className="mh-search" onClick={()=>setShowSearch(true)}>
         <MIcon name="search" size={18}/>
-        <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
-      </div>
-      {/* Quick stats */}
-      <div className="mp-stats-grid">
-        <div className="mp-stat-card" onClick={()=>setTab('orders')}>
-          <div className="mp-stat-num">{stats.activeOrders}</div><div className="mp-stat-label">Active Orders</div>
+        <span>Search orders, customers, quotes…</span>
+      </button>
+      {!appNudgeHidden&&(!appState.installed||appState.push==='off')&&appState.push!=='unknown'&&<div className="mp-item-card" style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,border:'1px solid #bfdbfe',background:'#eff6ff'}}>
+        <img src="/icon-192.png" alt="" style={{width:40,height:40,borderRadius:10,background:'white'}}/>
+        <div style={{flex:1,minWidth:0,cursor:'pointer'}} onClick={()=>{setTab('more');setMoreSubPage('app')}}>
+          <div style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>{appState.installed?'Turn on notifications':'Get the NSA Connect app'}</div>
+          <div style={{fontSize:12,color:'#475569'}}>{appState.installed?'Art approvals, payments, notes and mentions':'Add it to your home screen in 30 seconds'}</div>
         </div>
-        <div className="mp-stat-card" onClick={()=>setTab('messages')}>
-          <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages</div>
-        </div>
-        {!isOps&&<div className="mp-stat-card">
-          <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
-        </div>}
-        {!isOps&&<div className="mp-stat-card">
-          <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">MTD Sales</div>
-        </div>}
-      </div>
-      {/* Urgent orders */}
-      {stats.urgentOrders>0&&<div className="mp-alert-banner">
-        <MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span>
+        <button aria-label="Hide" onClick={()=>{setAppNudgeHidden(true);try{localStorage.setItem('nsa_app_nudge','hidden')}catch(e){}}} style={{border:'none',background:'none',color:'#94a3b8',fontSize:18,padding:6}}>✕</button>
       </div>}
-      {/* Unread messages for me */}
-      {unreadForMeCount>0&&<div className="mp-msg-banner" onClick={()=>setTab('messages')}>
-        <MIcon name="mail" size={16}/><span>{unreadForMeCount} unread message{unreadForMeCount>1?'s':''} for you</span>
-      </div>}
+      {!isOps&&renderToday()}
       {/* To-Do List */}
-      <div className="mp-section-title" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <span>To-Do ({myTodos.length})</span>
+      <div className="mh-card" id="mh-todo">
+      <div className="mh-card-head">
+        <h3>To-do</h3>{myTodos.length>0&&<span className="mh-badge">{myTodos.length}</span>}<span style={{flex:1}}/>
         {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign to Claude</button>}
       </div>
       {botCompose&&<div className="mp-list-card" style={{background:'#f0fdfa',border:'1px solid #99f6e4'}}>
@@ -1206,14 +1486,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             style={{flex:2,padding:'8px',border:'none',borderRadius:8,background:botCompose.title.trim()?'#0f766e':'#cbd5e1',color:'white',fontSize:13,fontWeight:700}}>Assign to Claude</button>
         </div>
       </div>}
-      {myTodos.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:20,fontSize:13}}>No open tasks</div>}
-      {myTodos.slice(0,15).map(t=>{
+      {myTodos.length===0&&<div className="mh-empty">No open tasks</div>}
+      {myTodos.slice(0,todoAll?myTodos.length:6).map(t=>{
         const isAssignedToMe=t.assigned_to===cu.id;
         const _dateStr=t._date||t.created_at;
         const _dateLabel=_dateStr?(()=>{try{const dt=new Date(_dateStr);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}})():'';
-        return<div key={t.id} className="mp-list-card" style={{minHeight:44}}>
+        return<div key={t.id} className="mh-todo">
           <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-            <div style={{width:4,minHeight:36,borderRadius:2,background:priColors[t.priority]||'#94a3b8',flexShrink:0,marginTop:2}}/>
+            <div style={{width:4,minHeight:34,borderRadius:2,background:priColors[t.priority]||'#94a3b8',flexShrink:0,marginTop:2}}/>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{t.title}</div>
               {t.description&&<div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{t.description}</div>}
@@ -1227,6 +1507,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             {t._computed&&t._dismissKey&&<button onClick={e=>{e.stopPropagation();dismissTodo(t._dismissKey)}} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px',fontSize:12,color:'#94a3b8',cursor:'pointer',flexShrink:0,alignSelf:'center'}}>✕</button>}
           </div>
         </div>})}
+      {myTodos.length>6&&<button className="mh-more" onClick={()=>setTodoAll(v=>!v)}>{todoAll?'Show less':'Show all '+myTodos.length}</button>}
+      </div>
     </div>;
   };
 
@@ -1273,6 +1555,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div style={{fontSize:11,color:'#94a3b8'}}>{fmtDate(so.expected_date)}</div>
             </div>
           </div>
+          {so.status!=='cancelled'&&<OrderProgress so={so} compact/>}
         </div>})}
     </div>;
   };
@@ -2052,6 +2335,67 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>)}
       </div>;
     }
+    if(subPage==='app'){
+      const a=appState;const ios=isIOS();const android=isAndroid();
+      const card={background:'white',border:'1px solid #e2e8f0',borderRadius:14,padding:16,marginBottom:12};
+      const big={width:'100%',padding:'14px',borderRadius:12,border:'none',fontWeight:800,fontSize:15,cursor:'pointer'};
+      const step=(n,t,sub)=><div style={{display:'flex',gap:12,alignItems:'flex-start',padding:'8px 0'}}>
+        <div style={{width:26,height:26,borderRadius:13,background:'#1e40af',color:'white',fontWeight:800,fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{n}</div>
+        <div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{t}</div>{sub&&<div style={{fontSize:12,color:'#64748b',marginTop:2}}>{sub}</div>}</div></div>;
+      const run=async(fn,okMsg)=>{setAppState(x=>({...x,busy:true,msg:'',signIn:false}));try{await fn();if(okMsg&&nf)nf(okMsg)}catch(e){setAppState(x=>({...x,msg:e.message||String(e),signIn:e.code===NO_SESSION}))}await refreshAppState();setAppState(x=>({...x,busy:false}))};
+      const pill=(on,label)=><span style={{fontSize:12,fontWeight:800,padding:'4px 10px',borderRadius:12,background:on?'#dcfce7':'#f1f5f9',color:on?'#166534':'#64748b'}}>{label}</span>;
+      return<div className="mp-page">
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+          <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
+          <div className="mp-page-title" style={{margin:0}}>App & notifications</div>
+        </div>
+        <div style={card}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <img src="/icon-192.png" alt="" style={{width:52,height:52,borderRadius:12,border:'1px solid #e2e8f0'}}/>
+            <div style={{flex:1}}><div style={{fontSize:16,fontWeight:800,color:'#0f172a'}}>NSA Connect</div><div style={{fontSize:12,color:'#64748b'}}>The portal as an app on your home screen</div></div>
+            {pill(a.installed,a.installed?'Installed':'Not installed')}
+          </div>
+          {!a.installed&&<div style={{marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:8}}>
+            {a.canInstall?<button style={{...big,background:'#1e40af',color:'white',marginTop:6}} onClick={()=>run(async()=>{await promptInstall()})}>Install NSA Connect</button>
+            :ios?<>
+              {step(1,<>Open this page in <b>Safari</b></>,'Other browsers on iPhone can’t install apps.')}
+              {step(2,<>Tap <b>Share</b> <span style={{display:'inline-block',border:'1.5px solid #1e40af',borderRadius:4,padding:'0 4px',color:'#1e40af',fontSize:12}}>⬆︎</span> at the bottom</>)}
+              {step(3,<>Tap <b>Add to Home Screen</b>, then <b>Add</b></>)}
+              {step(4,<>Open <b>NSA Connect</b> from your home screen</>,'Then come back here to turn on notifications.')}
+            </>:<>
+              {step(1,<>Tap the browser menu <b>⋮</b></>)}
+              {step(2,<>Tap <b>Install app</b> or <b>Add to Home screen</b></>)}
+              {step(3,<>Open <b>NSA Connect</b> from your home screen</>)}
+            </>}
+          </div>}
+        </div>
+        <div style={card}>
+          <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:10}}>
+            <div style={{fontSize:28}}>🔔</div>
+            <div style={{flex:1}}><div style={{fontSize:16,fontWeight:800,color:'#0f172a'}}>Notifications</div><div style={{fontSize:12,color:'#64748b'}}>On this phone</div></div>
+            {pill(a.push==='on',a.push==='on'?'On':a.push==='blocked'?'Blocked':'Off')}
+          </div>
+          {a.push==='unsupported'?<div style={{fontSize:13,color:'#475569',background:'#f8fafc',borderRadius:10,padding:10}}>{ios&&!a.installed?'On iPhone, notifications work once NSA Connect is on your home screen. Install it above, open it from the home screen, then turn notifications on here.':'This browser can’t receive notifications. Use Safari on iPhone or Chrome on Android.'}</div>
+          :a.push==='blocked'?<div style={{fontSize:13,color:'#92400e',background:'#fef3c7',borderRadius:10,padding:10}}>Notifications are blocked. {ios?'Open Settings → Notifications → NSA Connect and allow them.':'Open site settings for this app and allow notifications.'} Then come back here.</div>
+          :a.push==='on'?<div style={{display:'flex',gap:8}}>
+            <button style={{...big,flex:2,background:'#1e40af',color:'white'}} disabled={a.busy} onClick={()=>run(async()=>{const r=await callPush(supabase,{action:'test'});if(!r.sent)throw new Error(r.skipped||'No device received it. Turn notifications off and on again.')},'Test sent. It should arrive in a few seconds.')}>Send a test</button>
+            <button style={{...big,flex:1,background:'white',color:'#475569',border:'1px solid #e2e8f0'}} disabled={a.busy} onClick={()=>run(()=>disablePush(supabase),'Notifications off on this phone')}>Turn off</button>
+          </div>
+          :<button style={{...big,background:'#16a34a',color:'white'}} disabled={a.busy} onClick={()=>run(()=>enablePush(supabase),'Notifications are on')}>{a.busy?'Turning on…':'Turn on notifications'}</button>}
+          {a.msg&&<div style={{fontSize:12,color:'#b91c1c',marginTop:8}}>{a.msg}</div>}
+          {a.signIn&&onLogout&&<button style={{...big,background:'white',color:'#1e40af',border:'1.5px solid #1e40af',marginTop:8}} onClick={onLogout}>Sign out and sign back in</button>}
+          <div style={{marginTop:14,fontSize:12,fontWeight:700,color:'#475569'}}>You’ll get a notification when:</div>
+          {[['🎨','A coach approves art or asks for changes'],['✅','A coach approves a quote'],['💵','A customer pays an invoice online'],['🎙️','Your AI notes are ready to review'],['💬','Someone @mentions you in a message']].map(([i,t])=><div key={t} style={{display:'flex',gap:10,alignItems:'center',fontSize:13,color:'#1e293b',padding:'5px 0'}}><span style={{width:20,textAlign:'center'}}>{i}</span>{t}</div>)}
+        </div>
+      </div>;
+    }
+    if(subPage==='notes'&&canNotes)return<div className="mp-page">
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+        <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
+        <div className="mp-page-title" style={{margin:0,flex:1}}>AI Notes</div>
+      </div>
+      <MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialMode={noteInit?.mode} initialCustomerId={noteInit?.customerId} onConsumedInitial={()=>setNoteInit(null)} onContactsAdded={onNoteContactsAdded} onStartEstimate={startEstimateFromNote}/>
+    </div>;
     if(subPage==='warehouse')return renderWarehouse();
     if(subPage==='reports'){
       const now=new Date();
@@ -2136,6 +2480,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return<div className="mp-page">
       <div className="mp-page-title">More</div>
       <div className="mp-more-grid">
+        <div className="mp-more-item" onClick={()=>setSubPage('app')}>
+          <div className="mp-more-icon" style={{color:'#1e40af'}}><MIcon name="phone" size={22}/></div>
+          <div>App & alerts</div>
+        </div>
+        {canNotes&&<div className="mp-more-item" onClick={()=>setSubPage('notes')}>
+          <div className="mp-more-icon" style={{color:'#dc2626'}}><MIcon name="file" size={22}/></div>
+          <div>AI Notes</div>
+        </div>}
         {_ca('estimates')&&<div className="mp-more-item" onClick={()=>setSubPage('estimates')}>
           <div className="mp-more-icon"><MIcon name="dollar" size={22}/></div>
           <div>Estimates</div>
@@ -2409,6 +2761,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {id:'orders',label:'Sales Orders',icon:'box'},
       {id:'messages',label:'Messages',icon:'mail',badge:unreadForMeCount},
       {id:'customers',label:'Customers',icon:'users'},
+      ...(canNotes?[{id:'notes',label:'AI Notes',icon:'file',sub:true}]:[]),
+      {id:'app',label:'App & notifications',icon:'phone',sub:true},
       {id:'estimates',label:'Estimates',icon:'dollar',sub:true},
       {id:'invoices',label:'Invoices',icon:'file',sub:true},
       {id:'inventory',label:'Inventory',icon:'warehouse',sub:true},
@@ -2450,6 +2804,133 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     </>;
   };
 
+  // ─── CONVERT ESTIMATE → SALES ORDER (asks the in-hands date first, like desktop) ───
+  const renderConvertSheet=()=>{
+    if(!convertAsk)return null;const a=convertAsk;const cc=custObj(a.est.customer_id);
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>!a.busy&&setConvertAsk(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'white',width:'100%',borderRadius:'16px 16px 0 0',padding:'18px 16px',paddingBottom:'calc(18px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box'}}>
+        <div style={{fontSize:17,fontWeight:800,color:'#0f172a'}}>Create sales order</div>
+        <div style={{fontSize:13,color:'#64748b',margin:'4px 0 14px'}}>{a.est.id} · {cc?.name||'No customer'} · {fmtMoney(a.est.total)}</div>
+        <label style={{fontSize:12,fontWeight:700,color:'#475569'}}>In-hands date (when the customer needs it)</label>
+        <input type="date" value={a.date} min={new Date().toISOString().slice(0,10)} onChange={e=>setConvertAsk({...a,date:e.target.value})} style={{width:'100%',boxSizing:'border-box',marginTop:6,padding:'12px',fontSize:16,border:'1px solid #cbd5e1',borderRadius:10}}/>
+        <div style={{display:'flex',gap:8,marginTop:16}}>
+          <button disabled={a.busy} onClick={()=>setConvertAsk(null)} style={{flex:1,padding:'14px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',fontWeight:700,fontSize:15}}>Cancel</button>
+          <button disabled={a.busy||!a.date} onClick={runConvert} style={{flex:2,padding:'14px',borderRadius:10,border:'none',background:a.date?'#7c3aed':'#c4b5fd',color:'white',fontWeight:800,fontSize:15}}>{a.busy?'Creating…':'Create order'}</button>
+        </div>
+      </div>
+    </div>;
+  };
+
+  // ─── GET PAID: full or part-payment link, as a QR to scan, a QR image, a text or an email ───
+  // Full balance = the coach-portal invoice page. A part payment creates an invoice_pay_requests
+  // row (src/lib/payLinks.js, same as desktop) whose amount the server enforces.
+  const invBalance=(i)=>i.status==='paid'?0:Math.max(0,(+i.total||0)-(+i.paid||0));
+  const makeQR=async(url)=>{try{const QR=(await import('qrcode')).default;const qr=await QR.toDataURL(url,{margin:2,width:600,errorCorrectionLevel:'M'});setPayLink(p=>p&&p.url===url?{...p,qr}:p)}catch(e){/* the link still works without the code */}};
+  const openPayLink=(inv)=>{
+    const cc=custObj(inv.customer_id);
+    if(!cc?.alpha_tag){if(nf)nf('This customer has no portal tag yet, so a pay link can’t be built. Add one on desktop.','error');return}
+    const people=(cc.contacts||[]).filter(c=>c&&(c.phone||c.email));
+    const who=Math.max(0,people.findIndex(c=>c.role==='Billing'));
+    const url=coachInvoiceUrl(cc.alpha_tag,inv.id);
+    setPayLink({inv,mode:'full',amount:'',note:'',saving:false,url,linkAmount:invBalance(inv),qr:null,who,big:false});
+    makeQR(url);
+  };
+  const setPayMode=(mode)=>{
+    setPayLink(p=>{if(!p||p.mode===mode)return p;
+      if(mode==='full'){const url=coachInvoiceUrl(custObj(p.inv.customer_id).alpha_tag,p.inv.id);makeQR(url);return{...p,mode,url,linkAmount:invBalance(p.inv),qr:null}}
+      return{...p,mode,url:null,qr:null,linkAmount:null}});
+  };
+  const createPartLink=async()=>{
+    const p=payLink;if(!p||p.saving)return;
+    setPayLink({...p,saving:true});
+    const r=await createPartialPayLink(supabase,{inv:p.inv,balance:invBalance(p.inv),amount:p.amount,note:p.note,customer:custObj(p.inv.customer_id),createdBy:cu?.name||cu?.email||''});
+    if(r.error){if(nf)nf(r.error,'error');setPayLink(x=>x&&{...x,saving:false});return}
+    setPayLink(x=>x&&{...x,saving:false,url:r.link,linkAmount:r.amount,qr:null});
+    makeQR(r.link);
+  };
+  const renderPayLinkSheet=()=>{
+    if(!payLink)return null;
+    const p=payLink;const{inv}=p;const cc=custObj(inv.customer_id);const bal=invBalance(inv);
+    const people=(cc?.contacts||[]).filter(c=>c&&(c.phone||c.email));
+    const to=people[p.who]||null;
+    const ready=!!p.url;
+    const amtTxt=fmtMoney2(p.linkAmount||0);
+    const msg='Hi'+(to?.name?' '+to.name.split(' ')[0]:'')+', here is the link to pay '+amtTxt+(p.mode==='part'?' toward':' for')+' invoice '+inv.id+' ('+(cc?.name||'your order')+'): '+(p.url||'')+'\n\nThank you!\nNational Sports Apparel';
+    const set=(patch)=>setPayLink(x=>x&&{...x,...patch});
+    const seg=(m,label)=><button onClick={()=>setPayMode(m)} style={{flex:1,padding:'10px 6px',borderRadius:9,border:'none',background:p.mode===m?'white':'transparent',boxShadow:p.mode===m?'0 1px 3px rgba(15,23,42,.15)':'none',fontWeight:800,fontSize:14,color:p.mode===m?'#0f172a':'#64748b'}}>{label}</button>;
+    const act={display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,padding:'10px 4px',borderRadius:12,border:'1px solid #e2e8f0',background:'white',color:'#0f172a',fontWeight:700,fontSize:12,textDecoration:'none',minHeight:62,cursor:'pointer'};
+    const off=!ready?{opacity:.4,pointerEvents:'none'}:{};
+    const qrFile=async()=>{const b=await (await fetch(p.qr)).blob();return new File([b],'pay-'+inv.id+'.png',{type:'image/png'})};
+    const shareQR=async()=>{
+      if(!p.qr)return;
+      try{const f=await qrFile();if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:'Pay invoice '+inv.id,text:msg});return}}catch(e){if(e&&e.name==='AbortError')return}
+      const a=document.createElement('a');a.href=p.qr;a.download='pay-'+inv.id+'.png';a.click();if(nf)nf('QR code saved. Attach it to a text or email.');
+    };
+    const copy=async()=>{try{await navigator.clipboard.writeText(p.url);if(nf)nf('Link copied')}catch(e){window.prompt('Copy this link:',p.url)}};
+    const quick=(pct)=>set({amount:(Math.round(bal*pct*100)/100).toFixed(2)});
+    if(p.big&&p.qr)return<div onClick={()=>set({big:false})} style={{position:'fixed',inset:0,background:'white',zIndex:9601,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,boxSizing:'border-box',textAlign:'center'}}>
+      <div style={{fontSize:15,fontWeight:700,color:'#64748b'}}>National Sports Apparel</div>
+      <div style={{fontSize:30,fontWeight:900,color:'#0f172a',margin:'4px 0 2px'}}>Scan to pay {amtTxt}</div>
+      <div style={{fontSize:14,color:'#64748b',marginBottom:18}}>Invoice {inv.id} · {cc?.name}</div>
+      <img src={p.qr} alt={'QR code to pay invoice '+inv.id} style={{width:'86vw',maxWidth:420,height:'auto',imageRendering:'pixelated'}}/>
+      <div style={{fontSize:13,color:'#94a3b8',marginTop:18}}>Open the phone camera and point it at the code · tap to close</div>
+    </div>;
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:9600,display:'flex',alignItems:'flex-end'}} onClick={()=>!p.saving&&setPayLink(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'#f8fafc',width:'100%',maxHeight:'94vh',overflowY:'auto',borderRadius:'18px 18px 0 0',padding:'10px 16px',paddingBottom:'calc(16px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box'}}>
+        <div style={{width:40,height:4,borderRadius:2,background:'#cbd5e1',margin:'0 auto 12px'}}/>
+        <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:19,fontWeight:900,color:'#0f172a'}}>Get paid</div>
+            <div style={{fontSize:13,color:'#64748b'}}>Invoice {inv.id} · {cc?.name||''}</div>
+          </div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:.4}}>Balance</div><div style={{fontSize:19,fontWeight:900,color:'#dc2626'}}>{fmtMoney2(bal)}</div></div>
+        </div>
+        <div style={{display:'flex',gap:4,background:'#e2e8f0',borderRadius:11,padding:3,margin:'14px 0 12px'}}>{seg('full','Full balance')}{seg('part','Part payment')}</div>
+        {p.mode==='part'&&!ready&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:12,marginBottom:12}}>
+          <label style={{fontSize:12,fontWeight:700,color:'#475569'}}>Amount to collect now</label>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6,border:'1px solid #cbd5e1',borderRadius:10,padding:'4px 12px',background:'white'}}>
+            <span style={{fontSize:24,fontWeight:800,color:'#94a3b8'}}>$</span>
+            <input type="number" inputMode="decimal" min="0.5" step="0.01" autoFocus value={p.amount} onChange={e=>set({amount:e.target.value})} placeholder="0.00" style={{flex:1,border:'none',outline:'none',fontSize:26,fontWeight:800,padding:'6px 0',minWidth:0,background:'transparent'}}/>
+          </div>
+          <div style={{display:'flex',gap:6,marginTop:8}}>
+            {[['25%',.25],['50%',.5],['75%',.75]].map(([l,v])=><button key={l} onClick={()=>quick(v)} style={{flex:1,padding:'8px 0',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:700,fontSize:13,color:'#1e40af'}}>{l} · {fmtMoney(bal*v)}</button>)}
+          </div>
+          <input value={p.note} onChange={e=>set({note:e.target.value})} placeholder="Note for the coach (optional), e.g. Deposit per our call" style={{width:'100%',boxSizing:'border-box',marginTop:10,padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14}}/>
+          <button disabled={p.saving||!(Number(p.amount)>=0.5)} onClick={createPartLink} style={{width:'100%',marginTop:10,padding:'14px',borderRadius:10,border:'none',background:Number(p.amount)>=0.5?'#16a34a':'#86efac',color:'white',fontWeight:800,fontSize:15}}>{p.saving?'Creating link…':'Create '+(Number(p.amount)>=0.5?fmtMoney2(Number(p.amount))+' ':'')+'pay link'}</button>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>The coach can only pay this amount with this link; the rest stays open. Cancel a link from the invoice on desktop.</div>
+        </div>}
+        {ready&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:14,padding:14,textAlign:'center',marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Scan to pay <span style={{color:'#16a34a'}}>{amtTxt}</span>{p.mode==='part'&&<span style={{color:'#64748b',fontWeight:600}}> of {fmtMoney2(bal)}</span>}</div>
+          <button onClick={()=>p.qr&&set({big:true})} aria-label="Show the QR code full screen" style={{display:'block',margin:'10px auto 6px',padding:0,border:'none',background:'none',cursor:'zoom-in'}}>
+            {p.qr?<img src={p.qr} alt={'QR code to pay invoice '+inv.id} style={{width:196,height:196,imageRendering:'pixelated'}}/>:<div style={{width:196,height:196,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#94a3b8'}}>Making code…</div>}
+          </button>
+          <div style={{fontSize:12,color:'#64748b'}}>Tap the code to show it full screen to the coach</div>
+          <div style={{display:'flex',gap:5,justifyContent:'center',flexWrap:'wrap',marginTop:10}}>{['Card','Apple Pay','Google Pay','Bank (ACH)'].map(m=><span key={m} style={{fontSize:11,fontWeight:700,padding:'3px 8px',borderRadius:10,background:'#f1f5f9',color:'#475569'}}>{m}</span>)}</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Card payments include a processing fee.</div>
+          {p.mode==='part'&&<button onClick={()=>set({url:null,qr:null,linkAmount:null,amount:''})} style={{marginTop:8,border:'none',background:'none',color:'#1e40af',fontWeight:700,fontSize:12}}>Make another amount</button>}
+        </div>}
+        {people.length>0&&<div style={{marginBottom:10,...off}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6}}>Send to</div>
+          <div style={{display:'flex',gap:6,overflowX:'auto',paddingBottom:2}}>
+            {people.map((c,i)=><button key={i} onClick={()=>set({who:i})} style={{flexShrink:0,padding:'7px 12px',borderRadius:20,border:'1px solid '+(p.who===i?'#1e40af':'#e2e8f0'),background:p.who===i?'#dbeafe':'white',color:p.who===i?'#1e40af':'#334155',fontWeight:700,fontSize:13}}>{c.name||c.email||c.phone}{c.role?<span style={{fontWeight:500,color:'#64748b'}}> · {c.role}</span>:null}</button>)}
+          </div>
+        </div>}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,...off}}>
+          <a style={act} href={'sms:'+(to?.phone||'')+'?&body='+encodeURIComponent(msg)}><span style={{fontSize:20}}>💬</span>Text link</a>
+          <button style={act} onClick={shareQR}><span style={{fontSize:20}}>🖼️</span>Send QR</button>
+          <a style={act} href={'mailto:'+(to?.email||cc?.email||'')+'?subject='+encodeURIComponent('Pay invoice '+inv.id+' · National Sports Apparel')+'&body='+encodeURIComponent(msg)}><span style={{fontSize:20}}>✉️</span>Email</a>
+          <button style={act} onClick={copy}><span style={{fontSize:20}}>🔗</span>Copy link</button>
+        </div>
+        <button onClick={()=>setPayLink(null)} style={{marginTop:12,width:'100%',padding:'12px',border:'none',background:'none',color:'#64748b',fontWeight:700,fontSize:14}}>Done</button>
+      </div>
+    </div>;
+  };
+
+  // Detail pages are full-screen, but the sheets above (send, compose, convert, pay link)
+  // still have to draw over them.
+  const _detailView=!detail?null:detail.type==='order'?renderOrderDetail(detail.data):detail.type==='estimate'?renderEstDetail(detail.data):detail.type==='customer'?renderCustDetail(detail.data):detail.type==='invoice'?renderInvDetail(detail.data):detail.type==='message'?renderMsgDetail(detail.data):null;
+  if(_detailView)return<>{_detailView}{renderSendEstModal()}{renderSendInvModal()}{renderComposeSheet()}{renderConvertSheet()}{renderPayLinkSheet()}</>;
+
   // ─── MAIN RENDER ───
   return<div className="mp-app">
     {renderDrawer()}
@@ -2457,6 +2938,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {renderSendEstModal()}
     {renderSendInvModal()}
     {renderComposeSheet()}
+    {renderConvertSheet()}
+    {renderPayLinkSheet()}
+    <MobileQuickCreate open={quickOpen} onClose={()=>setQuickOpen(false)} cu={cu} cust={cust} sos={sos} invs={invs} canNotes={canNotes} nf={nf}
+      onNewEstimate={onSaveEstimate?startNewEstimate:null} onOpenNotes={openNotes} onAddTodo={onAddTodo} onSaveCustomer={onSaveCustomer} onOpenPayLink={openPayLink}/>
     {/* Box Action sheet — scanning a BX plate (camera or ?scan= deep link) lands here */}
     {mpBox&&(()=>{
       const bx=mpBox.box;
@@ -2606,7 +3091,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {/* Header */}
     <div className="mp-header">
       <button className="mp-header-btn" onClick={()=>setDrawerOpen(true)} style={{marginRight:8}}><MIcon name="menu" size={22}/></button>
-      <div style={{flex:1,fontWeight:700,fontSize:16}}>{tab==='home'?'Home':tab==='orders'?'Orders':tab==='messages'?'Messages':tab==='customers'?'Customers':moreSubPage||'More'}</div>
+      <div style={{flex:1,fontWeight:700,fontSize:16}}>{tab==='home'?'Home':tab==='orders'?'Orders':tab==='messages'?'Messages':tab==='customers'?'Customers':({app:'App & notifications',notes:'AI Notes',estimates:'Estimates',invoices:'Invoices',inventory:'Inventory',jobs:'Jobs',production:'Production',warehouse:'Warehouse',reports:'Reports'}[moreSubPage]||moreSubPage||'More')}</div>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
         {unreadForMeCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:800,minWidth:18,textAlign:'center'}}>{unreadForMeCount}</span>}
         {_caTop('warehouse')&&<button className="mp-header-btn" onClick={()=>setMpScanOpen(true)} title="Scan barcode / QR" style={{color:'#16a34a'}}><MIcon name="scan" size={20}/></button>}
@@ -2629,9 +3114,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <button className={`mp-tab${tab==='orders'?' active':''}`} onClick={()=>{setTab('orders');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="box" size={20}/><span className="mp-tab-label">Orders</span>
       </button>
-      <button className="mp-tab mp-tab-new" onClick={startNewEstimate}>
+      <button className="mp-tab mp-tab-new" aria-label="Create new" onClick={()=>setQuickOpen(true)}>
         <div className="mp-tab-new-btn"><MIcon name="plus" size={22}/></div>
-        <span className="mp-tab-label">New Est.</span>
+        <span className="mp-tab-label">New</span>
       </button>
       <button className={`mp-tab${tab==='messages'?' active':''}`} onClick={()=>{setTab('messages');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="mail" size={20}/><span className="mp-tab-label">Messages</span>

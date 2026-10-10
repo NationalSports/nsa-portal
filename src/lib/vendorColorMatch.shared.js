@@ -83,7 +83,9 @@ const SS_BRAND_BY_PREFIX = {
 const ssStyleSearchVariants = (style) => {
   const s = String(style ?? '').toUpperCase().trim();
   const out = [];
-  const add = (code, strict, brand) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push({ code: t, strict, ...(brand ? { brand } : {}) }); };
+  // Object spread injects an ESM Babel helper into this CommonJS module and
+  // makes the production webpack bundle reject module.exports at startup.
+  const add = (code, strict, brand) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push(Object.assign({ code: t, strict }, brand ? { brand } : {})); };
   const dash = s.lastIndexOf('-');
   // Synced API skus are '<style>-<numericColorCode>' ("AT105-50"). The whole code never
   // names an S&S style, but its fuzzy /Styles?search= still downloads hundreds-to-thousands

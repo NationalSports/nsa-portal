@@ -253,6 +253,7 @@ async function sendReply(token, message, payload) {
 
 module.exports = {
   SALES_EMAIL,
+  gmailFetch,
   assertAuthorizedMailbox,
   getAccessToken,
   listInboxMessages,

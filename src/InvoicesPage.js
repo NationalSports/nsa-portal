@@ -1,5 +1,6 @@
 import InvoiceStripeStatus from './InvoiceStripeStatus';
 import { emailDeliveryLabel } from './lib/emailRouting';
+import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
 // Invoices page — lifted verbatim out of App() (was `function rInvoices()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
@@ -70,21 +71,13 @@ export default function InvoicesPage(){
       if(!error)setPayLinks({invId,rows:data||[]});
     },[]);
     React.useEffect(()=>{if(viewInvoice&&!viewInvoice._hist&&viewInvoice.id)loadPayLinks(viewInvoice.id);},[viewInvoice?.id,loadPayLinks]);
-    const payLinkUrl=(c,invId,token)=>'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c.alpha_tag)+'&inv='+encodeURIComponent(invId)+'&payreq='+encodeURIComponent(token);
+    const payLinkUrl=(c,invId,token)=>coachInvoiceUrl(c.alpha_tag,invId,token);
     const createPayLink=async()=>{
       const m=payLinkModal;if(!m||m.saving)return;
-      if(!supabase){nf('Supabase not configured','error');return}
-      const amt=Math.round((Number(m.amount)||0)*100)/100;
-      if(!(amt>=0.5)){nf('Enter an amount of at least $0.50','error');return}
-      if(amt>m.bal+0.005){nf('That is more than the $'+m.bal.toFixed(2)+' open balance','error');return}
-      const c=cust.find(x=>x.id===m.inv.customer_id);
-      if(!c?.alpha_tag){nf('This customer has no portal tag, so a pay link can’t be built','error');return}
-      const bytes=new Uint8Array(18);window.crypto.getRandomValues(bytes);
-      const token='PR'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
       setPayLinkModal(x=>({...x,saving:true}));
-      const{error}=await supabase.from('invoice_pay_requests').insert({id:token,invoice_id:m.inv.id,amount:amt,note:String(m.note||'').trim()||null,created_by:cu?.name||cu?.email||''});
-      if(error){nf('Pay link NOT created — '+error.message,'error');setPayLinkModal(x=>({...x,saving:false}));return}
-      setPayLinkModal(x=>({...x,saving:false,link:payLinkUrl(c,m.inv.id,token),amount:amt}));
+      const r=await createPartialPayLink(supabase,{inv:m.inv,balance:m.bal,amount:m.amount,note:m.note,customer:cust.find(x=>x.id===m.inv.customer_id),createdBy:cu?.name||cu?.email||''});
+      if(r.error){nf(r.error,'error');setPayLinkModal(x=>({...x,saving:false}));return}
+      setPayLinkModal(x=>({...x,saving:false,link:r.link,amount:r.amount}));
       loadPayLinks(m.inv.id);
     };
     const cancelPayLink=async row=>{

@@ -71,7 +71,7 @@ function collapseVendorLines(lines, keyOf) {
     const part = { label: vendorLineLabel(l), quantity: qty, sourceSO: l?.sourceSO || '', sourcePO: l?.sourcePO || '', sourceItemIdx: Number.isInteger(l?.sourceItemIdx) ? l.sourceItemIdx : null };
     const hit = byKey.get(key);
     if (hit) { hit.quantity += qty; hit.parts.push(part); }
-    else byKey.set(key, { ...l, key, quantity: qty, parts: [part] });
+    else byKey.set(key, Object.assign({}, l, { key, quantity: qty, parts: [part] }));
   });
   const merged = [...byKey.values()];
   const sentUnits = (lines || []).reduce((s, l) => s + qtyOf(l), 0);

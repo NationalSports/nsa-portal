@@ -41,6 +41,20 @@
 
 # build-meta.json is the deploy fingerprint that long-lived tabs poll to detect a new
 # build (see src/deployReload.js). It must never be cached or the reload would never fire.
+# Service worker and app manifest must never be cached, so a new build's worker
+# takes over on the next visit.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json"
+
 [[headers]]
   for = "/build-meta.json"
   [headers.values]
@@ -325,6 +339,18 @@
   schedule = "*/5 * * * *"
   timeout = 26
 
+# "My Email": reads each rep's connected Gmail inbox, stores AI
+# summaries/tasks/deadlines in rep_email_insights. Read-only against Gmail.
+# See netlify/functions/rep-gmail-sync.js.
+[functions."rep-gmail-sync"]
+  timeout = 26
+
+# Hourly background checks, even with the portal closed (published production only).
+# Scheduled functions cannot serve HTTP requests. Keep this separate from Check now.
+[functions."rep-gmail-scheduled"]
+  schedule = "0 * * * *"
+  timeout = 26
+
 # Durable webstore notification retry queue. Customer replies and shipment
 # emails are persisted before delivery; this sweep retries provider/API failures.
 [functions."webstore-notification-sweep"]
@@ -366,6 +392,23 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+# AI meeting notes: audio is never kept. Processing deletes it right after
+# transcription; this hourly sweep removes anything a failed/abandoned recording
+# left behind after 24h. See netlify/functions/meeting-audio-sweep.js.
+[functions."meeting-audio-sweep"]
+  schedule = "17 * * * *"
+  timeout = 26
+
+# AI Notes end-of-day recap — 5:45 PM PT. Cron is UTC, so it fires at 00:45 and
+# 01:45 UTC and the function only sends on the run that is 5 PM in Pacific time
+# (PDT or PST). Emails from hello@ (MEETING_RECAP_FROM). See meeting-notes-recap.js.
+[functions."meeting-notes-recap"]
+  schedule = "45 0,1 * * *"
+  timeout = 26
+
+[functions."meeting-notes"]
+  timeout = 26
 
 # Shared history checks plus bounded Gmail bounce lookups may take longer than a send.
 [functions."brevo-proxy"]
