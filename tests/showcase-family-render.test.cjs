@@ -149,3 +149,15 @@ test('large heather patches retain light yarn instead of averaging into solid bl
   const solid=await sampleFabric(bytes,[[.1,.1,.25,.25],[.5,.5,.25,.25]],'solid','Team Black');
   assert.equal(solid.grain,undefined,'black alone must not invent heather');
 });
+
+test('equivalent drawstring path formats keep every coordinate and explicit width',()=>{
+ const {validateStrands}=require('../netlify/functions/_showcaseFamilyRender');
+ const expected=[{points:[[.4,.3,.01],[.41,.4,.012],[.42,.5,.01]]}];
+ assert.deepEqual(validateStrands([expected[0].points]),expected);
+ assert.deepEqual(validateStrands([{width:'.01',points:[[.4,.3],[.41,.4],[.42,.5]]}])[0].points,[[.4,.3,.01],[.41,.4,.01],[.42,.5,.01]]);
+ assert.throws(()=>validateStrands([{points:[[.4,.3],[.41,.4],[.42,.5]]}]),/numeric/);
+ assert.throws(()=>validateStrands([{width:.1,points:[[.4,.3],[.41,.4],[.42,.5]]}]),/actual narrow strand width/);
+ assert.throws(()=>validateStrands([{}]),/missing points array/);
+ assert.throws(()=>validateStrands([{points:[[.4,.3,.01],[.41,.4,.01]]}]),/received 2 points/);
+ assert.throws(()=>validateStrands([{points:Array.from({length:81},()=>[.4,.3,.01])}]),/received 81 points/);
+});

@@ -80,11 +80,18 @@ function polygons(value) {
 // Reject broad or sparse traces rather than deleting an arbitrary strip of logo.
 function validateStrands(value = []) {
   if (!Array.isArray(value) || value.length > 12) throw new Error('Invalid drawstring paths');
-  for (const [index,strand] of value.entries()) {
-    if (!Array.isArray(strand?.points) || strand.points.length < 3 || strand.points.length > 80)
-      throw new Error(`Drawstring trace ${index+1}: provide 3–80 centerline points`);
+  for (const [index,entry] of value.entries()) {
+    // A bare path carries exactly the same information as {points:path}.
+    // A declared path-wide width also needs no geometric guesswork.
+    const strand = Array.isArray(entry) ? { points: entry } : entry;
+    if (!Array.isArray(strand?.points))
+      throw new Error(`Drawstring trace ${index+1}: missing points array; return {"points":[[x,y,width],...]}`);
+    if (strand.points.length < 3 || strand.points.length > 80)
+      throw new Error(`Drawstring trace ${index+1}: received ${strand.points.length} points; provide 3–80 centerline points`);
+    value[index] = strand;
     strand.points = strand.points.map((p, j) => {
-      const raw = Array.isArray(p) ? p : p && typeof p === 'object' ? [p.x,p.y,p.width] : [];
+      const raw = Array.isArray(p) ? (p.length === 2 && strand.width != null ? [...p,strand.width] : p)
+        : p && typeof p === 'object' ? [p.x,p.y,p.width ?? strand.width] : [];
       const point = raw.map(v => typeof v === 'string' && v.trim() ? Number(v) : v);
       if (point.length !== 3 || point.some(v => !Number.isFinite(v))) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: expected numeric [x,y,width]`);
       if (point[0]<0 || point[0]>1 || point[1]<0 || point[1]>1) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: x/y must be normalized 0..1`);
