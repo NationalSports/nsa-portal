@@ -22,7 +22,7 @@ test('generated combinations clearly await approval and Review & Approve opens t
  HTMLDialogElement.prototype.showModal=jest.fn();
  HTMLDialogElement.prototype.close=jest.fn();
  const act=jest.fn();
- render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-family-v1'}}]} act={act}/>);
+ render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-color-design-v2',qa_result:{renderer_version:'color-design-v1',detail_images:[]}}}]} act={act}/>);
  expect(screen.getByText('1/1 generated · 0 approved · 1 awaiting review')).toBeTruthy();
  expect(screen.getByText('Refresh images')).toBeTruthy();
  expect(screen.queryByText('Create images')).toBeNull();
