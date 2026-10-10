@@ -13,7 +13,9 @@ revoke all on function public.get_my_profile() from public, anon;
 grant execute on function public.get_my_profile() to authenticated;
 
 -- In-app initiation of deletion; completion is a separately audited operator workflow.
-create table public.account_deletion_requests (
+-- A recovery rollback retains this queue with client access revoked. Reapplying
+-- the release must preserve pending requests rather than require dropping it.
+create table if not exists public.account_deletion_requests (
  id uuid primary key default gen_random_uuid(),
  auth_user_id uuid not null unique,
  team_member_id text not null,

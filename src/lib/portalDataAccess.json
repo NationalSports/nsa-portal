@@ -476,12 +476,18 @@
       "orders",
       "estimates",
       "invoices",
-      "backup"
+      "backup",
+      "art",
+      "jobs",
+      "production"
     ],
     "write": [
       "orders",
       "estimates",
-      "invoices"
+      "invoices",
+      "art",
+      "jobs",
+      "production"
     ]
   },
   "email_auto_replies": {
@@ -494,10 +500,12 @@
   },
   "estimate_art_files": {
     "read": [
-      "estimates"
+      "estimates",
+      "art"
     ],
     "write": [
-      "estimates"
+      "estimates",
+      "art"
     ]
   },
   "estimate_item_decorations": {
@@ -1200,7 +1208,8 @@
       "reports"
     ],
     "write": [
-      "orders"
+      "orders",
+      "art"
     ]
   },
   "so_firm_dates": {
