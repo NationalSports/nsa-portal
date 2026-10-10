@@ -486,7 +486,7 @@ exports.handler = async (event) => {
     if (body.action === 'reorder') return await reorder(sb, body);
     if (body.action === 'portal_list') return await portalList(sb, body);
 
-    const staff = await verifyUser(event);
+    const staff = await verifyUser(event, ["uniforms"]);
     if (!staff.ok) return response(staff.status || 401, { ok: false, error: staff.error || 'Sign in required.' });
     if (body.action === 'staff_publish_proof') return await publishProof(sb, body, staff);
     if (body.action === 'staff_lock') return await lockOrder(sb, body, staff);

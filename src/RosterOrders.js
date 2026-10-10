@@ -1,6 +1,9 @@
+import {coachPortalFetch} from './lib/coachPortalFetch';
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from './lib/supabase';
+import { supabase as staffSupabase } from './lib/supabase';
+import {supabaseCoach} from './lib/supabaseCoach';
+const supabase={from:(...args)=>(new URLSearchParams(window.location.search).has('portal')?supabaseCoach:staffSupabase).from(...args),auth:staffSupabase?.auth};
 import { fetchPublicInventory } from './lib/webstorePublicData';
 
 // ─── Size lists ───────────────────────────────────────────────────────────────
@@ -470,7 +473,7 @@ async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, r
     try { const { data } = await supabase.auth.getSession(); _token = data?.session?.access_token || null; } catch (_) {}
     const _headers = { 'Content-Type': 'application/json' };
     if (_token) _headers.Authorization = `Bearer ${_token}`;
-    const res = await fetch('/.netlify/functions/coach-invite', {
+    const res = await coachPortalFetch('/.netlify/functions/coach-invite', {
       method: 'POST', headers: _headers,
       body: JSON.stringify({ email, name: name || email, team: teamLabel || '', team_id: teamId, customer_id: customerId, role: role || 'editor', alpha_tag: alphaTag || null }),
     });
@@ -489,7 +492,7 @@ async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, r
 // WITHOUT a writer, so their writes stay direct (RLS is_team_member()) and unchanged.
 function makeCoachWriter(alphaTag) {
   return async (op, payload) => {
-    const res = await fetch('/.netlify/functions/roster-write', {
+    const res = await coachPortalFetch('/.netlify/functions/roster-write', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alpha_tag: String(alphaTag || '').trim(), op, payload }),
     });
@@ -1707,7 +1710,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
     if (!newTeamName.trim()) return;
     setAddingTeam(true);
     const { data, error } = await supabase.from('roster_teams').insert({
-      session_id: session.id, name: newTeamName.trim(), sort_order: teams.length,
+      alpha_tag: customer.alpha_tag, session_id: session.id, name: newTeamName.trim(), sort_order: teams.length,
     }).select().single();
     setAddingTeam(false);
     if (!error && data) { setTeams(prev => [...prev, data]); setNewTeamName(''); }
@@ -1734,7 +1737,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
     if (status === 'open' && wasSubmitted) {
       fetch('/.netlify/functions/roster-order-reopen', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, note: (note || '').trim() }),
+        body: JSON.stringify({ alpha_tag: customer.alpha_tag, session_id: session.id, customer_id: customer.id, note: (note || '').trim() }),
       }).catch(e => console.error('[changeStatus] reopen notify:', e));
     }
   };
@@ -2419,9 +2422,9 @@ export function RosterOrdersCoach({ customer }) {
       // server-side before emailing the rep), so there is no separate client status write —
       // one authority, no torn state. If the call fails, undo the optimistic patch and tell
       // the coach: a submit that silently stays 'open' means the rep never hears about it.
-      const res = await fetch('/.netlify/functions/roster-order-submit', {
+      const res = await coachPortalFetch('/.netlify/functions/roster-order-submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
+        body: JSON.stringify({ alpha_tag: customer.alpha_tag, session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.ok === false) throw new Error(j.error || 'Submit failed');

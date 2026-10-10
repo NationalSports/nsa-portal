@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Netlify function: a coach submits a finished roster-order SESSION (the new
 // per-team kit ordering system, distinct from the legacy numbers-CSV
 // roster-submit.js). Marks the session `submitted` with the service role
@@ -25,6 +26,13 @@ exports.handler = async (event) => {
     const customerId = String(body.customer_id || '').trim();
     const coachEmail = String(body.coach_email || '').trim();
     if (!sessionId) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'session_id required' }) };
+    const adminForAuth=getSupabaseAdmin();
+    if(!adminForAuth)return {statusCode:503,headers,body:JSON.stringify({error:'Portal unavailable'})};
+    const scope=await authorizeCoachPortal(event,adminForAuth,body.alpha_tag);
+    if(!scope.ok)return {statusCode:scope.status,headers,body:JSON.stringify({error:scope.error})};
+    const owned=await adminForAuth.from('roster_order_sessions').select('id,customer_id').eq('id',sessionId).maybeSingle();
+    if(owned.error||!owned.data||!scope.fam.has(owned.data.customer_id)||owned.data.customer_id!==customerId)return {statusCode:403,headers,body:JSON.stringify({error:'Roster not in your account'})};
+
 
     const admin = getSupabaseAdmin();
     if (!admin) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: 'service-creds-missing' }) };

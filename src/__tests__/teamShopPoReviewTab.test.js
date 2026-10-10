@@ -20,18 +20,19 @@ jest.mock('../lib/supabase', () => {
   return {
     supabase: {
       auth: {
+        getUser:()=>Promise.resolve({data:{user:global.__mockSession?.user}}),
         getSession: () => Promise.resolve({ data: { session: global.__mockSession } }),
         onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
       },
       from: (table) => makeBuilder(table),
-      rpc: () => Promise.resolve({ data: { ok: true }, error: null }),
+      rpc: name => Promise.resolve({ data: name==='get_my_profile'?[{id:'staff',auth_id:'verified-staff',role:'production',access:['production'],is_active:true}]:{ ok: true }, error: null }),
     },
   };
 });
 
 const TeamShopQueue = require('../teamshopqueue/TeamShopQueue').default;
 
-const SESSION = { user: { email: 'staff@nsa.test' }, access_token: 'staff-tok' };
+const SESSION = { user: { id:'verified-staff',email: 'staff@nsa.test' }, access_token: 'staff-tok' };
 
 const PENDING = {
   id: 'ordpo1', order_number: 1010002, created_at: new Date().toISOString(),

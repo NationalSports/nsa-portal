@@ -10,7 +10,7 @@ const { verifyUser, getSupabaseAdmin } = require('./_shared');
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
 
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["orders"]);
   if (!v.ok) return { statusCode: v.status, body: JSON.stringify({ error: v.error }) };
 
   let body;

@@ -389,7 +389,7 @@ async function relinkEstimate(sb, body, actor) {
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders(), body: '' };
   if (event.httpMethod !== 'POST') return reply(405, { ok: false, error: 'Method not allowed.' });
-  const actor = await verifyUser(event);
+  const actor = await verifyUser(event, ["methodic"]);
   if (!actor.ok) return reply(actor.status, { ok: false, error: actor.error });
   let body;
   try { body = JSON.parse(event.body || '{}'); }

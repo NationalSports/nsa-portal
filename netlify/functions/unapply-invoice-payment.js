@@ -8,7 +8,7 @@ const headers = {'Content-Type':'application/json','Cache-Control':'no-store'};
 exports.handler = async event => {
   const reply = (statusCode, body) => ({statusCode, headers, body:JSON.stringify(body)});
   if (event.httpMethod !== 'POST') return reply(405, {error:'POST required'});
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["receive_payments"]);
   if (!auth.ok) return reply(auth.status, {error:'Sign in with payment accounting access'});
   if (!allowed.has(auth.teamMemberId)) return reply(403, {error:'Payment accounting access required'});
   let body;

@@ -26,6 +26,7 @@ function mockAssistantFetch(payload) {
 async function openPanel() {
   fireEvent.click(screen.getByLabelText('Open Team Shop Assistant chat'));
   await screen.findByText('Team Shop Assistant');
+  fireEvent.click(screen.getByRole('button',{name:'Allow AI assistance'}));
 }
 
 async function sendText(text) {

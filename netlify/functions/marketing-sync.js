@@ -209,7 +209,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
-  const auth = await verifyUserOrInternal(event);
+  const auth = await verifyUserOrInternal(event, ["marketing"]);
   if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ error: auth.error }) };
 
   let body = {};

@@ -1,3 +1,4 @@
+jest.mock('../../netlify/functions/_shared',()=>({corsHeaders:()=>({}),verifyUserOrInternal:async()=>({ok:true})}));
 // The sheet-fetch function builds the export URL from a parsed doc id — it must never
 // fetch an attacker-supplied host (no open proxy). These tests drive the REAL handler
 // with a mocked global.fetch and assert on the URL it actually requests, so the

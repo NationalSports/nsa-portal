@@ -1,0 +1,14 @@
+jest.mock('../../netlify/functions/_shared',()=>({verifyUser:jest.fn(),resolveCustomerFamily:jest.fn(),getSupabaseAdmin:jest.fn(),corsHeaders:()=>({})}));
+jest.mock('../../netlify/functions/_coachAuth',()=>({verifyCoach:jest.fn(),coachHasCustomerAccess:jest.fn()}));
+const shared=require('../../netlify/functions/_shared');
+const coach=require('../../netlify/functions/_coachAuth');
+const {authorizeCoachPortal}=require('../../netlify/functions/_coachPortalAuth');
+const {publicRow}=require('../../netlify/functions/coach-portal-data');
+const event={headers:{authorization:'Bearer verified-token'}};
+beforeEach(()=>{jest.resetAllMocks();shared.verifyUser.mockResolvedValue({ok:false});coach.verifyCoach.mockResolvedValue({coach:{id:'coach'}});shared.resolveCustomerFamily.mockResolvedValue({fam:new Set(['own','sibling'])});coach.coachHasCustomerAccess.mockImplementation(async(_,__,id)=>({ok:id==='own'}));});
+test('a routing tag without login cannot resolve or enumerate a family',async()=>{expect((await authorizeCoachPortal({headers:{}},{},'CLUB')).status).toBe(401);expect(shared.resolveCustomerFamily).not.toHaveBeenCalled();});
+test('verified coach receives only their explicit account, never sibling inheritance',async()=>{const result=await authorizeCoachPortal(event,{},'CLUB');expect([...result.fam]).toEqual(['own']);});
+test('unverified or inactive account cannot resolve a family',async()=>{coach.verifyCoach.mockResolvedValue({error:'Denied',status:403});expect((await authorizeCoachPortal(event,{},'CLUB')).status).toBe(403);expect(shared.resolveCustomerFamily).not.toHaveBeenCalled();});
+test('a failed membership check denies the entire response',async()=>{coach.coachHasCustomerAccess.mockResolvedValue({error:'lookup failed'});expect((await authorizeCoachPortal(event,{},'CLUB')).status).toBe(503);});
+test('staff preview checks the Customers entitlement',async()=>{shared.verifyUser.mockResolvedValue({ok:true,profile:{id:'staff'}});expect([...(await authorizeCoachPortal(event,{},'CLUB')).fam]).toEqual(['own','sibling']);expect(shared.verifyUser).toHaveBeenCalledWith(event,['customers']);});
+test('nested customer records remove internal economics and privileged fields',()=>{expect(publicRow({id:'order',cost:9,notes:'staff',items:[{qty:3,margin:5,secret:'key'}]})).toEqual({id:'order',items:[{qty:3}]});});

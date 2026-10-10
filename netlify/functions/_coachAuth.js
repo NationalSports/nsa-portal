@@ -10,6 +10,7 @@ async function verifyCoach(admin, event) {
   const { data: userData, error } = await admin.auth.getUser(auth.substring(7));
   if (error || !userData?.user) return { status: 401, error: 'Invalid token' };
   const u = userData.user;
+  if(!u.email_confirmed_at)return {status:403,error:'Verify your email before opening this portal'};
   let { data: coach, error: cErr } = await admin.from('coach_accounts')
     .select('id,email,name,status,customer_id,auth_user_id')
     .eq('auth_user_id', u.id).maybeSingle();

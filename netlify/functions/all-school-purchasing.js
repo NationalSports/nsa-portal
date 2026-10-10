@@ -125,7 +125,7 @@ exports.handler = async event => {
   let actor = 'all-school-schedule', dryRun = false;
   if (event?.httpMethod) {
     if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST required' }) };
-    const auth = await verifyUser(event);
+    const auth = await verifyUser(event, ["webstores"]);
     if (!auth.ok) return { statusCode: auth.status || 401, headers, body: JSON.stringify({ error: auth.error || 'Unauthorized' }) };
     let body;
     try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid JSON' }) }; }

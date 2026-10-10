@@ -246,7 +246,7 @@ exports.handler = async (event) => {
 
   // A scheduled run has no caller; a staff POST does and may force a dry run.
   if (event && event.httpMethod === 'POST' && (event.headers || {}).authorization) {
-    const auth = await verifyUser(event);
+    const auth = await verifyUser(event, ["orders"]);
     if (!auth.ok) return { statusCode: auth.status, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: auth.error }) };
     let body = {};
     try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }

@@ -37,11 +37,12 @@ jest.mock('../lib/supabase', () => {
   return {
     supabase: {
       auth: {
+        getUser:()=>Promise.resolve({data:{user:global.__mockSession?.user}}),
         getSession: () => Promise.resolve({ data: { session: global.__mockSession } }),
         onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
       },
       from: (table) => makeBuilder(table),
-      rpc: (...args) => global.__rpcMock(...args),
+      rpc: (...args) => args[0]==='get_my_profile'?Promise.resolve({data:[{id:'staff',auth_id:'verified-staff',role:'production',access:['production'],is_active:true}]}):global.__rpcMock(...args),
     },
   };
 });
@@ -55,7 +56,7 @@ const setMocks = ({ session = null, tables = {}, handlers = {}, rpc } = {}) => {
   global.__rpcMock = rpc || jest.fn(() => Promise.resolve({ data: { ok: true }, error: null }));
 };
 
-const SESSION = { user: { email: 'staff@nsa.test' }, access_token: 'tok' };
+const SESSION = { user: { id:'verified-staff',email: 'staff@nsa.test' }, access_token: 'tok' };
 
 const ORDER = {
   id: 'ord-1', order_source: 'teamshop', status: 'batched', so_id: 'SO-1001',

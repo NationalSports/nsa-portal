@@ -5,7 +5,8 @@
 export const resolveAccessUser = (cachedUser, teamMembers, teamReady = true) => {
   if (!cachedUser || !teamReady || !Array.isArray(teamMembers)) return cachedUser;
   const current = teamMembers.find((member) => member.id === cachedUser.id);
-  if (!current) return cachedUser;
+  if (!current) return null;
+  if (current.is_active === false) return null;
   return {
     ...cachedUser,
     role: current.role || cachedUser.role,
@@ -20,3 +21,10 @@ export const AI_INBOX_OWNER_ID = '00000000-0000-0000-0000-000000000001';
 
 export const canViewAiInbox = (user) =>
   !!user?.id && String(user.id) === AI_INBOX_OWNER_ID;
+
+// Shared with server checks and the generated SQL section predicate.
+const policy = require('./portalAccess.shared');
+export const PORTAL_PAGES = Object.freeze(policy.config.pages);
+export const DEFAULT_PAGE_ACCESS = Object.freeze(policy.config.defaults);
+export const effectivePageAccess = policy.effectivePageAccess;
+export const canViewPortalPage = policy.canViewPortalPage;

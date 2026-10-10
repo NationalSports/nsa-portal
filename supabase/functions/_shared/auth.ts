@@ -43,7 +43,7 @@ export function isServiceRole(token: string): boolean {
 // Authorize a caller as service-role OR active staff. Returns {ok:true} to proceed,
 // or {ok:false,status,error} to return verbatim. Fails closed on any config/lookup
 // problem — a function guarded by this never runs for an unauthenticated caller.
-export async function requireStaffOrService(req: Request): Promise<AuthResult> {
+export async function requireStaffOrService(req: Request, sections: string[] = []): Promise<AuthResult> {
   const token = bearerToken(req);
   if (!token) return { ok: false, status: 401, error: "Missing Authorization bearer token." };
 
@@ -75,5 +75,12 @@ export async function requireStaffOrService(req: Request): Promise<AuthResult> {
   const isStaff = (rows || []).some((r) => r.is_active !== false);
   if (!isStaff) return { ok: false, status: 403, error: "Staff access required." };
 
+  let allowed=false;
+  for(const page of sections){
+    const check=await admin.rpc('staff_section_for_auth',{p_auth_id:userId,p_page:page});
+    if(check.error)return {ok:false,status:503,error:'Could not verify section access.'};
+    if(check.data===true)allowed=true;
+  }
+  if(!allowed)return {ok:false,status:403,error:'Section access required.'};
   return { ok: true, via: "staff", userId };
 }

@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/react';
 import LoginGate from './LoginGate';
+import StaffSectionGate from './StaffSectionGate';
+import {acceptStaffProfile} from './lib/staffCache';
 import {
   supabase, sbSignIn, sbSignUp, sbResendSignup, sbResetPassword,
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
@@ -48,6 +50,7 @@ const _isChunkErr = (err) => {
 };
 const ProductionPacket = React.lazy(() => import('./productionPacket/ProductionPacket'));
 const PayableReviewPage = React.lazy(() => import('./PayableReviewPage'));
+const CoachPortalEntry=React.lazy(()=>import('./CoachPortalEntry'));
 const App = React.lazy(() =>
   import('./App').catch((err) => {
     const last = Number(sessionStorage.getItem(_appChunkReloadKey) || 0);
@@ -140,7 +143,7 @@ const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // to it BEFORE any login gate, so — like the auth/onboarding flows — it must load
 // App directly rather than falling through to MainApp → LoginGate.
 const isUniformBuilder = _path === '/uniform-builder' || _path === '/uniform-builder/';
-// Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
+// Authenticated coach portal at /?portal=<alpha_tag> — also embedded on the marketing
 // site at /coach. It's login-free: App short-circuits to the read-only
 // CoachPortal for this param (data via anon RLS), so like the auth flows it must
 // load App directly and skip the staff login gate. Without this it falls through
@@ -234,13 +237,12 @@ const _readJSON = (key, fallback) => {
 // Portal entry point. While logged out, renders the lightweight LoginGate
 // WITHOUT loading App.js. On login (or an auto-restored Supabase session) it
 // writes nsa_user and swaps in the lazy App, which reads that same nsa_user on
-// mount. Already-logged-in visitors (nsa_user present) skip straight to App —
-// behavior identical to before the split, just delivered as a separate chunk.
+// mount. Restored sessions must pass the same authoritative profile check.
 function MainApp() {
-  const [authed, setAuthed] = React.useState(() => !!_readJSON('nsa_user', null));
+  const [authed, setAuthed] = React.useState(false);
   // Seed reps from the same cache App.js uses (nsa_reps) so first-time-setup and
-  // admin modes work offline; refresh from the live roster in the background.
-  const [reps, setReps] = React.useState(() => _readJSON('nsa_reps', DEFAULT_REPS));
+  // signup can show the roster; refresh from the live roster in the background.
+  const [reps, setReps] = React.useState([]);
 
   React.useEffect(() => {
     if (authed) return; // only the gate needs the roster
@@ -253,6 +255,7 @@ function MainApp() {
   // `cu` state reads nsa_user on mount, so the session carries across the swap.
   const handleLogin = (user) => {
     try {
+      acceptStaffProfile(user);
       localStorage.setItem('nsa_user', JSON.stringify(user));
       // App's idle-session guard mounts after this lightweight gate unmounts.
       // Treat a successful sign-in/user selection as fresh activity so a stale
@@ -272,7 +275,7 @@ function MainApp() {
       />
     );
   }
-  return <React.Suspense fallback={<AppFallback />}>{_path === '/qbo-payable-review' || _path === '/qbo-payable-review/' ? <PayableReviewPage /> : <App />}</React.Suspense>;
+  return <React.Suspense fallback={<AppFallback />}>{_path === '/qbo-payable-review' || _path === '/qbo-payable-review/' ? <StaffSectionGate section="qb"><PayableReviewPage /></StaffSectionGate> : <App />}</React.Suspense>;
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
@@ -289,7 +292,7 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow || isCoachPortal || isOnboarding || isUniformBuilder
+        : isAuthFlow || isOnboarding || isUniformBuilder
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : isTeamShopQueue
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>
@@ -303,6 +306,8 @@ root.render(
         ? <React.Suspense fallback={<AppFallback />}><ProductionPacket /></React.Suspense>
         : isVendorDigitizing
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><VendorDigitizing /></React.Suspense>
+        : isCoachPortal
+        ? <React.Suspense fallback={<AppFallback/>}><CoachPortalEntry tag={_portalParam}/></React.Suspense>
         : isTeamShop
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopApp /></React.Suspense>
         : <MainApp />}

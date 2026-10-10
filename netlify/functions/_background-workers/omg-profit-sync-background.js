@@ -234,7 +234,7 @@ async function syncStore(sb, store, customers, reps, linkedSalesOrders, runId, n
 }
 
 exports.handler = async event => {
-  const auth = await verifyUserOrInternal(event);
+  const auth = await verifyUserOrInternal(event, ["omg"]);
   if (!auth.ok) return { statusCode: auth.status, body: auth.error };
   // OMG's V1 order filters are not sale-scoped: the API can return the same
   // global rows for different sale ids. Never write accounting or commission

@@ -83,7 +83,7 @@ exports.handler = async (event) => {
   }
 
   // Staff-only: ingests orders into webstore tables via service role.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["omg"]);
   if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
