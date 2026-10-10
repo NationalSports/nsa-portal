@@ -6,6 +6,8 @@ const {
   parseMessage,
   isAddressedToSales,
   sendReply,
+  AI_MAILBOXES,
+  mailboxConfig,
 } = require('./_gmailAi');
 const {
   extractForwardedMessage,
@@ -48,7 +50,7 @@ async function analyzeEmail(message, repContext = null) {
     body: JSON.stringify({
       subject: repContext?.original_subject || message.subject,
       text: repContext?.original_body || message.text_body,
-      rep_command: repContext ? {
+      rep_command: repContext?.rep ? {
         instruction: repContext.instruction,
         submitted_by: repContext.rep,
       } : null,
@@ -119,13 +121,13 @@ async function sendRepAcknowledgement(admin, token, parsed, inserted, forwarded)
   }
 }
 
-exports.handler = async (event) => {
+async function syncMailbox(event, mailbox) {
   if (!isAuthorizedRun(event)) {
     return { statusCode: 401, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
   try {
     const admin = getSupabaseAdmin();
-    const token = await getAccessToken();
+    const token = await getAccessToken(mailbox);
     // Look far enough back that a burst of forwarded rep commands cannot hide
     // behind the ten newest already-processed messages. We still analyze only
     // one per invocation to stay within the function timeout.
@@ -134,7 +136,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true, imported: 0 }) };
     }
 
-    const ids = refs.map((x) => x.id);
+    const ids = refs.map((x) => `${mailbox}:${x.id}`);
     const { data: existing, error: existingError } = await admin
       .from('ai_inbox_messages')
       .select('gmail_message_id')
@@ -143,7 +145,7 @@ exports.handler = async (event) => {
     const seen = new Set((existing || []).map((x) => x.gmail_message_id));
     // AI analysis performs two model calls. Process one message per scheduled
     // invocation so the function stays within Netlify's execution limit.
-    const pending = refs.filter((x) => !seen.has(x.id)).slice(0, 1);
+    const pending = refs.filter((x) => !seen.has(`${mailbox}:${x.id}`)).slice(0, 1);
     let imported = 0;
     const failures = [];
 
@@ -152,10 +154,13 @@ exports.handler = async (event) => {
       try {
         const raw = await getMessage(token, ref.id);
         const parsed = parseMessage(raw);
+        parsed.mailbox_email = mailbox;
+        parsed.source_channel = 'gmail';
+        parsed.gmail_message_id = `${mailbox}:${parsed.gmail_message_id}`;
         if (
           !parsed.sender_email ||
-          parsed.sender_email === process.env.GMAIL_AI_INBOX?.toLowerCase() ||
-          !isAddressedToSales(parsed)
+          AI_MAILBOXES.includes(parsed.sender_email) ||
+          !isAddressedToSales(parsed, mailbox)
         ) continue;
         const forwarded = extractForwardedMessage(parsed.text_body);
         const rep = forwarded.is_forwarded
@@ -178,7 +183,7 @@ exports.handler = async (event) => {
           .insert({
             ...parsed,
             customer_id: customerId,
-            status: 'processing',
+            status: 'queued',
             is_rep_command: isRepCommand,
             submitted_by_id: rep?.id || null,
             rep_instruction: isRepCommand ? forwarded.instruction : null,
@@ -198,40 +203,6 @@ exports.handler = async (event) => {
           await sendRepAcknowledgement(admin, token, parsed, inserted, forwarded);
         }
 
-        const analysis = await analyzeEmail(parsed, isRepCommand ? {
-          ...forwarded,
-          rep: { id: rep.id, name: rep.name, email: rep.email, role: rep.role },
-          portal_context: portalContext,
-        } : null);
-        const now = new Date().toISOString();
-        const { error: updateError } = await admin
-          .from('ai_inbox_messages')
-          .update({
-            intent: analysis.intent,
-            needs_estimate: analysis.needs_estimate,
-            analysis: {
-              summary: analysis.summary,
-              customer_questions: analysis.customer_questions,
-              lines: analysis.lines,
-              command: analysis.command || null,
-              portal_context: portalContext,
-            },
-            stock_checks: analysis.stock_checks,
-            draft_subject: analysis.draft?.subject,
-            draft_body_text: analysis.draft?.text,
-            draft_body_html: analysis.draft?.html,
-            command_type: analysis.command?.type || null,
-            command_payload: analysis.command || {},
-            command_status: isRepCommand && analysis.command?.type && analysis.command.type !== 'none'
-              ? 'proposed'
-              : 'none',
-            status: 'needs_review',
-            processed_at: now,
-            updated_at: now,
-            error_message: null,
-          })
-          .eq('id', inserted.id);
-        if (updateError) throw updateError;
         imported += 1;
       } catch (error) {
         failures.push({ gmail_message_id: ref.id, error: error.message });
@@ -254,4 +225,19 @@ exports.handler = async (event) => {
     console.error('[gmail-ai-sync]', error);
     return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: error.message }) };
   }
+}
+
+exports.handler = async (event) => {
+  if (!isAuthorizedRun(event)) return { statusCode: 401, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Unauthorized' }) };
+  const results = [];
+  for (const mailbox of AI_MAILBOXES) {
+    if (!mailboxConfig(mailbox).refreshToken) {
+      results.push({ mailbox, connected: false, error: 'Mailbox authorization required' });
+      continue;
+    }
+    const result = await syncMailbox(event, mailbox);
+    results.push({ mailbox, ...JSON.parse(result.body) });
+  }
+  return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ results }) };
 };
+exports.analyzeEmail = analyzeEmail;

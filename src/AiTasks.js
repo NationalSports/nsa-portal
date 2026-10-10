@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './components';
 
 const OPEN_BOT = new Set(['queued', 'scheduled', 'in_progress', 'needs_input', 'needs_review']);
-const OPEN_REQUEST = new Set(['processing', 'needs_review']);
+const OPEN_REQUEST = new Set(['queued', 'processing', 'needs_review', 'failed']);
 const fmtDate = value => {
   const d = new Date(value || 0);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -28,8 +28,8 @@ export default function AiTasks({ supabase, customers = [], notify }) {
     setLoading(true);
     const [requestResult, taskResult] = await Promise.all([
       supabase.from('ai_inbox_messages')
-        .select('id,subject,sender_email,sender_name,received_at,updated_at,status,is_rep_command,submitted_by_id,rep_instruction,original_sender_email,original_sender_name,original_subject,customer_id,command_type,command_status,command_task_id,analysis,error_message,acknowledgement_sent_at,acknowledgement_error')
-        .eq('is_rep_command', true).order('received_at', { ascending: false }).limit(300),
+        .select('id,subject,sender_email,sender_name,received_at,updated_at,status,is_rep_command,submitted_by_id,rep_instruction,original_sender_email,original_sender_name,original_subject,customer_id,command_type,command_status,command_task_id,analysis,error_message,acknowledgement_sent_at,acknowledgement_error,source_channel,mailbox_email,webstore_order_id')
+        .order('received_at', { ascending: false }).limit(300),
       supabase.from('assigned_todos')
         .select('id,title,description,created_by,assigned_to,so_id,customer_id,priority,status,source,created_at,updated_at,completed_at,completed_by,completion_note,bot_payload,bot_status')
         .eq('assigned_to', 'bot-claude').order('created_at', { ascending: false }).limit(500),
@@ -42,6 +42,7 @@ export default function AiTasks({ supabase, customers = [], notify }) {
   }, [supabase, notify]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { const timer = setInterval(load, 30000); return () => clearInterval(timer); }, [load]);
   useEffect(() => {
     if (!supabase) return;
     const channel = supabase.channel('ai-tasks-page')

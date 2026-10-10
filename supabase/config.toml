@@ -1,0 +1,4 @@
+[functions.ai-email-assistant]
+# Internal worker credentials are checked inside the handler. Platform JWT
+# verification does not accept modern sb_secret_* service credentials.
+verify_jwt = false
