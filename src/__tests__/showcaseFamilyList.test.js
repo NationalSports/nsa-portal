@@ -22,7 +22,7 @@ test('generated combinations clearly await approval and Review & Approve opens t
  HTMLDialogElement.prototype.showModal=jest.fn();
  HTMLDialogElement.prototype.close=jest.fn();
  const act=jest.fn();
- render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-family-v1'}}]} act={act}/>);
+ render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-color-design-v2',qa_result:{renderer_version:'color-design-v1',detail_images:[]}}}]} act={act}/>);
  expect(screen.getByText('1/1 generated · 0 approved · 1 awaiting review')).toBeTruthy();
  expect(screen.getByText('Refresh images')).toBeTruthy();
  expect(screen.queryByText('Create images')).toBeNull();
@@ -62,4 +62,25 @@ test('item and store bulk approval target only ready current images without open
  fireEvent.click(screen.getByText('Approve all images (2)'));
  expect(act).toHaveBeenLastCalledWith('approve_all','approve_all',{image_ids:['0','1']});
  expect(screen.queryAllByText('Before / After')).toHaveLength(0);
+});
+
+test('collapsed item thumbnail includes saved decoration before generation',()=>{
+ const decorated={...items[0],decorations:[{side:'front',art_url:'logo.png',x:50,y:43,w:30}],supplier_image_url:'blank.png'};
+ const {container}=render(<ShowcaseFamilyList items={[decorated]} act={jest.fn()}/>);
+ expect(screen.getByAltText('Club fleece with decoration').getAttribute('src')).toBe('blank.png');
+ expect(container.querySelector('img[src="logo.png"]')).toBeTruthy();
+});
+
+test('collapsed item thumbnail uses generated pixels without double overlaying the artwork',()=>{
+ const decorated={...items[0],decorations:[{side:'front',art_url:'logo.png',x:50,y:43,w:30}],asset:{status:'review',showcase_image_url:'finished.png'}};
+ const {container}=render(<ShowcaseFamilyList items={[decorated]} act={jest.fn()}/>);
+ expect(screen.getByAltText('Club fleece Showcase preview').getAttribute('src')).toBe('finished.png');
+ expect(container.querySelector('img[src="logo.png"]')).toBeNull();
+});
+
+test('baked decorations use the existing mockup thumbnail without adding the logo twice',()=>{
+ const item={...items[0],supplier_image_url:'blank.png',standard_image_url:'decorated-mockup.png',decorations:[{side:'front',baked:true,art_url:'logo.png'}]};
+ const {container}=render(<ShowcaseFamilyList items={[item]} act={jest.fn()}/>);
+ expect(screen.getByAltText('Club fleece with decoration').getAttribute('src')).toBe('decorated-mockup.png');
+ expect(container.querySelector('img[src="logo.png"]')).toBeNull();
 });
