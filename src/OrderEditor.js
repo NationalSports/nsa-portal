@@ -456,6 +456,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,_setO]=useState(order);const orderEditRevision=useRef(0);const editorSaveSeq=useRef(0);const setO=useCallback(next=>{orderEditRevision.current++;_setO(next)},[]);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);const[multiAddOpen,setMultiAddOpen]=useState(false);const[multiAddQuery,setMultiAddQuery]=useState('');const[addItemMenuOpen,setAddItemMenuOpen]=useState(false);
+  // The isolated ownership pilot uses a completed, unlinked synthetic order. Keep it
+  // unlinked while testing the ordinary save path; all other orders require a customer.
+  const isUnlinkedSavePilot=isSO&&process.env.REACT_APP_SO_EDIT_LEASES==='1'&&o.id===process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID;
   // Promo dollars are owned by the parent account. Prefer that live record over
   // the child copy so a sub-account never applies a stale/empty local balance.
   const storedPromoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
@@ -5103,7 +5106,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
         const current=oRef.current||o;
-        if(!o.customer_id){nf('Select a customer first','error');return}
+        if(!o.customer_id&&!isUnlinkedSavePilot){nf('Select a customer first','error');return}
         const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
         if(!curMemo){nf('Memo is required','error');return}
         const curPO=isSO?(poInputRef.current?.value??current.po_number??''):current.po_number;
