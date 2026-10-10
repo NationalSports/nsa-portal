@@ -1,0 +1,35 @@
+# Portal UI design preview
+
+This is a design review prototype, using sample data and local interactions. It does not connect to authentication, Supabase, purchasing, payments, messaging, or production systems. Approval buttons and replies only change the preview's local state.
+
+Open `index.html` in a browser to explore it. Fonts and the bundled preview runtime load from approved external CDNs, so an internet connection is needed for the complete presentation. The HTML includes the inline design source; `portal-art-preview.fragment.html` is the editable source retained separately.
+
+## Review paths
+
+- Start in **Art Dashboard** and open **Fall Gear** to review the staff proof collection.
+- Choose **Preview coach portal** or **Coach view** for the customer experience. The coach sees one order collection, with a continuous garment and placement strip, an enlarged gallery, and one art conversation.
+- Approve a placement and advance, or inspect multiple placements and approve the reviewed placements together.
+- Request changes for one garment/placement or for all placements using shared artwork. The dialog names the affected placements before saving.
+- Return to the staff view, open **Overview**, and add a revised proof. Only that placement returns to pending approval; the other approvals remain.
+- Navigate to **Sales Orders** and open a record. The editor retains the vertical ledger, visible **Create PO**, full-width item editors, collapsed editing, size additions, and decoration editing.
+- Explore the order tabs, reports, production board, customer records, purchase orders, and uniform roster preview.
+
+## Proposed approval model
+
+The customer-facing review belongs to an order-level proof collection. Production jobs remain available to staff, but they do not divide the coach's review into separate destinations.
+
+Approval still identifies an exact garment, placement, method, size, and proof version. Shared artwork can appear on several garments; identical source artwork alone does not imply approval of every placement. A scoped request can affect one placement or each use of shared artwork. Revised proofs reopen only the affected approvals.
+
+Before production implementation, define the rules for published collection versions, shared artwork revisions, reviewer permissions, audit records, and release of partially approved orders. These policies are represented visually here, not connected to live business logic.
+
+## Validation
+
+Local headless-browser checks covered all 22 staff navigation areas and six order tabs in the portal preview. The art upgrade was checked for continuous gallery navigation, coach/staff switching, scoped change requests, bulk approval of reviewed placements, preservation of unaffected approvals after revisions, order-level conversations, artwork attachment, and editable roster rows.
+
+Desktop and mobile layouts were checked at 1024, 736, and 390 pixels, with no document-level horizontal overflow in the coach review. Screenshots were inspected locally. The inline scripts passed JavaScript syntax checks.
+
+## Scope
+
+The prototype includes illustrative garment shapes and sample artwork. These are layout examples, not final production proof assets. Reports include sample account breakdowns and sample conversion cohorts. Arc UI informed the interface direction; this prototype does not include licensed Arc Pro source.
+
+No production components, routes, dependencies, database schema, or deployment configuration are changed by this proposal.
