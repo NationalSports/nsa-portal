@@ -81,7 +81,7 @@ function parseEmbroideryDimensions(text) {
 function toMm(n, unit) { return unit === 'in' ? n * 25.4 : unit === 'cm' ? n * 10 : n; }
 function convert(n, from, to) { const mm = toMm(n, from); return to === 'in' ? mm / 25.4 : to === 'cm' ? mm / 10 : mm; }
 
-// Return a shallow updated art record. Extraction may only fill blank fields;
+// Return a shallow updated art record. Verified proof values replace manual entries;
 // identity metadata prevents delayed reads from updating a replacement/deleted row.
 function fillEmbroiderySpecs(art, specs, { allowStitches = true } = {}) {
   if (!art || typeof art !== 'object' || !specs || typeof specs !== 'object' || specs.deleted) return art;
@@ -89,8 +89,8 @@ function fillEmbroiderySpecs(art, specs, { allowStitches = true } = {}) {
   if (sourceId != null && art.id != null && String(sourceId) !== String(art.id)) return art;
   const next = { ...art };
   const dimensions = specs.dimensions || specs;
-  if (!String(art.art_size || '').trim() && typeof dimensions.artSize === 'string' && dimensions.artSize.trim()) next.art_size = dimensions.artSize;
-  if (allowStitches && (art.stitches == null || art.stitches === '') && Number.isFinite(Number(specs.stitches)) && Number(specs.stitches) > 0) next.stitches = Number(specs.stitches);
+  if (typeof dimensions.artSize === 'string' && dimensions.artSize.trim()) next.art_size = dimensions.artSize;
+  if (allowStitches && Number.isFinite(Number(specs.stitches)) && Number(specs.stitches) > 0) next.stitches = Number(specs.stitches);
   return next;
 }
 
