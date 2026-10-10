@@ -92,3 +92,18 @@ Master pose version `athletic-hood-down-v2` restores fit-aware athletic volume, 
 Mapping validates all protected polygons, drawstring traces and requested placement quads before rendering. Numeric string coordinates and explicit x/y objects normalize without changing units. Pixel/percentage coordinates, extra dimensions, missing placements and unsafe traces trigger one corrected analysis using the same image references. A second invalid response fails with an actionable retry message and retains the cached master. This retry does not purchase another master image.
 
 Comparison now receives explicit catalog identity and fit even when using the custom mapping prompt. Temporary chroma color, lowered hood and modest presentation changes are distinguished from actual construction changes. A rejected comparison gets one contextual recheck against the same images; confirmed mismatches remain blocked. Provider rejection details stay in diagnostic logs. Staff see an actionable replacement-base message without internal color or coordinate terminology.
+
+### Full-front torso placement
+
+For named tops (hoodies, pullovers, crews, sweatshirts, polos and tees), full-front
+placement uses corresponding front-neckline, bottom-hem and torso-side landmarks.
+The worker transfers saved editor coordinates through these two garment bases;
+it does not accept the analyzer's guessed logo quad for these placements. The
+hood top is not a neckline landmark. Each supplier image gets its own placement
+IDs, even when its editor coordinates match another color. Other placements keep
+the existing quad mapping. Generated QA records retain landmarks and final quads
+for diagnosis. Existing approved images and cached master signatures are unchanged.
+
+The geometry and worker tests use controlled landmarks. They do not establish
+that a live analyzer identifies the correct landmarks: visually check a newly
+rendered hood-down example against the original before releasing this change.

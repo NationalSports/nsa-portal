@@ -19,7 +19,7 @@ async function setup(decorated=false) {
  await db.exec(fs.readFileSync('supabase/migrations/20261008144347_showcase_family_jobs.sql','utf8'));
  await db.exec(fs.readFileSync('supabase/migrations/20261008151549_showcase_decoration_details.sql','utf8'));
  await db.query('insert into webstores values($1)',[store]);
- const members=ids.map((id,i)=>({webstore_product_id:id,product_id:'p'+i,sku:`HOOD-Color${Math.floor(i/3)}`,color:`Color${Math.floor(i/3)}`,brand:'Nike',standard_image_url:'supplier'+Math.floor(i/3),supplier_image_url:'supplier'+Math.floor(i/3),decorations:decorated?[{art_url:'logo.png',x:50,y:40,w:30,placement:'full_front'}]:[],settings:{decoration_type:'auto',revision_notes:''}}));
+ const members=ids.map((id,i)=>({webstore_product_id:id,product_id:'p'+i,name:'Nike Pullover Hoodie',sku:`HOOD-Color${Math.floor(i/3)}`,color:`Color${Math.floor(i/3)}`,brand:'Nike',standard_image_url:'supplier'+Math.floor(i/3),supplier_image_url:'supplier'+Math.floor(i/3),decorations:decorated?[{art_url:'logo.png',x:50,y:40,w:30,placement:'full_front'}]:[],settings:{decoration_type:'auto',revision_notes:''}}));
  for(const m of members){await db.query('insert into products values($1)',[m.product_id]);await db.query('insert into webstore_products values($1,$2,$3,true,\'product\')',[m.webstore_product_id,store,m.product_id]);}
  await db.exec(fs.readFileSync('supabase/migrations/20261009054310_showcase_source_repair.sql','utf8'));
  const group=groupShowcaseItems(members)[0];
@@ -61,14 +61,14 @@ test('worker renders 15 combinations with one master generation, then reuses it'
  },storage:{from:()=>({upload:async()=>{uploaded++;return {};},getPublicUrl:(p)=>({data:{publicUrl:'https://storage/'+p}})})},from:()=>{throw new Error('Email disabled in fixture');}};
  const deps={getCatalog:async()=>members,fetchImage:async()=>({bytes:Buffer.from('image'),contentType:'image/png'}),
   generate:async()=>{generated++;return {bytes:Buffer.from('master'),contentType:'image/png',model:'test'};},
-  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p))), assert.ok(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(id=>/^p[0-9]+$/.test(id)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:images.length},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
+  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p))), assert.ok(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(id=>/^p[0-9]+$/.test(id)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:images.length},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],torso_anchors:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,{source:{neck:[.5,.3],hem:[.5,.9],left:[.2,.4],right:[.8,.4]},target:{neck:[.5,.2],hem:[.5,.9],left:[.25,.32],right:[.75,.32]}}])),placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
   render:{placementReference:async bytes=>bytes,validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
  try{
   const leader=await queue();
   const asset={...leader,analysis:{family:{key:group.key}}};
   assert.equal((await runFamilyJob(admin,asset,'https://site',deps)).status,'review');assert.equal(generated,1);assert.equal(uploaded,31);
   const row=(await db.query('select qa_result,approved_detail_images from webstore_showcase_assets limit 1')).rows[0];
-  assert.equal(row.qa_result.detail_images.length,1);assert.deepEqual(row.approved_detail_images,[]);
+  assert.equal(Object.keys(row.qa_result.placement_quads).length,5);assert.equal(Object.keys(row.qa_result.torso_anchors).length,5);assert.ok(Object.values(row.qa_result.placement_quads).every(q=>(q[0][1]+q[2][1])/2<.33));assert.equal(row.qa_result.detail_images.length,1);assert.deepEqual(row.approved_detail_images,[]);
   await runFamilyJob(admin,asset,'https://site',deps);assert.equal(generated,1);
   const next=await queue(request2);
   await runFamilyJob(admin,{...next,analysis:asset.analysis},'https://site',deps);
