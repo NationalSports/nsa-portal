@@ -14,6 +14,14 @@ Open `index.html` in a browser to explore it. Fonts and the bundled preview runt
 - Navigate to **Sales Orders** and open a record. The editor retains the vertical ledger, visible **Create PO**, full-width item editors, collapsed editing, size additions, and decoration editing.
 - Explore the order tabs, reports, production board, customer records, purchase orders, and uniform roster preview.
 
+## Job visibility and layout
+
+The order's Jobs tab defaults to **List** and offers **Kanban** as an alternate view of the same job records. Order jobs are scoped to that order; the global Production Board can show jobs from multiple orders.
+
+The list preserves the current production UI's core information: job identity, artwork, decoration method and position, garment count, received/total units, items status, art status, production status, and job actions. Garment subrows keep SKU, name, color, and received/expected quantities for every size visible. The richer Kanban cards display these same fields, plus artist, need-by, PO context, and notes. Split, count, outside-decoration, and tracking context can also appear when present.
+
+Both layouts are local sample views. Updating a preview production stage is reflected in both; the sample blocks production progression until art is complete and goods are received. Production implementation must use the existing live allocation, mock checks, permissions, and workflow gates rather than the sample model.
+
 ## Proposed approval model
 
 The customer-facing review belongs to an order-level proof collection. Production jobs remain available to staff, but they do not divide the coach's review into separate destinations.
@@ -27,6 +35,8 @@ Before production implementation, define the rules for published collection vers
 Local headless-browser checks covered all 22 staff navigation areas and six order tabs in the portal preview. The art upgrade was checked for continuous gallery navigation, coach/staff switching, scoped change requests, bulk approval of reviewed placements, preservation of unaffected approvals after revisions, order-level conversations, artwork attachment, and editable roster rows.
 
 Desktop and mobile layouts were checked at 1024, 736, and 390 pixels, with no document-level horizontal overflow in the coach review. Screenshots were inspected locally. The inline scripts passed JavaScript syntax checks.
+
+The updated order-jobs preview was also checked for List as the default, matching job scopes and field visibility across List/Kanban, per-size fulfillment, gated sample production changes, and responsive overflow at 736 and 390 pixels.
 
 ## Scope
 
