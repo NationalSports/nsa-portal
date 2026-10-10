@@ -28,7 +28,7 @@ exports.handler = async (event) => {
   // service=order&env=stage|prod — body is the order payload (built by src/momentecOrder.js).
   // Credentials (logonId/password) are injected here, server-side; the `id` is the dealer login.
   if (event.queryStringParameters?.service === 'order') {
-    const v = await verifyUser(event);
+    const v = await verifyUser(event, ["products", "estimates", "orders"]);
     if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
     const env = (event.queryStringParameters?.env || 'stage').toLowerCase();
     const host = V2_HOSTS[env];
@@ -69,7 +69,7 @@ exports.handler = async (event) => {
   // buildMomentecShippingCostRequest in src/momentecOrder.js). Mirrors the service=order
   // block: credentials injected server-side, never sent by the client.
   if (event.queryStringParameters?.service === 'shipping-cost') {
-    const v = await verifyUser(event);
+    const v = await verifyUser(event, ["products", "estimates", "orders"]);
     if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
     const env = (event.queryStringParameters?.env || 'stage').toLowerCase();
     const host = V2_HOSTS[env];
@@ -113,7 +113,7 @@ exports.handler = async (event) => {
   // line's itemNumber+quantity. Used to confirm an API order landed (their intake has gone
   // quiet on us before) and that the registered SKUs match what we submitted.
   if (event.queryStringParameters?.service === 'order-details') {
-    const v = await verifyUser(event);
+    const v = await verifyUser(event, ["products", "estimates", "orders"]);
     if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
     const env = (event.queryStringParameters?.env || 'prod').toLowerCase();
     const host = V2_HOSTS[env];

@@ -146,3 +146,6 @@ exports.handler = async (event) => {
 
 exports.fetchOmgReport = fetchOmgReport;
 exports.RETRYABLE_STATUSES = RETRYABLE_STATUSES;
+
+// Enforce staff sections before using server-side vendor credentials.
+exports.handler=require('./_sectionHandler').sectionHandler(exports.handler,["omg"]);

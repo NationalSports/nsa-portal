@@ -43,6 +43,8 @@ async function authorize(req:Request,admin:any):Promise<Actor|null>{
   const {data,error}=await admin.auth.getUser(token);if(error||!data?.user?.id)return null;
   const {data:member}=await admin.from('team_members').select('role,is_active').eq('auth_id',data.user.id).maybeSingle();
   if(!member||member.is_active===false||!['admin','super_admin','accounting'].includes(String(member.role)))return null;
+  const section=await admin.rpc('staff_section_for_auth',{p_auth_id:data.user.id,p_page:'qb'});
+  if(section.error||section.data!==true)return null;
   return{service:false,userId:data.user.id,role:String(member.role)};
 }
 

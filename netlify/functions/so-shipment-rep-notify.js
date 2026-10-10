@@ -4,7 +4,7 @@ exports.handler = async event => {
   const reply = (statusCode, body) => ({ statusCode, headers: corsHeaders(), body: JSON.stringify(body) });
   if (event.httpMethod === 'OPTIONS') return reply(204, {});
   if (event.httpMethod !== 'POST') return reply(405, { error: 'POST only' });
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["orders"]);
   if (!auth.ok) return reply(auth.status, { error: auth.error });
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch (_) { return reply(400, { error: 'Invalid JSON' }); }

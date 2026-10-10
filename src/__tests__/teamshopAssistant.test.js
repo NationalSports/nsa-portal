@@ -84,7 +84,7 @@ const textResponse = (text) => ({ stop_reason: 'end_turn', content: [{ type: 'te
 const toolUseResponse = (uses) => ({ stop_reason: 'tool_use', content: uses.map((u, i) => ({ type: 'tool_use', id: `tu${i}`, name: u.name, input: u.input || {} })) });
 
 const call = ({
-  user = { id: 'auth1', email: 'coach@team.com' },
+  user = { id: 'auth1', email: 'coach@team.com',email_confirmed_at:'2026-01-01' },
   tables = baseTables(),
   auth = null,
   method = 'POST',
@@ -94,7 +94,7 @@ const call = ({
   return assistant.handler({
     httpMethod: method,
     headers: auth ? { authorization: auth } : {},
-    body: JSON.stringify(body),
+    body: JSON.stringify({ai_consent:{provider:'Anthropic',version:'anthropic-chat-v1',accepted:true},...body}),
   });
 };
 
@@ -125,7 +125,7 @@ describe('guards and fallback', () => {
   test('unconfigured supabase -> { fallback: true }', async () => {
     const r = await (() => {
       mockAdmin = null; // getSupabaseAdmin throws
-      return assistant.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ messages: [{ role: 'user', text: 'hi' }] }) });
+      return assistant.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ ai_consent:{provider:'Anthropic',version:'anthropic-chat-v1',accepted:true},messages: [{ role: 'user', text: 'hi' }] }) });
     })();
     expect(JSON.parse(r.body)).toEqual({ fallback: true });
   });

@@ -29,7 +29,7 @@ exports.handler = async (event) => {
   if (Buffer.byteLength(event.body || '', 'utf8') > MAX_BODY_BYTES) return json(413, { error: 'Email is too large to send' });
 
   // Staff-only, same as the Brevo proxy — unauthenticated this would be an open relay.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["orders", "estimates", "customers", "invoices", "messages"]);
   if (!v.ok) return json(v.status, { error: v.error });
 
   let p;

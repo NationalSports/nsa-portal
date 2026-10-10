@@ -366,7 +366,7 @@ exports.handler = async (event) => {
       // it + increments refunded_amt atomically via apply_webstore_refund (which re-checks
       // the cap under a row lock and dedupes on the refund id). Team-tab orders (no PI)
       // record a credit only.
-      const v = await verifyUser(event);
+      const v = await verifyUser(event, ["invoices"]);
       if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       const { webstore_order_id, amount_cents, reason, attempt_id } = body;
       // Staff-written note for the buyer's email (the compose step in the Manage panel).
@@ -549,7 +549,7 @@ exports.handler = async (event) => {
       // Low-level manual refund by PaymentIntent id (e.g. coach-portal invoice payments).
       // ADMIN-ONLY now: it's unscoped and unrecorded, so it's an escape hatch, not the
       // normal path. Webstore-order refunds must use refund_webstore_order (recorded + capped).
-      const v = await verifyAdmin(event);
+      const v = await verifyAdmin(event, ["invoices"]);
       if (!v.ok) {
         return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       }
@@ -589,7 +589,7 @@ exports.handler = async (event) => {
     }
 
     if (action === 'invoice_status') {
-      const v = await verifyUser(event);
+      const v = await verifyUser(event, ["invoices"]);
       if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       const id = String(body.invoice_id || '');
       if (!/^INV-[A-Za-z0-9-]+$/.test(id)) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Invalid invoice ID' }) };
@@ -620,7 +620,7 @@ exports.handler = async (event) => {
     if (action === 'get_intent') {
       // Retrieve intent status (for verification after payment). Staff-only — exposes
       // payer metadata and card last4; no public flow uses it.
-      const v = await verifyUser(event);
+      const v = await verifyUser(event, ["invoices"]);
       if (!v.ok) {
         return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       }

@@ -248,7 +248,9 @@ describe('floorLogic', () => {
 // ── FloorStation UI ────────────────────────────────────────────────────────
 jest.mock('../lib/supabase', () => ({
   supabase: {
+    rpc:()=>Promise.resolve({data:[{id:'staff',auth_id:'verified-staff',role:'production',access:['production'],is_active:true}]}),
     auth: {
+      getUser:()=>Promise.resolve({data:{user:global.__mockSession?.user}}),
       getSession: () => Promise.resolve({ data: { session: global.__mockSession } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
@@ -277,7 +279,7 @@ const scan = (value) => {
 
 describe('FloorStation UI', () => {
   beforeEach(() => {
-    global.__mockSession = { user: { email: 'staff@nsa.test' }, access_token: 'tok' };
+    global.__mockSession = { user: { id:'verified-staff',email: 'staff@nsa.test' }, access_token: 'tok' };
     localStorage.clear();
     global.fetch = jest.fn();
   });

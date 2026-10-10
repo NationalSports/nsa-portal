@@ -21,7 +21,7 @@ exports.handler = async (event) => {
 
   // Staff-only: overwrites buyer emails/addresses on orders via service role —
   // previously any caller who knew a sale code could redirect order notifications.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["omg"]);
   if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');

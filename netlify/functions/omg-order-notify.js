@@ -22,7 +22,7 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
   // Staff-only: sends buyer emails via the server-side Brevo key.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["omg"]);
   if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');

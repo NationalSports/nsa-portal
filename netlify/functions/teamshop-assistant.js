@@ -1,3 +1,4 @@
+const { hasAiConsent } = require('../../src/lib/aiConsent.shared');
 // Team Shop chat assistant — the AI brain behind src/teamshop/ChatWidget.js
 // (v2). Claude-powered (owner explicitly chose Claude Sonnet — model string
 // 'claude-sonnet-5', official @anthropic-ai/sdk), configured for fast support
@@ -294,6 +295,7 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return bad(400, 'Invalid JSON'); }
 
+  if(!hasAiConsent(body.ai_consent))return bad(403,'AI consent required');
   const messages = normalizeMessages(body.messages);
   if (!messages) return bad(400, 'messages required (ending with a user turn)');
 

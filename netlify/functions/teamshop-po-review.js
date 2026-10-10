@@ -232,7 +232,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
   if (event.httpMethod !== 'POST') return bad(405, 'Method not allowed');
   try {
-    const staff = await verifyUser(event);
+    const staff = await verifyUser(event, ["webstores"]);
     if (!staff.ok) return bad(staff.status, staff.error);
     const admin = staff.admin || getSupabaseAdmin();
 

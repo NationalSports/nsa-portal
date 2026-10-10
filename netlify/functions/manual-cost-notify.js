@@ -69,7 +69,7 @@ function buildEmail({ so, customer, po, member, rep }) {
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
-  const verified = await verifyUser(event);
+  const verified = await verifyUser(event, ["orders"]);
   if (!verified.ok) return { statusCode: verified.status, headers: JSON_HEADERS, body: JSON.stringify({ error: verified.error }) };
 
   let body;

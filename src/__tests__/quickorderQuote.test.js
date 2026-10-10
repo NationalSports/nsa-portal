@@ -46,7 +46,7 @@ const baseTables = (over = {}) => ({
   ...over,
 });
 
-const call = (body, { user = { id: 'auth1', email: 'coach@team.com' }, tables = baseTables(), auth = 'Bearer tok' } = {}) => {
+const call = (body, { user = { id: 'auth1', email: 'coach@team.com', email_confirmed_at:'2026-01-01' }, tables = baseTables(), auth = 'Bearer tok' } = {}) => {
   mockAdmin = fakeSb(tables, user);
   return quote.handler({ httpMethod: 'POST', headers: auth ? { authorization: auth } : {}, body: JSON.stringify(body) });
 };

@@ -485,7 +485,7 @@ async function sendShipmentNotice(admin, opts = {}) {
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return j(405, { error: 'POST only' });
 
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["orders"]);
   if (!auth.ok) return j(auth.status, { error: auth.error });
 
   let body;

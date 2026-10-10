@@ -1,3 +1,6 @@
+import AiConsentNotice from './AiConsentNotice';
+import { AI_CONSENT } from './lib/aiConsent.shared';
+import { sbGetSession } from './lib/auth';
 // Portal Assistant — an embedded, staff-facing help widget for the NSA portal.
 //
 // A floating launcher (bottom-right) opens a chat panel that can:
@@ -520,7 +523,7 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, userRole, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote, onFindProducts, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory }) {
+export default function PortalAssistant({ pg, screenTitle, userName, userId, userRole, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote, onFindProducts, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory }) {
   const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
@@ -530,6 +533,9 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
   const [messages, setMessages] = useState(() => [greeting()]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [aiAllowed,setAiAllowed]=useState(false);
+  const [aiPending,setAiPending]=useState(null);
+  useEffect(()=>{setAiAllowed(false);setAiPending(null);setMessages([greeting()]);},[userId]);
   const [tour, setTour] = useState(null); // { steps, index }
   const listRef = useRef(null);
   const inputRef = useRef(null);
@@ -821,9 +827,10 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
     return () => window.removeEventListener('keydown', onKey);
   }, [tour, endGuide]);
 
-  const send = useCallback(async (rawText) => {
+  const send = useCallback(async (rawText, consent = aiAllowed) => {
     const text = String(rawText || '').trim();
     if (!text || busy) return;
+    if(!consent){setAiPending(text);return;}
     const userMsg = { id: `u${Date.now()}`, from: 'user', text };
     const history = [...messages, userMsg];
     setMessages(history);
@@ -834,11 +841,14 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
         .filter((m) => m.text)
         .slice(-12)
         .map((m) => ({ role: m.from === 'user' ? 'user' : 'assistant', text: m.text }));
+      const session=await sbGetSession();
+      if(!session?.access_token)throw new Error('Sign in to use the staff assistant');
       const res = await fetch(ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           messages: apiMessages,
+          ai_consent: AI_CONSENT,
           screen: { id: pg || '', title: screenTitle || '' },
           openRecord: openRecord || null,
           user: { role: userRole || '' },
@@ -865,7 +875,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
     } finally {
       setBusy(false);
     }
-  }, [busy, messages, pg, screenTitle, openRecord, userRole, runActions]);
+  }, [busy, messages, pg, screenTitle, openRecord, userRole, runActions, aiAllowed]);
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [
@@ -949,6 +959,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
               </div>
             );
           })()}
+<AiConsentNotice staff allowed={aiAllowed} onAllow={()=>{setAiAllowed(true);if(aiPending){const text=aiPending;setAiPending(null);send(text,true);}}} onRevoke={()=>{setAiAllowed(false);setAiPending(null);setMessages([greeting()]);}} onDecline={()=>{setAiPending(null);setInput('');}}/>
           <form className="nsa-as-composer" onSubmit={(e) => { e.preventDefault(); send(input); }}>
             <input
               ref={inputRef}

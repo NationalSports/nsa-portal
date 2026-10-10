@@ -1,0 +1,105 @@
+{
+  "advance_job_stage": [
+    "production",
+    "jobs"
+  ],
+  "box_merge": [
+    "warehouse"
+  ],
+  "merge_product_inventory": [
+    "inventory"
+  ],
+  "pull_house_inventory": [
+    "warehouse"
+  ],
+  "pull_store_inventory": [
+    "warehouse"
+  ],
+  "pull_webstore_transfers": [
+    "warehouse"
+  ],
+  "get_sales_report": [
+    "reports"
+  ],
+  "get_sales_report_detail": [
+    "reports"
+  ],
+  "create_purchase_order": [
+    "purchase_orders"
+  ],
+  "create_store_inventory_po": [
+    "purchase_orders"
+  ],
+  "receive_store_inventory_po": [
+    "warehouse"
+  ],
+  "close_store_inventory_po": [
+    "purchase_orders"
+  ],
+  "set_store_opening_inventory_cost": [
+    "inventory"
+  ],
+  "clone_webstore_atomic": [
+    "webstores"
+  ],
+  "finalize_webstore_batch": [
+    "webstores"
+  ],
+  "apply_webstore_order_item_edits": [
+    "webstores"
+  ],
+  "claim_batch_po_number": [
+    "batch_pos",
+    "orders",
+    "purchase_orders"
+  ],
+  "reserve_po_number": [
+    "orders",
+    "purchase_orders"
+  ],
+  "reserve_po_numbers": [
+    "orders",
+    "purchase_orders"
+  ],
+  "reserve_po_block": [
+    "orders",
+    "purchase_orders"
+  ],
+  "next_counter": [
+    "orders",
+    "estimates",
+    "invoices",
+    "customers",
+    "webstores",
+    "warehouse"
+  ],
+  "recover_deleted": [
+    "backup"
+  ],
+  "row_history": [
+    "backup"
+  ],
+  "reserve_methodic_payment": [
+    "methodic"
+  ],
+  "app_state_cas": [
+    "@app_state"
+  ],
+  "acquire_qbo_invoice_sync_claim": [
+    "qb"
+  ],
+  "release_qbo_invoice_sync_claim": [
+    "qb"
+  ],
+  "claim_all_school_regular_batch": [
+    "purchase_orders",
+    "batch_pos"
+  ],
+  "finish_all_school_regular_batch": [
+    "purchase_orders",
+    "batch_pos"
+  ],
+  "consume_all_school_decorations": [
+    "webstores"
+  ]
+}

@@ -482,7 +482,7 @@ export default function FloorStation() {
   // Station mode: ?token= present → skip the staff gate entirely (job-scan
   // validates the token server-side on every call; a bad token just 401s).
   const [stationToken] = useState(stationTokenFromUrl);
-  const { loading, signedIn } = useStaffSession();
+  const { loading, signedIn } = useStaffSession('production');
 
   if (stationToken) return <FloorStationScreen stationToken={stationToken} />;
 

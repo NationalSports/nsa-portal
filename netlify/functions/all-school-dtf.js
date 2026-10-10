@@ -54,7 +54,7 @@ exports.handler = async event => {
     const admin = getSupabaseAdmin();
     if (scheduled) return respond(200,await sweepAllSchoolDtf(admin));
     if (event.httpMethod !== 'POST') return respond(405,{error:'Method not allowed'});
-    const auth = await verifyUser(event);
+    const auth = await verifyUser(event, ["webstores"]);
     if (!auth.ok) return respond(auth.status || 401,{error:auth.error || 'Unauthorized'});
     const body = JSON.parse(event.body || '{}');
     if (!body.store_id) return respond(400,{error:'store_id required'});

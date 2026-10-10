@@ -7,7 +7,7 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: corsHeaders(), body: JSON.stringify({ error: 'Method not allowed' }) };
 
   try {
-    const adminCheck = await verifyAdmin(event);
+    const adminCheck = await verifyAdmin(event, ["team"]);
     if (!adminCheck.ok) {
       return { statusCode: adminCheck.status || 403, headers: corsHeaders(), body: JSON.stringify({ error: adminCheck.error || 'Not authorized' }) };
     }

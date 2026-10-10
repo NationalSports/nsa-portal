@@ -33,7 +33,7 @@ async function authorize(event, body) {
     if (!link || link.revoked_at || !Number.isFinite(Date.parse(link.expires_at)) || Date.parse(link.expires_at) <= Date.now()) fail(403, 'Link is invalid or expired');
     return { admin, link, staff: false, storeId: link.store_id, soId: link.so_id || null };
   }
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["production"]);
   if (!auth.ok) fail(auth.status || 401, auth.error);
   const admin = auth.admin || getSupabaseAdmin();
   let storeId = clean(body.store_id);

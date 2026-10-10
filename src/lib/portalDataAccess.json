@@ -1,0 +1,1768 @@
+{
+  "adidas_inventory": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "adidas_size_maps": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "adidas_ss_family_map": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ]
+  },
+  "agron_inventory": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "agron_products_staging": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ]
+  },
+  "ai_bill_matches": {
+    "read": [
+      "import",
+      "qb"
+    ],
+    "write": [
+      "import",
+      "qb"
+    ]
+  },
+  "ai_inbox_messages": {
+    "read": [
+      "ai_inbox"
+    ],
+    "write": [
+      "ai_inbox"
+    ]
+  },
+  "ai_order_builds": {
+    "read": [
+      "estimates"
+    ],
+    "write": [
+      "estimates"
+    ]
+  },
+  "all_school_batch_allocations": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "all_school_decoration_allocations": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "all_school_dtf_batches": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "all_school_dtf_requests": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "all_school_house_reservations": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "app_state": {
+    "read": [
+      "settings"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "applied_bills": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "assigned_todos": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  },
+  "audit_log": {
+    "read": [
+      "settings",
+      "backup"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "bill_sku_aliases": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "bot_heartbeats": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  },
+  "boxes": {
+    "read": [
+      "warehouse",
+      "production",
+      "orders"
+    ],
+    "write": [
+      "warehouse"
+    ]
+  },
+  "catalog_order_requests": {
+    "read": [
+      "orders",
+      "sales_tools"
+    ],
+    "write": [
+      "orders",
+      "sales_tools"
+    ]
+  },
+  "client_events": {
+    "read": [
+      "settings",
+      "backup"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "coach_accounts": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_customer_access": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_favorite_items": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_hire_leads": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_leads": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_saved_orders": {
+    "read": [
+      "customers"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "coach_store_config": {
+    "read": [
+      "settings"
+    ],
+    "write": [
+      "settings"
+    ],
+    "publicRead": true
+  },
+  "commission_snapshots": {
+    "read": [
+      "commissions",
+      "commission_admin"
+    ],
+    "write": [
+      "commissions"
+    ]
+  },
+  "customer_contacts": {
+    "read": [
+      "customers",
+      "orders",
+      "estimates",
+      "invoices",
+      "reports"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "customer_credit_usage": {
+    "read": [
+      "customers",
+      "invoices",
+      "orders"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_credits": {
+    "read": [
+      "customers",
+      "invoices",
+      "orders"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_invoice_lines": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_invoices": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_pending_shipping": {
+    "read": [
+      "customers",
+      "invoices",
+      "orders"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_pending_shipping_usage": {
+    "read": [
+      "customers",
+      "invoices",
+      "orders"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "customer_promo_periods": {
+    "read": [
+      "customers",
+      "orders",
+      "estimates",
+      "invoices",
+      "reports"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "customer_promo_programs": {
+    "read": [
+      "customers",
+      "orders",
+      "estimates",
+      "invoices",
+      "reports"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "customer_promo_usage": {
+    "read": [
+      "customers",
+      "orders",
+      "estimates",
+      "invoices",
+      "reports"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "customers": {
+    "read": [
+      "customers",
+      "orders",
+      "estimates",
+      "invoices",
+      "reports"
+    ],
+    "write": [
+      "customers"
+    ]
+  },
+  "deco_vendor_pricing": {
+    "read": [
+      "vendors",
+      "orders",
+      "estimates",
+      "purchase_orders",
+      "art"
+    ],
+    "write": [
+      "vendors"
+    ]
+  },
+  "deco_vendors": {
+    "read": [
+      "vendors",
+      "orders",
+      "estimates",
+      "purchase_orders",
+      "art"
+    ],
+    "write": [
+      "vendors"
+    ]
+  },
+  "dismissed_notifs": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  },
+  "dismissed_todos": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  },
+  "document_history_snapshots": {
+    "read": [
+      "orders",
+      "estimates",
+      "invoices",
+      "backup"
+    ],
+    "write": [
+      "orders",
+      "estimates",
+      "invoices"
+    ]
+  },
+  "document_save_receipts": {
+    "read": [
+      "orders",
+      "estimates",
+      "invoices",
+      "backup",
+      "art",
+      "jobs",
+      "production"
+    ],
+    "write": [
+      "orders",
+      "estimates",
+      "invoices",
+      "art",
+      "jobs",
+      "production"
+    ]
+  },
+  "email_auto_replies": {
+    "read": [
+      "ai_inbox"
+    ],
+    "write": [
+      "ai_inbox"
+    ]
+  },
+  "estimate_art_files": {
+    "read": [
+      "estimates",
+      "art"
+    ],
+    "write": [
+      "estimates",
+      "art"
+    ]
+  },
+  "estimate_item_decorations": {
+    "read": [
+      "estimates"
+    ],
+    "write": [
+      "estimates"
+    ]
+  },
+  "estimate_items": {
+    "read": [
+      "estimates"
+    ],
+    "write": [
+      "estimates"
+    ]
+  },
+  "estimate_items_audit": {
+    "read": [
+      "estimates"
+    ],
+    "write": [
+      "estimates"
+    ]
+  },
+  "estimates": {
+    "read": [
+      "estimates"
+    ],
+    "write": [
+      "estimates"
+    ]
+  },
+  "gl_account_balances": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "gl_accounts": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "gl_entries": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "gl_import_batches": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "health_dismissals": {
+    "read": [
+      "settings",
+      "backup"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "invoice_credit_memos": {
+    "read": [
+      "invoices",
+      "receive_payments"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "invoice_items": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "invoices"
+    ]
+  },
+  "invoice_pay_requests": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "invoice_payment_intents": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "invoice_payment_unapplications": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "invoice_payments": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "invoices": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "invoices"
+    ]
+  },
+  "issues": {
+    "read": [
+      "issues"
+    ],
+    "write": [
+      "issues"
+    ]
+  },
+  "job_stage_events": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "orders",
+      "art",
+      "jobs",
+      "production"
+    ]
+  },
+  "marketing_campaigns": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "marketing_contacts": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "marketing_data": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "marketing_history": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "marketing_sends": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "marketing_suppressions": {
+    "read": [
+      "marketing"
+    ],
+    "write": [
+      "marketing"
+    ]
+  },
+  "message_reads": {
+    "read": [
+      "messages"
+    ],
+    "write": [
+      "messages"
+    ]
+  },
+  "messages": {
+    "read": [
+      "messages"
+    ],
+    "write": [
+      "messages"
+    ]
+  },
+  "methodic_accounting_config": {
+    "read": [
+      "methodic"
+    ],
+    "write": [
+      "methodic"
+    ]
+  },
+  "methodic_payments": {
+    "read": [
+      "methodic"
+    ],
+    "write": [
+      "methodic"
+    ]
+  },
+  "methodic_request_events": {
+    "read": [
+      "methodic"
+    ],
+    "write": [
+      "methodic"
+    ]
+  },
+  "methodic_requests": {
+    "read": [
+      "methodic"
+    ],
+    "write": [
+      "methodic"
+    ]
+  },
+  "netsuite_pos": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "omg_deposit_lines": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_deposits": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_profit_sync_runs": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_rebuild_tokens": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_store_commission_months": {
+    "read": [
+      "commissions",
+      "commission_admin"
+    ],
+    "write": [
+      "commission_admin"
+    ]
+  },
+  "omg_store_products": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_store_profit_daily_snapshots": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_store_profit_snapshots": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "omg_stores": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "payment_receipts": {
+    "read": [
+      "invoices",
+      "receive_payments",
+      "financials"
+    ],
+    "write": [
+      "receive_payments"
+    ]
+  },
+  "po_number_claims": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "product_group_members": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "product_groups": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "product_incoming": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ]
+  },
+  "product_inventory": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "product_variants": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "products": {
+    "read": [
+      "products",
+      "inventory",
+      "orders",
+      "estimates",
+      "warehouse"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "purchase_order_lines": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "purchase_orders": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "quote_request_items": {
+    "read": [
+      "estimates",
+      "sales_tools"
+    ],
+    "write": [
+      "estimates",
+      "sales_tools"
+    ]
+  },
+  "quote_requests": {
+    "read": [
+      "estimates",
+      "sales_tools"
+    ],
+    "write": [
+      "estimates",
+      "sales_tools"
+    ]
+  },
+  "rep_csr_assignments": {
+    "read": [
+      "team"
+    ],
+    "write": [
+      "team"
+    ]
+  },
+  "rep_email_estimate_revisions": {
+    "read": [
+      "ai_inbox"
+    ],
+    "write": [
+      "ai_inbox"
+    ]
+  },
+  "rep_email_insights": {
+    "read": [
+      "ai_inbox"
+    ],
+    "write": [
+      "ai_inbox"
+    ]
+  },
+  "rep_email_work": {
+    "read": [
+      "ai_inbox"
+    ],
+    "write": [
+      "ai_inbox"
+    ]
+  },
+  "rep_product_favorites": {
+    "read": [
+      "products",
+      "sales_tools"
+    ],
+    "write": [
+      "products",
+      "sales_tools"
+    ]
+  },
+  "roster_kit_templates": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "roster_order_sessions": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "roster_player_sizes": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "roster_players": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "roster_team_coaches": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "roster_teams": {
+    "read": [
+      "customers",
+      "orders"
+    ],
+    "write": [
+      "customers",
+      "orders"
+    ]
+  },
+  "sales_orders": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse",
+      "reports"
+    ],
+    "write": [
+      "orders"
+    ]
+  },
+  "save_storm_quarantine": {
+    "read": [
+      "settings",
+      "backup"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "scheduled_emails": {
+    "read": [
+      "messages",
+      "estimates",
+      "orders",
+      "invoices"
+    ],
+    "write": [
+      "messages",
+      "estimates",
+      "orders",
+      "invoices"
+    ]
+  },
+  "ship_audit_snapshots": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "ship_carrier_invoices": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "ship_cartons": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "ship_cost_basis": {
+    "read": [
+      "financials"
+    ],
+    "write": [
+      "financials"
+    ]
+  },
+  "si_documents": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "so_art_files": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse",
+      "reports"
+    ],
+    "write": [
+      "orders",
+      "art"
+    ]
+  },
+  "so_firm_dates": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse",
+      "reports"
+    ],
+    "write": [
+      "orders"
+    ]
+  },
+  "so_item_decorations": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse",
+      "reports"
+    ],
+    "write": [
+      "orders"
+    ]
+  },
+  "so_item_pick_lines": {
+    "read": [
+      "orders",
+      "warehouse",
+      "production"
+    ],
+    "write": [
+      "orders",
+      "warehouse"
+    ]
+  },
+  "so_item_po_lines": {
+    "read": [
+      "orders",
+      "purchase_orders",
+      "warehouse"
+    ],
+    "write": [
+      "orders",
+      "purchase_orders",
+      "warehouse"
+    ]
+  },
+  "so_items": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse",
+      "reports"
+    ],
+    "write": [
+      "orders"
+    ]
+  },
+  "so_jobs": {
+    "read": [
+      "orders",
+      "art",
+      "jobs",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "orders",
+      "art",
+      "jobs",
+      "production"
+    ]
+  },
+  "so_shipment_notices": {
+    "read": [
+      "orders",
+      "warehouse"
+    ],
+    "write": [
+      "orders",
+      "warehouse"
+    ]
+  },
+  "so_shipping_labels": {
+    "read": [
+      "orders",
+      "warehouse"
+    ],
+    "write": [
+      "orders",
+      "warehouse"
+    ]
+  },
+  "ss_documents": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "standalone_art_requests": {
+    "read": [
+      "settings"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "store_inventory_cost_snapshots": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "store_inventory_receipts": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "store_templates": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "supplier_bill_holds": {
+    "read": [
+      "purchase_orders",
+      "orders",
+      "batch_pos",
+      "qb"
+    ],
+    "write": [
+      "purchase_orders",
+      "import",
+      "qb"
+    ]
+  },
+  "taxcloud_usage": {
+    "read": [
+      "settings"
+    ],
+    "write": [
+      "settings"
+    ]
+  },
+  "team_members": {
+    "read": [
+      "team"
+    ],
+    "write": [
+      "team"
+    ]
+  },
+  "teamshop_auto_po_needs": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "teamshop_auto_po_settings": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "teamshop_deco_rates": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ],
+    "publicRead": true
+  },
+  "teamshop_delivery_timelines": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ],
+    "publicRead": true
+  },
+  "teamshop_dtf_print_needs": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "teamshop_logos": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ],
+    "publicRead": true
+  },
+  "teamshop_settings": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ],
+    "publicRead": true
+  },
+  "todo_comments": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  },
+  "tuo_remittance_lines": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "tuo_remittances": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "tuo_store_map": {
+    "read": [
+      "omg",
+      "commissions"
+    ],
+    "write": [
+      "omg"
+    ]
+  },
+  "ua_inventory": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ],
+    "publicRead": true
+  },
+  "ua_products_staging": {
+    "read": [
+      "products",
+      "inventory"
+    ],
+    "write": [
+      "products",
+      "inventory"
+    ]
+  },
+  "uniform_designs": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ]
+  },
+  "uniform_order_events": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ]
+  },
+  "uniform_order_proofs": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ]
+  },
+  "uniform_order_requests": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ]
+  },
+  "uniform_patterns": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ],
+    "publicRead": true
+  },
+  "uniform_settings": {
+    "read": [
+      "uniforms"
+    ],
+    "write": [
+      "uniforms"
+    ],
+    "publicRead": true
+  },
+  "user_profiles": {
+    "read": [
+      "team"
+    ],
+    "write": [
+      "team"
+    ]
+  },
+  "vendors": {
+    "read": [
+      "vendors",
+      "orders",
+      "estimates",
+      "purchase_orders",
+      "art"
+    ],
+    "write": [
+      "vendors"
+    ]
+  },
+  "webstore_bundle_items": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_coupons": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_events": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_notification_outbox": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_number_claims": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_order_item_changes": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_order_items": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_order_refund_items": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_order_refunds": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_orders": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_products": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_roster": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_settings": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_shipments": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstore_transfers": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "webstores": {
+    "read": [
+      "webstores",
+      "production",
+      "warehouse"
+    ],
+    "write": [
+      "webstores"
+    ]
+  },
+  "workspace_items": {
+    "read": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ],
+    "write": [
+      "dashboard",
+      "messages",
+      "ai_tasks"
+    ]
+  }
+}

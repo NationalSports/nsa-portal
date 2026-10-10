@@ -297,3 +297,6 @@ exports.handler = async (event) => {
 };
 
 exports._test = { parseSizeCosts, parsePricingRows };
+
+// Enforce staff sections before using server-side vendor credentials.
+exports.handler=require('./_sectionHandler').sectionHandler(exports.handler,["products"]);

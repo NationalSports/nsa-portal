@@ -77,37 +77,9 @@ function getTrustedSiteBaseUrl(event, env = process.env) {
   return `${protocol}//${target.host}`;
 }
 
-// ── Token-verification cache ────────────────────────────────────────────────
-// Verifying a caller costs a GoTrue network round-trip (admin.auth.getUser) plus a
-// team_members query — PER function invocation. Portal pollers (e.g. the email-open
-// checker) hit these endpoints many times a minute from every open tab, so the auth
-// server absorbs the multiplied traffic: the same unbounded-repeat shape that caused
-// the save_estimate DB storms. Caching a token only AFTER it fully verifies makes
-// repeats free while this Netlify container stays warm, keeping GoTrue and the DB out
-// of the blast radius of any client loop. TTL is far under the ~1h JWT lifetime the
-// rest of the stack already honors (PostgREST accepts a JWT until exp regardless of
-// session state), so this adds no new exposure; a deactivation/role change is picked
-// up within the TTL. Failures are never cached. Size-capped, oldest-first eviction.
-const VERIFY_TTL_MS = 2 * 60 * 1000;
-const VERIFY_CACHE_MAX = 500;
-const _verifyCache = new Map(); // token -> { at, id: {userId, teamMemberId, role} }
+const {canViewPortalPage} = require('../../src/lib/portalAccess.shared');
 
-function _verifyCacheGet(token) {
-  const hit = _verifyCache.get(token);
-  if (!hit) return null;
-  if (Date.now() - hit.at > VERIFY_TTL_MS) { _verifyCache.delete(token); return null; }
-  return hit.id;
-}
-
-function _verifyCachePut(token, id) {
-  if (_verifyCache.size >= VERIFY_CACHE_MAX) {
-    let drop = _verifyCache.size - VERIFY_CACHE_MAX + 1;
-    for (const k of _verifyCache.keys()) { _verifyCache.delete(k); if (--drop <= 0) break; }
-  }
-  _verifyCache.set(token, { at: Date.now(), id });
-}
-
-// Shared core: resolve the bearer token to an ACTIVE team member (cached), or an error.
+// Shared core: resolve the bearer token to an ACTIVE team member (fresh roster), or an error.
 // `inactiveMsg` preserves the historical per-endpoint wording.
 async function _verifyTeamMember(event, inactiveMsg) {
   const auth = event.headers?.authorization || event.headers?.Authorization;
@@ -115,37 +87,39 @@ async function _verifyTeamMember(event, inactiveMsg) {
   const token = auth.substring(7);
 
   const admin = getSupabaseAdmin();
-  const cached = _verifyCacheGet(token);
-  if (cached) return { ok: true, ...cached, admin };
 
   const { data: userData, error } = await admin.auth.getUser(token);
   if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
 
   const { data: tm, error: tmErr } = await admin
     .from('team_members')
-    .select('id, role, is_active')
+    .select('id, role, is_active, access')
     .eq('auth_id', userData.user.id)
     .maybeSingle();
   if (tmErr) return { ok: false, status: 500, error: tmErr.message };
   if (!tm || tm.is_active === false) return { ok: false, status: 403, error: inactiveMsg };
 
   const id = { userId: userData.user.id, teamMemberId: tm.id, role: tm.role };
-  _verifyCachePut(token, id);
+  id.profile = tm;
   return { ok: true, ...id, admin };
 }
 
 // Verify caller is signed in and has an admin (or super_admin) team_members row.
-async function verifyAdmin(event) {
+async function verifyAdmin(event, sections = ['settings']) {
   const res = await _verifyTeamMember(event, 'Inactive account');
   if (!res.ok) return res;
   if (res.role !== 'admin' && res.role !== 'super_admin') return { ok: false, status: 403, error: 'Admin role required' };
-  return { ok: true, userId: res.userId, teamMemberId: res.teamMemberId, admin: res.admin };
+  if (!sections.some(page => canViewPortalPage(res.profile, page))) return {ok:false,status:403,error:'Section access required'};
+  return res;
 }
 
 // Verify caller is any signed-in, active team member (no role requirement).
 // Used to gate staff-only endpoints that previously accepted unauthenticated calls.
-async function verifyUser(event) {
-  return _verifyTeamMember(event, 'Inactive or unknown account');
+async function verifyUser(event, sections = []) {
+  const res = await _verifyTeamMember(event, 'Inactive or unknown account');
+  if (!res.ok) return res;
+  if (!sections.length || !sections.some(page => page === '@staff' || canViewPortalPage(res.profile, page))) return {ok:false,status:403,error:'Section access required'};
+  return res;
 }
 
 // QuickBooks contains company-wide financial data. Only accounting and admin
@@ -153,7 +127,7 @@ async function verifyUser(event) {
 async function verifyQBOUser(event) {
   const res = await _verifyTeamMember(event, 'Inactive account');
   if (!res.ok) return res;
-  if (!['admin', 'super_admin', 'accounting'].includes(res.role)) {
+  if (!canViewPortalPage(res.profile, 'qb')) {
     return { ok: false, status: 403, error: 'Accounting or admin role required' };
   }
   return { ok: true, userId: res.userId, teamMemberId: res.teamMemberId, role: res.role, admin: res.admin };
@@ -167,11 +141,11 @@ async function verifyQBOUser(event) {
 // server-only env var (never shipped to the browser); we accept a dedicated
 // INTERNAL_FUNCTION_SECRET or fall back to the service-role key that both
 // functions already share, so the existing sync keeps working with no new config.
-async function verifyUserOrInternal(event) {
+async function verifyUserOrInternal(event, sections = []) {
   const provided = event.headers?.['x-internal-secret'] || event.headers?.['X-Internal-Secret'];
   const expected = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (provided && expected && safeEqualStr(provided, expected)) return { ok: true, internal: true };
-  return verifyUser(event);
+  return verifyUser(event, sections);
 }
 
 // Copy only allow-listed keys — the standard defense for service-role write endpoints

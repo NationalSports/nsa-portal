@@ -1,3 +1,5 @@
+import {acceptStaffProfile} from './lib/staffCache';
+import AccountPrivacy,{AccountDeletionQueue} from './AccountPrivacy';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
@@ -72,7 +74,7 @@ import GlobalSearch from './GlobalSearch';
 import { checkUpsTracking } from './lib/upsTracking';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
-import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
+import { canViewAiInbox, resolveAccessUser, effectivePageAccess, canViewPortalPage, DEFAULT_PAGE_ACCESS } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
@@ -5733,7 +5735,7 @@ export default function App(){
 
     setOmgReportLoading(true);
     try {
-      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${reportId}`);
+      const resp = await authFetch(`/.netlify/functions/omg-report-proxy?id=${reportId}`);
       if (!resp.ok) throw new Error(await omgProxyError(resp));
       const report = await resp.json();
       if (!report?.reports?.length) throw new Error('Report JSON has no data');
@@ -5998,7 +6000,7 @@ export default function App(){
     if (!uuidMatch) { nf('Invalid report URL — needs a valid OMG report link', 'error'); return; }
     setOmgReportLoading(true);
     try {
-      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      const resp = await authFetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
       if (!resp.ok) throw new Error(await omgProxyError(resp));
       const report = await resp.json();
       const saleCode = report.options?.filter?.find(f => f.key === 'sale_code')?.value || '';
@@ -6442,6 +6444,24 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const[accountPrivacyOpen,setAccountPrivacyOpen]=useState(false);
+  useEffect(()=>{
+    if(!supabase||!cu)return;
+    let alive=true;
+    const verify=async()=>{
+      const {data,error}=await supabase.rpc('get_my_profile');
+      if(!alive||error)return;
+      const profile=data?.[0];
+      if(!profile||profile.is_active===false){setCu(null);try{localStorage.removeItem('nsa_user')}catch{};return;}
+      if(JSON.stringify([profile.role,profile.access])!==JSON.stringify([cu.role,cu.access])){
+        try{acceptStaffProfile(profile);localStorage.setItem('nsa_user',JSON.stringify({...profile,_authSession:true}));window.location.reload();}catch{setCu(profile);}
+      }
+    };
+    const onFocus=()=>{if(document.visibilityState==='visible')verify().catch(()=>{});};
+    const timer=setInterval(onFocus,30000);window.addEventListener('focus',onFocus);onFocus();
+    return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',onFocus);};
+  },[cu?.id,cu?.role,JSON.stringify(cu?.access)]);
+
   _brevoMeRef.current={cu,nf};
   React.useEffect(()=>{
     if(dbLoading||!_dbLoadSuccess.current||!cu?.id)return;
@@ -6603,7 +6623,7 @@ export default function App(){
     const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
     setDashView(map[cu.role]||'warehouse');
   },[cu?.id,cu?.role]);
-  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{acceptStaffProfile(user);_lsSet('nsa_user',JSON.stringify(user));window.location.reload()};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
   // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
@@ -6665,15 +6685,6 @@ export default function App(){
   // table fails with 401. Force them to sign in again so writes get a valid auth.uid().
   React.useEffect(()=>{
     if(!supabase||!cu)return;
-    // Netlify deploy previews / branch deploys use a "<context>--<site>.netlify.app" host
-    // (double dash). Those origins don't carry a valid Supabase session, so the stale-session
-    // guard would kick testers to login a few seconds after load. Skip it there so the UI is
-    // testable; production (custom domain / single-label host) keeps the guard intact.
-    // Anchored to the *.netlify.app preview shape so it can't fail-open on an unrelated host that
-    // merely contains "--" — e.g. a punycode/IDN domain (xn--…) or a custom domain with a double dash,
-    // where a bare /--/ match would silently DISABLE the guard on real production.
-    const isPreviewHost=typeof window!=='undefined'&&/--[a-z0-9-]+\.netlify\.app$/i.test(window.location.hostname||'');
-    if(isPreviewHost)return;
     let cancelled=false;
     (async()=>{
       // Supabase session restore is async on first load — retry generously before kicking out.
@@ -6718,63 +6729,21 @@ export default function App(){
     const oldAccess=cu.access||null;
     if(JSON.stringify(newAccess)!==JSON.stringify(oldAccess)||me.role!==cu.role){
       const updated={...cu,access:newAccess,role:me.role};
-      setCu(updated);_lsSet('nsa_user',JSON.stringify(updated));
+      acceptStaffProfile(updated);_lsSet('nsa_user',JSON.stringify(updated));window.location.reload();
     }
   },[REPS]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── PAGE ACCESS CONTROL ───
-  // Pages whose access is admin-controlled per-user (match the 22 checkboxes in the Team edit modal).
-  // Pages NOT in this set (purchase_orders, issues, settings) fall through to role-level gates in `nav`.
-  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools','sales_history','salesmap','financials']),[]);
-  // Role-based defaults used when a team member has no explicit access array.
-  const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
-    super_admin:Array.from(RESTRICTED_PAGES),
-    admin:Array.from(RESTRICTED_PAGES),
-    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','salesmap','import'],
-    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
-    accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
-    warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','messages'],
-    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports','messages'],
-    prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
-    production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
-    artist:['dashboard','orders','art','jobs','production'],
-  }),[RESTRICTED_PAGES]);
-  // Use the freshly loaded team row immediately. Waiting for the effect above to copy it
-  // into `cu` leaves one render where a deep link is judged with stale cached access; the
-  // redirect effect then throws the user back to Dashboard before the correct access lands.
+  // Shared section policy governs explicit assignments, default roles and protected identities.
   const accessUser=useMemo(()=>resolveAccessUser(cu,REPS,!dbLoading),[cu,REPS,dbLoading]);
-  const effectiveAccess=useMemo(()=>{
-    if(!accessUser)return[];
-    if(accessUser.role==='admin'||accessUser.role==='super_admin')return Array.from(RESTRICTED_PAGES);
-    if(Array.isArray(accessUser.access)&&accessUser.access.length>0)return accessUser.access;
-    return DEFAULT_ACCESS_BY_ROLE[accessUser.role]||['dashboard'];
-  },[accessUser,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
-  const canAccess=useCallback((pageId)=>{
-    if(!accessUser)return false;
-    if(pageId==='ai_inbox')return canViewAiInbox(accessUser);
-    // Keep Custom Ops private during the rollout. This also protects direct
-    // ?pg=methodic links, not just the sidebar entry.
-    if(pageId==='methodic')return String(accessUser.email||'').toLowerCase()==='steve@nationalsportsapparel.com';
-    // QBO is an accounting system, not a delegable portal page. Legacy access
-    // arrays that contain `qb` must not expose it to reps or other operations roles.
-    // Financials is identity-restricted even among admins. Never let an admin
-    // role or editable access array override the owner allowlist.
-    if(pageId==='financials')return canViewFinancials(accessUser);
-    // Receive Payments is identity-restricted too (src/lib/receivePaymentsAccess.js).
-    if(pageId==='receive_payments')return canReceivePayments(accessUser);
-    if(pageId==='qb')return canManageQuickBooksRole(accessUser.role);
-    if(accessUser.role==='admin'||accessUser.role==='super_admin')return true;
-    // Import is always on for reps and CSRs regardless of their stored access array
-    if(pageId==='import'&&(accessUser.role==='rep'||accessUser.role==='csr'))return true;
-    if(!RESTRICTED_PAGES.has(pageId))return true; // purchase_orders / issues / settings gated only by role in `nav`
-    return effectiveAccess.includes(pageId);
-  },[accessUser,RESTRICTED_PAGES,effectiveAccess]);
+  const effectiveAccess=useMemo(()=>effectivePageAccess(accessUser),[accessUser]);
+  const canAccess=useCallback((pageId)=>canViewPortalPage(accessUser,pageId),[accessUser]);
   // Redirect if programmatic setPg() landed the user on a page they no longer have access to.
   // Layout timing prevents the one-frame "Access Denied" flash before the fallback applies.
   React.useLayoutEffect(()=>{
     if(!accessUser)return;
     if(!canAccess(pg)){
-      const fallback=effectiveAccess[0]||'dashboard';
+      const fallback=effectiveAccess.find(page=>canAccess(page))||'dashboard';
       if(pg!==fallback)setPg(fallback);
     }
   },[pg,accessUser,canAccess,effectiveAccess]);
@@ -12054,7 +12023,7 @@ export default function App(){
       onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
       onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={(id,tab)=>{try{const u=new URL(window.location);u.searchParams.set('store',id);if(tab)u.searchParams.set('tab',tab);else u.searchParams.delete('tab');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={canAccess('omg')?(id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}):null} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
-      onReceivePayment={c=>{if(canReceivePayments(cu)){setRpPrefill({customerId:c.id});setPg('receive_payments');return}const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
+      onReceivePayment={c=>{if(canAccess('receive_payments')){setRpPrefill({customerId:c.id});setPg('receive_payments');return}const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
       onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name,alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onArchive={c=>{const isActive=c.is_active!==false;if(!window.confirm((isActive?'Archive':'Unarchive')+' "'+c.name+'"?'))return;const updated={...c,is_active:!isActive};setCust(prev=>prev.map(x=>x.id===c.id?updated:x));setSelC(null);if(supabase){supabase.from('customers').update({is_active:!isActive}).eq('id',c.id)}nf(isActive?'Customer archived':'Customer unarchived')}}
@@ -35162,19 +35131,16 @@ export default function App(){
       {id:'qb',label:'QuickBooks'},
       {id:'backup',label:'Backup'},
       {id:'sales_tools',label:'Sales Tools'},
+      {id:'sales_history',label:'Sales History'},
+      {id:'salesmap',label:'Sales Map'},
+      {id:'uniforms',label:'Uniform Jobs'},
+      {id:'marketing',label:'Marketing'},
+      {id:'purchase_orders',label:'Purchase Orders'},
+      {id:'issues',label:'Issues'},
+      {id:'settings',label:'Settings (admins)'},
+      {id:'ai_tasks',label:'AI Tasks'},
     ];
-    const DEFAULT_ACCESS={
-      super_admin:ALL_PAGES.map(p=>p.id),
-      admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
-      accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
-      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','messages'],
-      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports','messages'],
-      prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
-      production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
-      artist:['dashboard','orders','art','jobs','production'],
-    };
+    const DEFAULT_ACCESS=DEFAULT_PAGE_ACCESS;
 
     const activeReps=REPS.filter(r=>r.is_active!==false);
     const inactiveReps=REPS.filter(r=>r.is_active===false);
@@ -37979,6 +37945,8 @@ export default function App(){
     return s;
   };
   function runPortalSearch(spec){
+    const accessPage={sales_orders:'orders',estimates:'estimates',invoices:'invoices',customers:'customers',products:'products',jobs:'jobs',messages:'messages',purchase_orders:'purchase_orders'}[spec?.entity||'sales_orders'];
+    if(!accessPage||!canAccess(accessPage))return {total:0,rows:[],results:[],error:'Access denied'};
     try{
       const entity=(spec&&spec.entity)||'sales_orders';
       const filters=Array.isArray(spec&&spec.filters)?spec.filters:[];
@@ -38189,6 +38157,7 @@ export default function App(){
   // options for a coach. Read-only. Quote price = cost × markup (default 1.65, adjustable
   // on the results page / at PDF export).
   async function handleAssistantFindProducts(spec){
+    if(!canAccess('products'))return {error:'Access denied'};
     if(!supabase)return {error:'no_db'};
     const kw=String((spec&&spec.keywords)||'').trim();
     const color=String((spec&&spec.color)||'').trim();
@@ -38539,6 +38508,7 @@ export default function App(){
   // Vendor B2B stock lookup — reads the allowlisted inventory gateway
   // (Adidas/Agron/UA/Nike). Resolves a SKU or description to a product first.
   async function handleAssistantVendorStock(query){
+    if(!canAccess('products'))return {error:'Access denied'};
     const q=String(query||'').trim();
     if(!q)return {error:'no_query'};
     let p=prod.find(x=>String(x.sku||'').toLowerCase()===q.toLowerCase());
@@ -38556,6 +38526,7 @@ export default function App(){
   // Customer 360 — one-glance snapshot for a single customer (open orders, open estimates,
   // unpaid invoices, lifetime). Scoped by customer_id via runPortalSearch, so numbers match.
   function handleAssistantCustomer360(customerText){
+    if(!canAccess('customers'))return {error:'Access denied'};
     const q=String(customerText||'').trim().toLowerCase();
     if(!q)return {error:'no_customer'};
     const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(q));
@@ -38580,6 +38551,7 @@ export default function App(){
   // date − invoice date, the CommissionsPage formula) and returns a summary + a buildDocHtml doc
   // the widget can print/PDF via printDoc. Read-only.
   async function handleAssistantReport({type,customer,brand,timeframe}){
+    if(!['reports','customers','invoices','orders','products'].every(canAccess))return {error:'Access denied'};
     const cq=String(customer||'').trim().toLowerCase();
     if(!cq)return {error:'no_customer'};
     const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
@@ -38738,36 +38710,36 @@ export default function App(){
     const _toks=s.split(/\s+/).filter(Boolean);
     const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
     const _custMatch=(cc)=>{const h=_custHay(cc);return _toks.every(t=>h.includes(t))};
-    const rcAll=cust.filter(_custMatch);
+    const rcAll=canAccess('customers')?(cust.filter(_custMatch)):[];
     const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)];
-    const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))});
-    const rs=searchSalesOrders(sos,s,calcSOStatus).filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))});
-    const rp=prod.filter(p=>((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s));
+    const re=canAccess('estimates')?(ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))})):[];
+    const rs=canAccess('orders')?(searchSalesOrders(sos,s,calcSOStatus).filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))})):[];
+    const rp=canAccess('products')?(prod.filter(p=>((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s))):[];
     // Items with transaction history but no catalog row. txnSearchResults is the archive half
     // (fetched by the debounced effect above); the portal half is merged in from memory.
-    const rti=_mergeTxnItems(txnSearchResults,q,null);
+    const rti=canAccess('orders')?(_mergeTxnItems(txnSearchResults,q,null)):[];
     const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
-    const rpk=allPicks;
+    const rpk=canAccess('warehouse')?(allPicks):[];
     const _poVendors=[...vend,...D_V];
     const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const vendor=resolvePoDisplayVendor(it,po,_poVendors);const _poh=((po.po_id||'')+' '+vendor+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
       (so.deco_pos||[]).forEach(dp=>{const _dph=((dp.po_id||'')+' '+(dp.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_dph.includes(t))){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
     });
     submittedBatches.forEach(sb=>{const _sbh=((sb.po_number||'')+' '+(sb.vendor_name||'')+' '+(sb.source_pos||[]).map(sp=>[(sp.po_id||''),(sp.so_id||''),(sp.customer||'')].join(' ')).join(' ')).toLowerCase();if(_toks.every(t=>_sbh.includes(t))){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
     (invPOs||[]).forEach(ip=>{if((ip.po_number||'').toLowerCase().includes(s)||(ip.vendor_name||'').toLowerCase().includes(s)||(ip.memo||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===ip.po_number))allPOs.push({po_id:ip.po_number,vendor:ip.vendor_name,status:ip.status||'ordered',so_id:'',so:null,customer:'',isInvPO:true})}});
-    const rpo=allPOs;
+    const rpo=canAccess('purchase_orders')?(allPOs):[];
     const allJobs2=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeJobs(so).forEach(j=>{if((j.id||'').toLowerCase().includes(s)||(j.art_name||'').toLowerCase().includes(s)||(j.deco_type||'').toLowerCase().includes(s)||so.id.toLowerCase().includes(s)){if(!allJobs2.find(x=>x.id===j.id&&x.so_id===so.id))allJobs2.push({...j,so,so_id:so.id,customer:c2?.alpha_tag||c2?.name||''})}})});
-    const rj=allJobs2;
-    const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s));
-    const rv=vend.filter(v=>((v.name||'')+' '+(v.rep_name||'')).toLowerCase().includes(s));
+    const rj=canAccess('jobs')?(allJobs2):[];
+    const ri=canAccess('invoices')?(invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s))):[];
+    const rv=canAccess('vendors')?(vend.filter(v=>((v.name||'')+' '+(v.rep_name||'')).toLowerCase().includes(s))):[];
     // Supplier invoices (si_documents) — fetched into siSearchResults by the debounced effect above;
     // apply the same all-tokens-must-match narrowing so "PO 3522 CMSF" matches "PO3522CMSF" etc.
     const _siHay=(d)=>((d.po_number||'')+' '+(d.supplier||'')+' '+(d.supplier_doc_number||'')+' '+(d.matched_po_id||'')+' '+(d.matched_so_id||'')+' '+(d.si_doc_number||'')).toLowerCase();
-    const rsi=(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t)));
+    const rsi=canAccess('purchase_orders')?(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t))):[];
     // Webstore orders — fetched into wsOrderSearchResults by the debounced effect above; same
     // all-tokens-must-match narrowing. '#1010492' should match too, so strip leading '#' per token.
     const _wsoHay=(o)=>((o.order_number||'')+' '+(o.omg_order_number||'')+' '+(o.buyer_name||'')+' '+(o.buyer_email||'')+' '+(o.webstores?.name||'')+' '+(o.status||'')).toLowerCase();
-    const rwso=(wsOrderSearchResults||[]).filter(o=>_toks.every(t=>_wsoHay(o).includes(t.replace(/^#/,''))));
-    const rws=wsStoreSearchResults||[];
+    const rwso=canAccess('webstores')?((wsOrderSearchResults||[]).filter(o=>_toks.every(t=>_wsoHay(o).includes(t.replace(/^#/,''))))):[];
+    const rws=canAccess('webstores')?(wsStoreSearchResults||[]):[];
     const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length+rwso.length+rws.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
@@ -38910,7 +38882,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  if(mobileMode)return<>{accountPrivacyOpen&&<AccountPrivacy onClose={()=>setAccountPrivacyOpen(false)}/>}<Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onAccountPrivacy={()=>setAccountPrivacyOpen(true)} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} userId={cu?.id} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -38935,7 +38907,7 @@ export default function App(){
     splitModal,setSplitModal,splitInvoice,viewInvoice,setViewInvoice,webstoreSettle,
   };
 
-  return(<AppDataProvider value={appData}><div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
+  return(<AppDataProvider value={appData}>{accountPrivacyOpen&&<AccountPrivacy onClose={()=>setAccountPrivacyOpen(false)}/>}<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -38956,11 +38928,11 @@ export default function App(){
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_msgMentionsMe(m)).length:0;
         return<a key={item.id} data-tour-id={`nav-${item.id}`} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
           onClick={ev=>{if(item.external)return;if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
-      <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
+      <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={()=>setAccountPrivacyOpen(true)} style={{background:'none',border:'1px solid #475569',color:'#94a3b8',cursor:'pointer'}} title="Account and privacy">Account</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <GlobalSearch customers={cust} estimates={ests} salesOrders={sos} products={prod} invoices={invs} vendors={vend} submittedBatches={submittedBatches} inventoryPOs={invPOs}
-            searchProducts={_searchProductsServer} searchTxnItems={_searchTxnItemsServer} mergeTxnItems={_mergeTxnItems} searchWebstoreOrders={_queryWsOrders} searchWebstores={_queryWebstores}
+          <GlobalSearch canAccess={canAccess} customers={canAccess('customers')?cust:[]} estimates={canAccess('estimates')?ests:[]} salesOrders={canAccess('orders')?sos:[]} products={canAccess('products')?prod:[]} invoices={canAccess('invoices')?invs:[]} vendors={canAccess('vendors')?vend:[]} submittedBatches={canAccess('batch_pos')?submittedBatches:[]} inventoryPOs={canAccess('purchase_orders')?invPOs:[]}
+            searchProducts={canAccess('products')?_searchProductsServer:undefined} searchTxnItems={canAccess('orders')?_searchTxnItemsServer:undefined} mergeTxnItems={canAccess('orders')?_mergeTxnItems:undefined} searchWebstoreOrders={canAccess('webstores')?_queryWsOrders:undefined} searchWebstores={canAccess('webstores')?_queryWebstores:undefined}
             orderSearchHay={_soJobsSearchHay} searchPOStatus={_searchPOStatus} newTabHref={_newTabHref}
             onSeeAll={query=>{setGSearchQ(query);setNlSpec(null);setCoachFinder(null);setPg('search')}}
             onOpen={(kind,value)=>{
@@ -39209,7 +39181,7 @@ export default function App(){
           })}
         </div>
       </div>}
-      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{(pg==='warehouse'||pg==='item_fulfillment')&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='receive_payments'&&<ComponentErrorBoundary name="ReceivePayments"><React.Suspense fallback={<LazyFallback/>}><ReceivePaymentsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{(pg==='warehouse'||pg==='item_fulfillment')&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&<><AccountDeletionQueue/>{rTeam()}</>}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='receive_payments'&&<ComponentErrorBoundary name="ReceivePayments"><React.Suspense fallback={<LazyFallback/>}><ReceivePaymentsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
     {/* ═══ NEED-BY DATE (global) — asked before a sales order is created or converted ═══ */}
@@ -39987,7 +39959,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} openRecord={(()=>{try{
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} userId={cu?.id} openRecord={(()=>{try{
       if(pg==='estimates'&&eEst){const c=eEstC||cust.find(x=>x.id===eEst.customer_id);return{type:'estimate',id:eEst.id,customer:c?.name||c?.alpha_tag||''};}
       if(pg==='orders'&&eSO){const c=eSOC||cust.find(x=>x.id===eSO.customer_id);return{type:'sales_order',id:eSO.id,customer:c?.name||c?.alpha_tag||''};}
       if(pg==='invoices'&&viewInvoice){const c=cust.find(x=>x.id===viewInvoice.customer_id);return{type:'invoice',id:viewInvoice.id,customer:c?.name||c?.alpha_tag||''};}

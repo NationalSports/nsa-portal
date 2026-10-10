@@ -49,5 +49,10 @@ test('linking requires a server profile before completing sign-in',async()=>{
  fireEvent.change(screen.getByPlaceholderText('Enter password'),{target:{value:'test-password'}});
  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Sign In'}))});
  expect(screen.getByText(/could not be verified after linking/)).toBeTruthy();
- expect(p.sbLinkTeamAuth).toHaveBeenCalledWith('team','u');expect(p.onLogin).not.toHaveBeenCalled();
+ expect(p.sbLinkTeamAuth).toHaveBeenCalledWith();expect(p.onLogin).not.toHaveBeenCalled();
+});
+
+test('inactive restored profile never enters the portal',async()=>{
+ const p=props();p.sbGetSession.mockResolvedValue({user:{id:'auth'}});p.sbGetMyProfile.mockResolvedValue({id:'inactive',role:'admin',is_active:false});
+ render(<LoginGate {...p}/>);await screen.findByRole('button',{name:'Sign In'});expect(p.onLogin).not.toHaveBeenCalled();
 });

@@ -53,3 +53,10 @@ describe('Financials stale-order collaboration', () => {
     expect(screen.queryByText('Receivables')).toBeNull();
   });
 });
+
+
+test('Gayle can use Financials but cannot see Steve-only commission reports',()=>{
+ render(<AppDataProvider value={{cu:{id:'00000000-0000-0000-0000-000000000010',role:'admin'},REPS:[],cust:[],sos:[],invs:[],histInvs:[],msgs:[],assignedTodos:[]}}><FinancialsPage /></AppDataProvider>);
+ expect(screen.getByText('Overview')).toBeTruthy();
+ expect(screen.queryByText('Commission Reports')).toBeNull();
+});

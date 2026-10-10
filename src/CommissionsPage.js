@@ -1,3 +1,4 @@
+import {canViewPortalPage} from './lib/pageAccess';
 import { decoPoEditTotals } from './lib/decoPoEdit';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -17,9 +18,7 @@ import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
 import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
 
-// The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
-// team_members id — same single-user gate as the App.js to-do list).
-const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
+// Administrative reports and overrides use the shared Steve-only commission entitlement.
 
 // Generic CSV export for report tabs that don't already build their own (the
 // Monthly Reports tab below has its own downloadCsv/csvString for its richer,
@@ -45,8 +44,8 @@ function ExportCsvButton({onClick,label='⬇ Export CSV'}){
 export default function CommissionsPage({adminReports=false}={}){
   const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos,setSOs}=useAppData();
 
-    const isAdmin=cu.role==='admin'||cu.role==='super_admin';
-    const isSteve=cu?.id===ADMIN_DASH_USER_ID;
+    const isSteve=canViewPortalPage(cu,'commission_admin');
+    const isAdmin=isSteve;
     const salesReps=REPS.filter(isCommissionRep);
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
@@ -587,6 +586,7 @@ export default function CommissionsPage({adminReports=false}={}){
     const pipeTotal=allPipeline.reduce((a,l)=>a+l.expComm,0);
     const pipeBalance=allPipeline.reduce((a,l)=>a+l.balance,0);
 
+    if(adminReports&&!isSteve)return <div role="alert">Admin commission reports are restricted to Steve.</div>;
     return(<>
       <InventoryCostWarning orders={[...allLines,...allPipeline].map(l=>l.so)} />
       {/* Header with rep selector (admin only) */}

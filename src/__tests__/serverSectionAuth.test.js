@@ -1,0 +1,11 @@
+let mockProfile;
+const mockGetUser=jest.fn();
+jest.mock('@supabase/supabase-js',()=>({createClient:()=>({auth:{getUser:mockGetUser},from:()=>{const q={select:()=>q,eq:()=>q,maybeSingle:async()=>({data:mockProfile})};return q;}})}));
+const {verifyUser,verifyAdmin,verifyQBOUser}=require('../../netlify/functions/_shared');
+const event={headers:{authorization:'Bearer signed-token'}};
+beforeEach(()=>{process.env.SUPABASE_URL='https://test.invalid';process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';mockGetUser.mockResolvedValue({data:{user:{id:'auth'}}});mockProfile={id:'staff',role:'admin',is_active:true,access:['orders']};});
+test('an admin with reduced assignments cannot use Team or QuickBooks APIs',async()=>{expect((await verifyAdmin(event,['team'])).status).toBe(403);expect((await verifyQBOUser(event)).status).toBe(403);expect((await verifyUser(event,['orders'])).ok).toBe(true);});
+test('no section list is fail closed',async()=>{expect((await verifyUser(event)).status).toBe(403);});
+test('permission removal is applied on the next request using the same token',async()=>{expect((await verifyUser(event,['orders'])).ok).toBe(true);mockProfile.access=[];expect((await verifyUser(event,['orders'])).status).toBe(403);expect(mockGetUser).toHaveBeenCalledTimes(2);});
+test('deactivation denies existing sessions',async()=>{mockProfile.is_active=false;expect((await verifyUser(event,['orders'])).status).toBe(403);});
+test('anonymous and forged tokens never get section authority',async()=>{expect((await verifyUser({headers:{}},['orders'])).status).toBe(401);mockGetUser.mockResolvedValue({data:{user:null},error:{message:'invalid'}});expect((await verifyUser(event,['orders'])).status).toBe(401);});

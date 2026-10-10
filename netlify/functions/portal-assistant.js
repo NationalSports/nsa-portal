@@ -1,3 +1,5 @@
+const {canViewPortalPage}=require('../../src/lib/portalAccess.shared');
+const { hasAiConsent } = require('../../src/lib/aiConsent.shared');
 // Staff Portal Assistant — the Claude brain behind src/PortalAssistant.js.
 //
 // The Claude brain for signed-in NSA staff using the internal portal. It answers
@@ -37,7 +39,7 @@
 //   { fallback:true }  — ANTHROPIC_API_KEY missing or any Anthropic failure.
 //                        The widget keeps working (chat still usable) on this.
 const Anthropic = require('@anthropic-ai/sdk');
-const { corsHeaders } = require('./_shared');
+const { corsHeaders, verifyUser } = require('./_shared');
 
 const bad = (status, error) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(body) });
@@ -557,7 +559,9 @@ function normalizeMessages(raw) {
 // ── The bounded manual tool loop ───────────────────────────────────────────
 async function runAssistant({ client, catalogs, messages }) {
   const system = [{ type: 'text', text: buildSystemPrompt(catalogs), cache_control: { type: 'ephemeral' } }];
-  const tools = buildTools(catalogs);
+  const sectionForTool={daily_brief:'dashboard',customer_360:'customers',vendor_stock:'products',start_estimate:'estimates',report:'reports',find_products:'products',set_reminder:'messages',add_note:'orders',add_line:'orders',update_line:'orders',remove_line:'orders',po_remove_line:'purchase_orders',adjust_inventory:'inventory'};
+  const toolAllowed=name=>!catalogs.profile||!sectionForTool[name]||canViewPortalPage(catalogs.profile,sectionForTool[name]);
+  const tools = buildTools(catalogs).filter(tool=>toolAllowed(tool.name));
   const tourIds = new Set(catalogs.tours.map((t) => t.id));
   const targetIds = new Set(catalogs.targets.map((t) => t.id));
   const screenIds = new Set(catalogs.screens.map((s) => s.id));
@@ -586,9 +590,10 @@ async function runAssistant({ client, catalogs, messages }) {
     const results = [];
     for (const tu of toolUses) {
       let out;
+      if(!toolAllowed(tu.name)){results.push({type:'tool_result',tool_use_id:tu.id,content:JSON.stringify({error:'Section access denied'})});continue;}
       if (tu.name === 'search') {
         const spec = sanitizeSpec(tu.input);
-        if (spec) { actions.push({ type: 'search', spec }); out = { ok: true }; }
+        if (spec && (!catalogs.profile || canViewPortalPage(catalogs.profile,({sales_orders:'orders',jobs:'jobs',invoices:'invoices',estimates:'estimates',customers:'customers',products:'products',purchase_orders:'purchase_orders'})[spec.entity]))) { actions.push({ type: 'search', spec }); out = { ok: true }; }
         else out = { error: 'Invalid search spec' };
       } else if (tu.name === 'daily_brief') {
         actions.push({ type: 'daily_brief' });
@@ -724,23 +729,28 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
   if (event.httpMethod !== 'POST') return bad(405, 'Method not allowed');
 
+  let staff;
+  try {staff=await verifyUser(event, ["@staff"]);}catch(e){return bad(503,'Unable to verify staff session');}
+  if(!staff.ok)return bad(staff.status||403,staff.error||'Staff sign-in required');
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return ok({ fallback: true }); // widget stays usable, just no AI
 
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return bad(400, 'Invalid JSON'); }
 
+  if(!hasAiConsent(body.ai_consent))return bad(403,'AI consent required');
   const messages = normalizeMessages(body.messages);
   if (!messages) return bad(400, 'messages required (ending with a user turn)');
 
   const catalogs = {
+    profile:staff.profile,
     screen: {
       id: normStr(body.screen?.id, 80),
       title: normStr(body.screen?.title, 120),
     },
-    screens: normCatalog(body.screens, [['label', 120], ['desc', 400]]),
+    screens: normCatalog(body.screens, [['label', 120], ['desc', 400]]).filter(s=>canViewPortalPage(staff.profile,s.id)),
     tours: normCatalog(body.tours, [['title', 120], ['desc', 400]]),
-    targets: normCatalog(body.targets, [['label', 120], ['screen', 80], ['desc', 200]]),
+    targets: normCatalog(body.targets, [['label', 120], ['screen', 80], ['desc', 200]]).filter(t=>!t.screen||canViewPortalPage(staff.profile,t.screen)),
     openRecord: (() => {
       const r = body.openRecord;
       if (!r || typeof r !== 'object') return null;
@@ -751,7 +761,7 @@ exports.handler = async (event) => {
     })(),
     // Client-asserted role. A UX gate only (it decides which tools are offered / how the
     // prompt talks about inventory) — the client re-checks the real cu.role before any commit.
-    isAdmin: (() => { const role = normStr(body.user && body.user.role, 20).toLowerCase(); return role === 'admin' || role === 'super_admin'; })(),
+    isAdmin: ['admin','super_admin'].includes(staff.role),
   };
 
   try {

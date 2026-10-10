@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Netlify function: email roster players their personal store link on demand
 // (from the staff admin or the coach portal). One email per player, each with
 // their own /shop/<slug>?player=<token> link.
@@ -30,13 +31,13 @@ exports.handler = async (event) => {
     let store;
     if (alphaTag) {
       sb = getSupabaseAdmin();
-      const familyResult = await resolveCustomerFamily(sb, alphaTag);
-      if (familyResult.error) return { statusCode: familyResult.notFound ? 403 : 500, headers, body: JSON.stringify({ ok: false, error: familyResult.error }) };
+      const familyResult = await authorizeCoachPortal(event, sb, alphaTag);
+      if (!familyResult.ok) return { statusCode: familyResult.status || 403, headers, body: JSON.stringify({ ok: false, error: familyResult.error }) };
       const owned = await assertStoreInFamily(sb, familyResult.fam, storeId);
       if (owned.error) return { statusCode: owned.status, headers, body: JSON.stringify({ ok: false, error: owned.error }) };
       store = owned.store;
     } else {
-      const auth = await verifyUser(event);
+      const auth = await verifyUser(event, ["customers"]);
       if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ ok: false, error: auth.error }) };
       sb = auth.admin;
       const { data, error } = await sb.from('webstores').select('id,name,slug,primary_color').eq('id', storeId).maybeSingle();
