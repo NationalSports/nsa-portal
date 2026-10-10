@@ -37,6 +37,7 @@ import {stageDocumentBaseline,reconcileOutboxNotices} from './lib/documentSaveBa
 import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
+import AtOnceDashboard from './AtOnceDashboard';
 import BarcodeScanner from './BarcodeScanner';
 import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta, findOverPromised, ifStockCoverage } from './itemFulfillment';
 import BotStatus from './BotStatus';
@@ -6321,6 +6322,7 @@ export default function App(){
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
+  const[soView,setSOView]=useState('list');
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const recoveryEditorRef=React.useRef(null);
@@ -11963,6 +11965,8 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
+    const orderViewSwitch=<div className="ao-view-switch" aria-label="Sales order view"><button type="button" aria-pressed={soView==='list'} onClick={()=>setSOView('list')}>Order list</button><button type="button" aria-pressed={soView==='at_once'} onClick={()=>setSOView('at_once')}>At-Once dashboard</button></div>;
+    if(soView==='at_once')return<>{orderViewSwitch}<AtOnceDashboard orders={sos} customers={cust} supabase={supabase} calcStatus={calcSOStatus} calcValue={so=>calcOrderMargin(so,sos).rev} onOpenOrder={so=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null)}}/></>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
@@ -11980,6 +11984,7 @@ export default function App(){
     const activeFilters=(soF.status!=='all'&&soF.status!=='active')||soF.rep!=='all'||soF.search;
 
     return(<>
+      {orderViewSwitch}
       {/* Clickable status stat cards */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='active'||soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'active'}))}>

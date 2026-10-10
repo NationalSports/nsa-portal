@@ -7,6 +7,7 @@ import {
   planReceiptPayment, receiptOwnership, receiptSourceId,
 } from './logic.js';
 import { writeReceiptPayment } from './receipts.ts';
+import { runStripePayouts } from './stripePayoutRunner.js';
 
 const CORS={
   'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, apikey, content-type, x-client-info',
@@ -78,7 +79,9 @@ async function status(admin:any){
   ]);
   if(settingsError||runsError||reviewsError)throw new Error('Background sales status is unavailable.');
   const now=new Date(),next=new Date(now);next.setUTCMinutes(17,0,0);if(next<=now)next.setUTCHours(next.getUTCHours()+1);
-  return{settings,runs:runs||[],manual_reviews:reviews||[],connection:{configured:!!token,realm_id:token?.realm_id||null,updated_at:token?.updated_at||null},schedule:'17 * * * *',next_scheduled_run:next.toISOString()};
+  const {data:payoutPostings,error:payoutError}=await admin.from('qbo_stripe_payout_postings').select('stripe_payout_id,state,qbo_deposit_id,error_code,updated_at').order('updated_at',{ascending:false}).limit(20);
+  if(payoutError&&payoutError.code!=='42P01'&&payoutError.code!=='PGRST205')throw new Error('Stripe payout status is unavailable.');
+  return{payout_postings:payoutPostings||[],settings,runs:runs||[],manual_reviews:reviews||[],connection:{configured:!!token,realm_id:token?.realm_id||null,updated_at:token?.updated_at||null},schedule:'17 * * * *',next_scheduled_run:next.toISOString()};
 }
 
 function initCounters(){return{
@@ -558,6 +561,12 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     if(missingInvoiceIds.length||missingPaymentIds.length)throw Object.assign(new Error('QBO postflight could not find every verified sales write.'),{code:'postflight_readback_failed'});
     add('configuration','national','postflight','verified',null,{invoice_ids_verified:qboIds.invoices.length,payment_ids_verified:qboIds.payments.length});
 
+    await checkpoint('stripe_payouts');
+    const stripePayouts:any=await runStripePayouts({admin,qbo,settings,accounts,undepositedId:String(deposit.Id),runId,leaseToken,
+      canWrite:claim.writes_enabled===true&&['bounded','hourly'].includes(settings.phase),renewLease,
+      homeCurrency:preferences?.CurrencyPrefs?.HomeCurrency?.value,bookCloseDate:preferences?.AccountingInfoPrefs?.BookCloseDate});
+    if(stripePayouts.held||stripePayouts.configuration_error)terminal='needs_review';
+    add('configuration','stripe_payouts','settlement','evaluated',null,stripePayouts);
     if(reviews.length)terminal='needs_review';
     for(const row of reviews){
       const {data:existing,error:readError}=await admin.from('qbo_sales_manual_reviews').select('id').eq('company_key','national').eq('entity_type',row.entity_type).eq('source_id',row.source_id).eq('reason_code',row.reason_code).maybeSingle();
@@ -573,8 +582,8 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     const batchCustomerIds=customerBatch.map((row:any)=>String(row.id));
     if(batchCustomerIds.length){const {error}=await admin.from('qbo_sales_manual_reviews').update({status:'resolved',resolved_at:resolvedAt,resolved_by:'qbo-sales-background',resolution_note:'Condition cleared when this customer mapping was revalidated.'}).eq('company_key','national').eq('status','open').eq('entity_type','customer').in('source_id',batchCustomerIds).neq('last_seen_run_id',runId);if(error)throw Object.assign(new Error('Cleared customer reviews could not be resolved.'),{code:'review_save_failed'});}
     if(manifest.length){const {error}=await admin.from('qbo_sales_run_manifest').insert(manifest);if(error)throw Object.assign(new Error('Run manifest could not be saved.'),{code:'manifest_save_failed'});}
-    const cursor={...(settings.continuation_cursor||{}),customer_offset:(Number(settings.continuation_cursor?.customer_offset)||0)+Number(settings.customer_batch_limit||0),invoice_offset:(Number(settings.continuation_cursor?.invoice_offset)||0)+Number(settings.invoice_batch_limit||0),payment_offset:(Number(settings.continuation_cursor?.payment_offset)||0)+Number(settings.payment_batch_limit||0)};
-    const summary={mode:claim.writes_enabled?'write':'read_only',phase:settings.phase,source_hash:manifest[0]?.evidence?.source_hash,company:company.CompanyName,realm_id:qbo.realmId,proposed:{customers:customerCandidates.length,invoices:invoiceCandidates.length,payments:paymentCandidates.length},manual_reviews:reviews.length,postflight_verified:'qbo_requery'};
+    const cursor={...(settings.continuation_cursor||{}),stripe_payout_offset:stripePayouts.next_offset||0,customer_offset:(Number(settings.continuation_cursor?.customer_offset)||0)+Number(settings.customer_batch_limit||0),invoice_offset:(Number(settings.continuation_cursor?.invoice_offset)||0)+Number(settings.invoice_batch_limit||0),payment_offset:(Number(settings.continuation_cursor?.payment_offset)||0)+Number(settings.payment_batch_limit||0)};
+    const summary={stripe_payouts:stripePayouts,mode:claim.writes_enabled?'write':'read_only',phase:settings.phase,source_hash:manifest[0]?.evidence?.source_hash,company:company.CompanyName,realm_id:qbo.realmId,proposed:{customers:customerCandidates.length,invoices:invoiceCandidates.length,payments:paymentCandidates.length},manual_reviews:reviews.length,postflight_verified:'qbo_requery'};
     const {data:finished,error:finishError}=await admin.rpc('finish_qbo_sales_run',{p_run_id:runId,p_lease_token:leaseToken,p_status:terminal,p_counters:counters,p_qbo_ids:qboIds,p_summary:summary,p_continuation_cursor:cursor,p_error_code:null,p_error_message:null});
     if(finishError||finished!==true)throw new Error('Durable QBO sales run could not be finalized.');
     return{ok:true,started:true,run_id:runId,status:terminal,counters,summary};
@@ -601,6 +610,20 @@ Deno.serve(async req=>{
     if(body.action==='kill_switch'){
       const enabled=body.enabled===true;const {error}=await admin.from('qbo_sales_settings').update({kill_switch:enabled,updated_at:new Date().toISOString(),updated_by:actor.userId}).eq('company_key','national');
       if(error)throw new Error('Kill switch could not be updated.');return json({ok:true,kill_switch:enabled});
+    }
+    if(body.action==='configure_stripe_payouts'){
+      const enabled=body.stripe_payouts_enabled===true,writes=body.stripe_payout_writes_enabled===true;
+      const bank=clean(body.stripe_payout_bank_account_id),fee=clean(body.stripe_payout_fee_account_id);
+      const start=clean(body.stripe_payout_start_date),canary=clean(body.stripe_payout_canary_id);
+      if(writes&&!enabled)return json({ok:false,error:'Enable payout scans before automatic posting.'},400);
+      if(enabled&&(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!Number.isFinite(Date.parse(start))||new Date(start).toISOString().slice(0,10)!==start))return json({ok:false,error:'Choose a valid payout start date.'},400);
+      if(enabled&&(!/^\d+$/.test(bank)||!/^\d+$/.test(fee)||bank===fee))return json({ok:false,error:'Choose distinct QuickBooks bank and fee account IDs. The preflight verifies their types.'},400);
+      if(canary&&!/^po_[A-Za-z0-9_]+$/.test(canary))return json({ok:false,error:'The single-payout ID must start with po_.'},400);
+      const {error}=await admin.from('qbo_sales_settings').update({stripe_payouts_enabled:enabled,stripe_payout_writes_enabled:writes,
+        stripe_payout_bank_account_id:bank||null,stripe_payout_fee_account_id:fee||null,stripe_payout_start_date:start||null,stripe_payout_canary_id:canary||null,
+        updated_at:new Date().toISOString(),updated_by:actor.userId}).eq('company_key','national');
+      if(error)throw new Error('Stripe payout settings could not be saved.');
+      return json({ok:true,message:'Payout settings saved. Run the read-only preview to verify account mappings and eligible payouts.'});
     }
     if(body.action==='preflight')return json(await runSales(admin,{trigger:'manual',forceReadOnly:true}));
     if(body.action==='run')return json(await runSales(admin,{trigger:'manual'}));

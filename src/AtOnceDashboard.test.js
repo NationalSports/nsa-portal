@@ -1,0 +1,20 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { act } from 'react-dom/test-utils';
+import AtOnceDashboard from './AtOnceDashboard';
+global.IS_REACT_ACT_ENVIRONMENT = true;
+let root, container;
+beforeEach(() => { container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); });
+afterEach(() => { act(() => root.unmount()); container.remove(); });
+test('stage drilldown opens the actual order and period controls remain interactive', () => {
+  const onOpenOrder = jest.fn();
+  const orders = [{ id: 'SO-PICK', stage: 'needs_pull', created_at: '2026-10-10', value: 100 }, { id: 'SO-PROD', stage: 'in_production', created_at: '2026-10-01', value: 200 }];
+  act(() => root.render(<AtOnceDashboard orders={orders} stores={[]} calcStatus={o => o.stage} calcValue={o => o.value} now={new Date(2026, 9, 10)} onOpenOrder={onOpenOrder}/>));
+  const click = el => act(() => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  click([...container.querySelectorAll('.ao-stage')].find(el => el.textContent.includes('Picking')));
+  expect(container.querySelectorAll('.ao-order-link')).toHaveLength(1);
+  click(container.querySelector('.ao-order-link')); expect(onOpenOrder).toHaveBeenCalledWith(orders[0]);
+  click([...container.querySelectorAll('.ao-period button')].find(el => el.textContent === '7 days'));
+  expect(container.querySelector('.ao-metric-featured strong').textContent).toBe('$100');
+  click(container.querySelector('.ao-legend')); expect(container.querySelector('.ao-legend').getAttribute('aria-pressed')).toBe('false');
+});
