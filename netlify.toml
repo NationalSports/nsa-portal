@@ -323,6 +323,9 @@
 
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
+
+[functions."ai-inbox-process"]
+  schedule = "*/5 * * * *"
   timeout = 26
 
 # Durable webstore notification retry queue. Customer replies and shipment

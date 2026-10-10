@@ -34,6 +34,43 @@ exports.handler = async (event) => {
     if (error) throw error;
     if (!message) return { statusCode: 404, headers, body: JSON.stringify({ error: 'Inbox message not found' }) };
 
+    if (body.action === 'post_webstore_reply') {
+      if (message.source_channel !== 'webstore' || !message.webstore_order_id) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'A webstore conversation is required' }) };
+      }
+      const text = String(body.text || '').trim().slice(0, 4000);
+      if (!text) return { statusCode: 400, headers, body: JSON.stringify({ error: 'Response text is required' }) };
+      const replyId = `ai-reply-${message.id}`;
+      const { error: postError } = await verified.admin.from('messages').insert({
+        id: replyId, entity_type: 'webstore_order', entity_id: String(message.webstore_order_id),
+        text, author_id: verified.teamMemberId, author: 'National Sports Apparel',
+        from_customer: false, dept: 'store', ts: new Date().toISOString(),
+      });
+      if (postError && postError.code !== '23505') throw postError;
+      let notification = null;
+      if (!postError) {
+        const notify = require('./webstore-message-notify');
+        const result = await notify.handler({ ...event, body: JSON.stringify({ orderId: message.webstore_order_id, text }) });
+        try { notification = JSON.parse(result.body); } catch (_) {}
+      }
+      const { error: saveError } = await verified.admin.from('ai_inbox_messages')
+        .update({ status: 'complete', draft_body_text: text, reviewed_by: verified.teamMemberId,
+          reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', message.id);
+      if (saveError) throw saveError;
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, already_posted: !!postError, notification }) };
+    }
+
+    if (body.action === 'retry') {
+      if (message.source_channel !== 'webstore' && !['stores@nationalsportsapparel.com', 'hello@nationalsportsapparel.com'].includes(message.mailbox_email)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Legacy Sales requests cannot be retried. Forward the request to Stores or Hello.' }) };
+      }
+      const { error: retryError } = await verified.admin.from('ai_inbox_messages')
+        .update({ status: 'queued', error_message: null, updated_at: new Date().toISOString() })
+        .eq('id', message.id).eq('status', 'failed');
+      if (retryError) throw retryError;
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
+    }
+
     if (body.action === 'queue_cart') {
       if (!['rep', 'admin', 'super_admin'].includes(String(verified.role || '').toLowerCase())) {
         return { statusCode: 403, headers, body: JSON.stringify({ error: 'A rep or admin must approve cart commands' }) };
@@ -125,7 +162,13 @@ exports.handler = async (event) => {
       return { statusCode: 413, headers, body: JSON.stringify({ error: 'Attachments exceed the 9 MB draft limit' }) };
     }
 
-    const token = await getAccessToken();
+    if (message.source_channel === 'webstore') {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'Review and post this response in the order conversation; webstore messages do not have a Gmail thread.' }) };
+    }
+    if (!['stores@nationalsportsapparel.com', 'hello@nationalsportsapparel.com'].includes(message.mailbox_email)) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'This legacy request has no active reply mailbox.' }) };
+    }
+    const token = await getAccessToken(message.mailbox_email);
     const draft = await createReplyDraft(token, message, {
       subject: body.subject || message.draft_subject || message.subject,
       text: body.text || message.draft_body_text || '',
