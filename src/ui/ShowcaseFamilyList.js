@@ -26,13 +26,23 @@ function FamilyCard({ group, busy, act, onReview }) {
   const needsUpdate = needsFamilyGeneration(group);
   const review = group.items.filter(({ asset }) => asset?.status === 'review').length;
   const errors = [...new Set(group.items.map(({ asset }) => asset?.error_details).filter(Boolean))];
+  const thumbnail = group.items.find(i=>i.asset?.showcase_image_url)
+    || group.items.find(i=>i.asset?.approved_showcase_image_url) || group.items[0];
+  const thumbnailUrl = thumbnail.asset?.showcase_image_url || thumbnail.asset?.approved_showcase_image_url;
+  const baked = (thumbnail.decorations || []).some(d=>d.baked && (d.side || 'front')==='front');
+  const standardThumbnailUrl = baked ? thumbnail.standard_image_url || thumbnail.supplier_image_url
+    : thumbnail.supplier_image_url || thumbnail.standard_image_url;
   const generate = (newMaster = false) => {
     if (newMaster && !window.confirm('Create new poses and lighting for this item’s colors? Each color incurs a new AI image charge. Existing approved images stay in place until replacements are approved.')) return;
     act(group.key,'generate_family',{family_key:group.key,new_master:newMaster,showcase_settings:{decoration_type:finish,revision_notes:group.items[0].asset?.showcase_settings?.revision_notes || ''}});
   };
   return <section style={{ border:'1px solid #e2e8f0',borderRadius:10,marginBottom:12,overflow:'hidden' }}>
     <div style={{ display:'flex',gap:14,padding:16,alignItems:'center',flexWrap:'wrap' }}>
-      <img src={group.items[0].supplier_image_url || group.items[0].standard_image_url} alt="" width={68} height={82} style={{objectFit:'contain'}} />
+      <div style={{width:68,flexShrink:0}}>
+        {thumbnailUrl
+          ? <img src={thumbnailUrl} alt={`${group.name} Showcase preview`} width={68} height={82} style={{objectFit:'contain'}} />
+          : <ShowcaseProductImage item={thumbnail} url={standardThumbnailUrl} height={82} alt={`${group.name} with decoration`} />}
+      </div>
       <div style={{flex:1,minWidth:200}}>
         <div style={{fontSize:14,fontWeight:800}}>{group.name}</div>
         <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{group.colors.length} colors · {group.designs} designs · {group.items.length} combinations</div>
