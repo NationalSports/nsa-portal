@@ -6656,6 +6656,25 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [emailLinkOpen, setEmailLinkOpen] = useState(false);
+  const [productionLink, setProductionLink] = useState('');
+  const [productionBusy, setProductionBusy] = useState(false);
+  const productionShare = async (action) => {
+    setProductionBusy(true);
+    try {
+      const response = await authFetch('/.netlify/functions/webstore-production-report', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, storeId: s.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the decorator link');
+      if (action === 'revoke') { setProductionLink(''); onFlash?.('Decorator link revoked'); return; }
+      const url = `${window.location.origin}/production-report/${result.token}`;
+      setProductionLink(url);
+      try { await navigator.clipboard.writeText(url); onFlash?.(action === 'rotate' ? 'New decorator link copied; old link revoked.' : 'Decorator link copied.'); }
+      catch { onFlash?.('Decorator link ready below.'); }
+    } catch (e) { onFlash?.(e.message || 'Could not create decorator link'); }
+    finally { setProductionBusy(false); }
+  };
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -6825,6 +6844,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
         <button className="btn btn-sm btn-secondary" onClick={onBack}>← Back to All Stores</button>
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
+          <button className="btn btn-sm btn-secondary" disabled={productionBusy} onClick={() => productionShare('create')} title="Copy the store's private, live decorator report link.">{productionBusy ? 'Loading…' : '📄 Production packet & PDF'}</button>
           <MenuButton label="Share" align="right" items={[
             portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
@@ -6841,6 +6861,14 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
 
       {launchOpen && <LaunchStoreModal store={s} readinessLoading={s.org_type === 'all_school' && loading} readinessError={s.org_type === 'all_school' ? schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) : ''} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
+      {productionLink && <div className="card" style={{ padding: 14, marginBottom: 12, background: '#eff6ff', border: '1px solid #bfdbfe', fontSize: 13 }}>
+        <b>Decorator production link (live)</b><div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+          <a href={productionLink} target="_blank" rel="noopener noreferrer" style={{ overflowWrap: 'anywhere' }}>{productionLink}</a>
+          <button className="btn btn-sm btn-secondary" onClick={() => navigator.clipboard?.writeText(productionLink)}>Copy</button>
+          <button className="btn btn-sm btn-secondary" disabled={productionBusy} onClick={() => productionShare('rotate')}>Replace link</button>
+          <button className="btn btn-sm btn-secondary" disabled={productionBusy} onClick={() => productionShare('revoke')}>Revoke link</button>
+        </div><small>Anyone with this link can view player names and production art. Download the full packet with Print / Save PDF on that page. Replace link revokes the old one.</small>
+      </div>}
 
       {(() => {
         const primary = s.primary_color || '#192853';
