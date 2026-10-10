@@ -2,6 +2,8 @@
 
 This is a design review prototype, using sample data and local interactions. It does not connect to authentication, Supabase, purchasing, payments, messaging, or production systems. Approval buttons and replies only change the preview's local state.
 
+Read [AUDIT.md](AUDIT.md) for the information/workflow audit, corrections made to the click-through, remaining weaknesses, and actual application routes not yet represented. Clickable navigation does not imply feature parity.
+
 Open `index.html` in a browser to explore it. Fonts and the bundled preview runtime load from approved external CDNs, so an internet connection is needed for the complete presentation. The HTML includes the inline design source; `portal-art-preview.fragment.html` is the editable source retained separately.
 
 ## Review paths
@@ -37,6 +39,8 @@ Local headless-browser checks covered all 22 staff navigation areas and six orde
 Desktop and mobile layouts were checked at 1024, 736, and 390 pixels, with no document-level horizontal overflow in the coach review. Screenshots were inspected locally. The inline scripts passed JavaScript syntax checks.
 
 The updated order-jobs preview was also checked for List as the default, matching job scopes and field visibility across List/Kanban, per-size fulfillment, gated sample production changes, and responsive overflow at 736 and 390 pixels.
+
+The audit pass restores contextual record/customer links, size-level partial receiving, payment allocations and unapplied balances, invoice payment history, distinct message conversations with retained replies, AI email intake, broader customer/store/coach navigation, and live sample ledger updates including decoration costs. Remaining functional and information gaps are listed in AUDIT.md.
 
 ## Scope
 
