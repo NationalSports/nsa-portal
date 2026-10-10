@@ -30,6 +30,10 @@ if (!fs.existsSync(REPORT_DIR)) fs.mkdirSync(REPORT_DIR, { recursive: true });
 console.log('\n🧪 NSA Portal — Running Business Logic Tests\n');
 console.log('=' .repeat(50));
 
+// An interrupted Jest run can leave a successful report from an earlier run.
+// Remove it before starting so only this invocation can make the run green.
+if (fs.existsSync(JSON_REPORT)) fs.unlinkSync(JSON_REPORT);
+
 let rawOutput = '';
 let exitCode = 0;
 
