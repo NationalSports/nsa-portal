@@ -82,6 +82,19 @@ test('OpenAI edit request sends the explicit quality and retains reported usage'
  } finally {global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;}
 });
 
+test('women color bases receive explicit athletic form guidance while edits preserve the existing silhouette',()=>{
+ const member={name:"Nike Women's Pullover Hoodie",decorations:[],settings:{}};
+ const base=prompt(member,'color_base',[]);
+ assert.match(base,/female athletic shoulder, bust, waist and hip/);
+ assert.match(base,/Preserve the manufacturer’s exact cut, ease and dimensions/);
+ assert.match(base,/do not cinch, crop or redesign a relaxed hoodie/);
+ const edit=prompt(member,'design_edit',[]);
+ assert.match(edit,/silhouette/);
+ assert.doesNotMatch(edit,/gentle waist definition/);
+ assert.doesNotMatch(prompt({...member,name:'Youth Girls Pullover Hoodie'},'color_base',[]),/female athletic shoulder/);
+ assert.doesNotMatch(prompt({...member,name:'Unisex Pullover Hoodie'},'color_base',[]),/female athletic shoulder/);
+});
+
 test('batch queue splits colors into bounded jobs while keeping the full catalog guard and one notification batch',async()=>{
  const {queueFamilies,catalogSignature}=require('../netlify/functions/_showcaseFamily');
  const f=await fixture();const catalog=f.opts.members.map(m=>({...m,sku:'HOOD-'+m.color,brand:'Nike',kind:'product'}));

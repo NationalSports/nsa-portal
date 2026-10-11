@@ -14,6 +14,10 @@ quads, strand tracing, or automatic visual-placement rejection.
    AI geometry transfer and no synthesized decoration detail.
 3. Create the first finished image in that color at high quality: natural matte
    lighting, restrained athletic volume, slight hero turn, hood down.
+   Women's items receive explicit natural shoulder, bust, waist and hip guidance
+   for invisible support while preserving the supplier's actual cut and ease.
+   This applies to new color images; cached images keep their existing silhouette
+   until a pose revision creates a replacement.
 4. Cache this finished image by product and color. For each additional design,
    pass that same original color image, the new decorated supplier reference,
    the actual blank supplier photo, and exact artwork to an image edit at medium
