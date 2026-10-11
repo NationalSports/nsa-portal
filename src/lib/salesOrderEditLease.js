@@ -42,8 +42,19 @@ export function createSalesOrderEditLease({client,id,onChange=()=>{},session=new
     async acquire(takeover=false){
       if(pending||closed||state.phase==='lost')return state;
       emit({phase:'loading',message:''});
-      pending=rpc(takeover?'takeover':'acquire',state.generation);
-      try{const result=await pending;if(closed){if(result.data.owned)await rpc('release',result.data.generation);return state;}return accept(result)}
+      pending=(async()=>{
+        const result=await rpc(takeover?'takeover':'acquire',state.generation);
+        // Another tab may have changed the fence after it was shown. Refresh
+        // the current owner and generation before offering takeover again.
+        if(takeover&&!result.data.owned&&result.data.reason==='changed')return {result:await rpc('status'),changed:true};
+        return {result,changed:false};
+      })();
+      try{
+        const {result,changed}=await pending;
+        if(closed){if(result.data.owned)await rpc('release',result.data.generation);return state;}
+        const next=accept(result);
+        return changed&&next.phase==='view'?emit({message:'Editing changed in another tab. Review the current owner, then try Take over editing again.'}):next;
+      }
       catch(error){return emit({phase:'view',message:error.message})}
       finally{pending=null;}
     },

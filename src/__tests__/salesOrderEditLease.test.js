@@ -21,6 +21,21 @@ test('takeover uses the generation shown to the user',async()=>{
  await lease.acquire();expect(lease.canSave()).toBe(false);await lease.acquire(true);
  expect(client.rpc.mock.calls[1][1]).toMatchObject({p_action:'takeover',p_generation:3});
 });
+test('changed takeover refreshes the generation and explains why the editor stayed view only',async()=>{
+ client.rpc
+  .mockResolvedValueOnce({data:{owned:false,holder:'Steve',generation:3,can_takeover:true}})
+  .mockResolvedValueOnce({data:{owned:false,reason:'changed'}})
+  .mockResolvedValueOnce({data:{owned:false,holder:'Steve',generation:4,can_takeover:true}})
+  .mockResolvedValueOnce({data:{owned:true,generation:5,ttl_ms:120000}});
+ await lease.acquire();
+ await lease.acquire(true);
+ expect(client.rpc.mock.calls.map(([,args])=>args.p_action)).toEqual(['acquire','takeover','status']);
+ expect(lease.state).toMatchObject({phase:'view',generation:4,can_takeover:true});
+ expect(lease.state.message).toMatch(/changed in another tab/i);
+ await lease.acquire(true);
+ expect(client.rpc.mock.calls[3][1]).toMatchObject({p_action:'takeover',p_generation:4});
+ expect(lease.state.phase).toBe('editing');
+});
 test('late acquisition after closing releases the server claim',async()=>{
  let resolve;client.rpc.mockImplementationOnce(()=>new Promise(r=>{resolve=r}));
  const acquiring=lease.acquire();const closing=lease.close();resolve({data:owned});await Promise.all([acquiring,closing]);
