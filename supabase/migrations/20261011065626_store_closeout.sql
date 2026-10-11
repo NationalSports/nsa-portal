@@ -379,6 +379,9 @@ begin
   end if;
   perform set_config('nsa.close_store',s.id,true);
   if s.omg_store_id is null then
+    if exists(select 1 from public.webstore_orders o where o.so_id=s.id and (coalesce(o.refunded_amt,0)>0 or coalesce(o.status,'') ~* '^(refunded|cancelled|canceled)$')) then
+      raise exception 'Refunded or cancelled store orders require accounting review before closeout';
+    end if;
     select array_agg(o.id order by o.id) into v_ids from public.webstore_orders o
       where o.so_id=s.id and o.backorder_of is null and coalesce(o.status,'') !~* '^(cancelled|canceled|pending_payment|refunded)$';
     if coalesce(cardinality(v_ids),0)=0 then raise exception 'No linked customer orders found. Reload or reconcile the batch.'; end if;
@@ -539,4 +542,50 @@ begin
     if position(v_old in v_sql)=0 then raise exception 'Review integrity scanner before migrating closeout'; end if;
     execute replace(v_sql,v_old,replace(v_old,E'\n    and exists',E'\n    and s.store_closed_at is not null\n    and exists'));
   end if;
+end $$;
+
+-- Automatic Club/All School conversions also produce webstore SOs. Defer their
+-- legacy invoice block so the new invoice guard cannot roll back a paid order's
+-- conversion. Keep the production/item/fundraising work and replay behavior.
+do $$
+declare v_name text; v_sql text; v_old text := 'if not exists (select 1 from invoices where so_id = v_so_id) then';
+begin
+  foreach v_name in array array['public.create_club_sales_order(uuid)','public.create_all_school_sales_order(uuid)'] loop
+    if to_regprocedure(v_name) is not null then
+      v_sql := pg_get_functiondef(to_regprocedure(v_name));
+      if position(v_old in v_sql)=0 then raise exception 'Review store converter % before migrating closeout',v_name; end if;
+      execute replace(v_sql,v_old,'if false then -- Invoice and payment deferred to Close Store.');
+    end if;
+  end loop;
+end $$;
+
+-- Child-only cost/job edits previously left the SO header version unchanged.
+-- Serialize those writes with closeout and invalidate a review from an older tab.
+-- BEFORE triggers take the same parent row lock before changing any cost input.
+create function public.invalidate_store_closeout_review() returns trigger
+language plpgsql security definer set search_path='' as $$
+declare v_ids text[]; v_id text;
+begin
+  if tg_table_name in ('so_item_decorations','so_item_pick_lines','so_item_po_lines') then
+    select array_agg(distinct i.so_id order by i.so_id) into v_ids from public.so_items i
+      where i.id in ((to_jsonb(new)->>'so_item_id')::integer,(to_jsonb(old)->>'so_item_id')::integer);
+  else
+    select array_agg(distinct x order by x) into v_ids from unnest(array[to_jsonb(new)->>'so_id',to_jsonb(old)->>'so_id']) x where x is not null;
+  end if;
+  foreach v_id in array coalesce(v_ids,array[]::text[]) loop
+    update public.sales_orders set _version=_version+1 where id=v_id and store_closed_at is null
+      and (omg_store_id is not null or webstore_id is not null);
+  end loop;
+  if tg_op='DELETE' then return old; end if;
+  return new;
+end $$;
+revoke all on function public.invalidate_store_closeout_review() from public,anon,authenticated;
+do $$
+declare v_table text;
+begin
+  foreach v_table in array array['so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates'] loop
+    if to_regclass('public.'||v_table) is not null then
+      execute format('create trigger invalidate_store_closeout_review before insert or update or delete on public.%I for each row execute function public.invalidate_store_closeout_review()',v_table);
+    end if;
+  end loop;
 end $$;

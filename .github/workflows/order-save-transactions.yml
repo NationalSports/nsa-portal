@@ -5,6 +5,7 @@ on:
       - 'supabase/migrations/**'
       - 'scripts/pgtest/order_save*'
       - 'scripts/pgtest/document_history_scenarios.cjs'
+      - 'scripts/test-store-closeout-sql.cjs'
       - 'supabase/tests/document_history_snapshots_regression.sql'
       - 'src/lib/dbEngine.js'
       - '.github/workflows/order-save-transactions.yml'
@@ -23,3 +24,5 @@ jobs:
         run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/pgtest/order_save_scenarios.cjs
       - name: Verify append-only document history
         run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/pgtest/document_history_scenarios.cjs
+      - name: Verify store closeout accounting and retries
+        run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/test-store-closeout-sql.cjs

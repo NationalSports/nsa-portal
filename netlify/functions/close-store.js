@@ -3,11 +3,13 @@ const headers = {'Content-Type':'application/json','Cache-Control':'no-store'};
 exports.handler = async event => {
   const reply = (statusCode, body) => ({statusCode, headers, body:JSON.stringify(body)});
   if (event.httpMethod !== 'POST') return reply(405, {error:'POST required'});
-  const auth = await verifyUser(event);
+  let auth;
+  try { auth = await verifyUser(event); }
+  catch { return reply(503, {error:'Staff session could not be verified. Please retry.'}); }
   if (!auth.ok) return reply(auth.status, {error:'Active staff session required'});
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return reply(400, {error:'Invalid request'}); }
-  if (!body.soId || body.costsRecorded !== true || body.shipped !== true || !Number.isSafeInteger(body.version)) {
+  if (!body || typeof body.soId !== 'string' || !body.soId.trim() || body.costsRecorded !== true || body.shipped !== true || !Number.isSafeInteger(body.version)) {
     return reply(400, {error:'Review the saved order and confirm all costs and shipments'});
   }
   try {

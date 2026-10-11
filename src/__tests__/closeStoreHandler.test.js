@@ -18,3 +18,13 @@ test('uses verified actor and only reports confirmed committed closeout',async()
   expect((await handler(event())).statusCode).toBe(409);
   rpc.mockResolvedValue({data:{ok:true}});expect((await handler(event())).statusCode).toBe(502);
 });
+
+test('rejects malformed input and handles authentication outages without posting money',async()=>{
+  for(const body of ['null','{','[]','1',JSON.stringify({soId:123,version:1,costsRecorded:true,shipped:true})]){
+    expect((await handler({httpMethod:'POST',body})).statusCode).toBe(400);
+  }
+  expect((await handler({httpMethod:'GET'})).statusCode).toBe(405);
+  verifyUser.mockRejectedValueOnce(new Error('offline'));
+  expect((await handler(event())).statusCode).toBe(503);
+  expect(rpc).not.toHaveBeenCalled();
+});
