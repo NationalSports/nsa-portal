@@ -92,7 +92,22 @@ by a five-minute wait and inspection of the new request's actual result:
   first artwork was undersized. A feedback revision brought the artwork closer
   to the supplier reference's scale; exact artwork/placement remains unverified.
 
+The subsequent whole-item test generated all 12 NKFD9889 combinations together:
+four colors, each with three designs. One batch queued four concurrent color
+jobs, producing four high-quality color seeds and eight medium-quality edits.
+All 12 finished without generation errors and were individually inspected in
+Before/After and enlarged hero views after a five-minute wait.
+
+Within each color, the three designs retained visually consistent pose,
+silhouette, pockets, cuffs, fabric color, lighting and sleeve Swoosh. Different
+colors use independent seeds, so their pose and waist shaping are not identical.
+The first Royal block SERRA edit lost/darkened the artwork's white inner outline;
+one medium refresh against the same Royal seed visibly restored it. The charcoal
+set's supplier neck label is not visible; concealment versus omission remains
+unconfirmed. No exact pixel-preservation or production-artwork guarantee follows
+from this visual review.
+
 All new candidates remain in review. Nothing was approved or published. Keep
-PR #2509 draft: gold PC90H, other styles/colors, and medium edits that actually
-replace one design with another still need live coverage. Successful generation
-and passing automated tests do not establish exact garment or artwork fidelity.
+PR #2509 draft: gold PC90H and other styles/colors still need live coverage, and
+the charcoal neck-label detail needs review. Successful generation and passing
+automated tests do not establish exact garment or artwork fidelity.
