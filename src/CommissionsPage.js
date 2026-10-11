@@ -258,7 +258,7 @@ export default function CommissionsPage({adminReports=false}={}){
     // Commission: 30% of GP if paid within 90 days, 15% if paid after 90 days
     const buildCommLines=(repFilter)=>{
       return invs.filter(inv=>{
-        if(!isCommissionEarnedInvoice(inv))return false;
+        if(!isCommissionEarnedInvoice(inv,sos.find(s=>s.id===inv.so_id)))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
@@ -279,8 +279,9 @@ export default function CommissionsPage({adminReports=false}={}){
         // position does not track chronology — and on a partially-restored invoice the last slot
         // could be an older payment, booking the line to the wrong statement month.
         const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
-        const paidDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
-        const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
+        const paymentDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
+        const paidDate=so?.store_closed_at?new Date(Math.max(new Date(so.store_closed_at).getTime(),paymentDate?.getTime()||0)):paymentDate;
+        const daysToPay=paidDate&&invDate?Math.round((paymentDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
         const ovr=commOverrides[inv.id];
@@ -306,6 +307,8 @@ export default function CommissionsPage({adminReports=false}={}){
 
     const buildOmgCommLines=(repFilter)=>omgComms.filter(row=>{
       if(row.status!=='finalized')return false;
+      // A store ported after its monthly report must not earn again through both paths.
+      if(sos.some(so=>so.omg_store_id===row.store_id&&!so.deleted_at))return false;
       return !repFilter||repFilter==='all'||row.rep_id===repFilter;
     }).map(row=>{
       const period=String(row.period_month||'').slice(0,10);
@@ -332,7 +335,7 @@ export default function CommissionsPage({adminReports=false}={}){
       // the invoice reaches fully paid, at which point buildCommLines moves it into
       // the statement using the final payment date.
       const invLines=invs.filter(inv=>{
-        if(isCommissionEarnedInvoice(inv))return false;
+        if(isCommissionEarnedInvoice(inv,sos.find(s=>s.id===inv.so_id)))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.

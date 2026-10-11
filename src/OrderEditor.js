@@ -1,3 +1,4 @@
+import { isStoreSalesOrder } from './lib/storeCloseout';
 import { decoPoCost } from './lib/decoPoCost';
 import { inventoryPickCosts } from './lib/inventoryCosts';
 import InventoryCostDetails from './allSchool/InventoryCostDetails';
@@ -294,7 +295,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onCloseStore,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   // O(1) catalog lookup. Replaces a products.find() linear scan that ran once per size cell
   // (~11ms per render on a 10-line order, ~41ms at 40 lines) on every keystroke-driven render.
   const findProd=useMemo(()=>buildProductIndex(products),[products]);
@@ -5623,6 +5624,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       {isSO&&<div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {(()=>{
+          if(isStoreSalesOrder(o))return o.store_closed_at
+            ?<span style={{color:'#166534',fontWeight:700}}>✓ Store Closed</span>
+            :<button className="btn btn-primary" onClick={async()=>{const saved=await onCloseStore?.(o);if(saved)setO(saved)}}>Close Store</button>;
           // Decide which invoicing actions to show. If any SO line still has un-invoiced qty,
           // surface "Create Invoice" alongside "Close Sales Order" so the user can bill the remainder.
           const _liveInvs=liveSoInvoices(allInvoices,o.id);
@@ -5789,7 +5793,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {statusFlow.map((sf,i)=>{const cur=sf===displaySt;const done=_curIdx>=0&&i<_curIdx;
             return<React.Fragment key={sf}>
               <span className={'step'+(cur?' current':done?' done':'')+(sf==='complete'?' clickable':'')}
-                onClick={()=>{if(sf!=='complete')return;
+                onClick={()=>{if(sf!=='complete')return;if(isStoreSalesOrder(o)){void onCloseStore?.(o).then(saved=>{if(saved)setO(saved)});return;}
                   // Same guard as Close Sales Order — this chip is the third way into the manual pin.
                   const _chipProdOpen=unfinishedProdSummary(o);
                   if(_chipProdOpen&&!window.confirm('Mark '+o.id+' Complete?\n\n'+_chipProdOpen+'\n\nIt will drop off the production board and show as Delivered on the coach portal. Continue?'))return;

@@ -1,3 +1,4 @@
+import { storeCommissionReady } from './lib/storeCloseout';
 // Commission snapshots — pure helpers (no supabase, no React) so the freeze/apply logic
 // is unit-testable and lives in exactly one place. CommissionsPage owns the I/O.
 //
@@ -12,8 +13,8 @@ export const COMM_LATE_DAYS = 90;
 // Commission is earned only after the invoice is fully paid. Partial payments
 // remain pipeline until the final payment lands; this also keeps the eventual
 // paid date and days-to-pay calculation accurate.
-export function isCommissionEarnedInvoice(invoice) {
-  return !!invoice && invoice.status === 'paid';
+export function isCommissionEarnedInvoice(invoice, so) {
+  return !!invoice && invoice.status === 'paid' && storeCommissionReady(invoice, so);
 }
 
 // Is the data behind this line loaded well enough to freeze anything at all?
@@ -24,7 +25,7 @@ export function isCommissionEarnedInvoice(invoice) {
 // automatic first freeze adds the cost check below — see canSnapshotLine.
 export function lineDataReady(line) {
   if (!line || !line.inv) return false;
-  if (!isCommissionEarnedInvoice(line.inv)) return false;
+  if (!isCommissionEarnedInvoice(line.inv, line.so)) return false;
   if (line.inv._paymentsHydrated === false) return false;
   if (!(line.inv.payments && line.inv.payments.length)) return false;
   const so = line.so;
