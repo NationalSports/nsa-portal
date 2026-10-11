@@ -9,6 +9,13 @@ export const STAGES = [
   ['complete', 'Complete', '#257b66'],
   ['unknown', 'Needs review', '#697586'],
 ];
+export function storeChannel(store) {
+  if (!store) return 'unclassified';
+  if (store.org_type === 'all_school') return 'all_school';
+  if (store.org_type === 'club') return 'club';
+  if (store.org_type === 'team') return 'webstore';
+  return 'unclassified';
+}
 export const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 export function portalDate(value) {
   if (!value) return null;
@@ -32,14 +39,14 @@ export function buildAtOnceReport({ orders = [], customers = [], stores = [], ca
   const storeMap = new Map(stores.map(s => [s.id, s]));
   const rows = orders.filter(o => o && (!o.order_type || o.order_type === 'at_once') && !o.deleted_at && !['cancelled', 'deleted', 'void'].includes(o.status)).map(order => {
     const store = storeMap.get(order.webstore_id);
-    const channel = order.omg_store_id ? 'omg' : order.webstore_id || order.source === 'webstore' ? (store?.org_type === 'all_school' ? 'all_school' : 'webstore') : 'direct';
+    const channel = (order.omg_store_id || order.source === 'omg') ? 'omg' : order.webstore_id || order.source === 'webstore' ? storeChannel(store) : 'direct';
     let status, value = null;
     try { status = calcStatus(order); } catch { status = 'unknown'; }
     if (!STAGES.some(s => s[0] === status)) status = 'unknown';
     try { const result = calcValue(order); if (result !== null && result !== undefined && Number.isFinite(Number(result))) value = Number(result); } catch { /* Missing financial data is not a zero sale. */ }
     const due = portalDate(order.expected_date);
     return { order, id: order.id, customer: customerMap.get(order.customer_id)?.name || 'Unassigned customer', store: store?.name || (order.webstore_id ? 'Store ' + order.webstore_id : ''), channel, status, value, created: portalDate(order.created_at), due, overdue: status !== 'complete' && !!due && due < today };
-  }).filter(r => (source === 'all' || r.channel === source || (source === 'webstores' && ['all_school', 'webstore'].includes(r.channel))) && (storeId === 'all' || r.order.webstore_id === storeId));
+  }).filter(r => (source === 'all' || r.channel === source) && (storeId === 'all' || r.order.webstore_id === storeId));
   const period = rows.filter(r => r.created && r.created >= start && r.created < end);
   const previous = rows.filter(r => r.created && r.created >= previousStart && r.created < start);
   const open = rows.filter(r => r.status !== 'complete');

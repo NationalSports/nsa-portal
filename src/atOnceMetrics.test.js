@@ -18,7 +18,7 @@ test('24/7 classification requires actual store metadata and never includes OMG 
   const stores = [{ id: 'school', name: 'School', org_type: 'all_school' }, { id: 'club', org_type: 'club' }];
   const orders = [order('s', { webstore_id: 'school' }), order('c', { webstore_id: 'club' }), order('o', { webstore_id: 'school', omg_store_id: 'OMG-1' }), order('unknown', { source: 'webstore' })];
   expect(buildAtOnceReport({ ...options, orders, stores, source: 'all_school' }).period.map(r => r.id)).toEqual(['s']);
-  expect(buildAtOnceReport({ ...options, orders, stores, source: 'webstores' }).period).toHaveLength(3);
+  expect(buildAtOnceReport({ ...options, orders, stores, source: 'club' }).period.map(r => r.id)).toEqual(['c']);
 });
 test('unavailable dates, values, and unknown stages remain explicit rather than silently disappearing', () => {
   const report = buildAtOnceReport({ ...options, orders: [order('bad', { created_at: 'bad', stage: 'new' }), order('noValue', { value: undefined })] });
@@ -45,4 +45,18 @@ test('real shared operational status drives purchasing, receiving, picking and p
   ];
   const report = buildAtOnceReport({ ...options, orders, calcStatus: calcSOStatus });
   expect(Object.fromEntries(report.rows.map(r => [r.id, r.status]))).toEqual({ buy: 'need_order', receive: 'waiting_receive', pick: 'needs_pull', prep: 'items_received', produce: 'in_production', closed: 'complete' });
+});
+
+test('direct, webstore, club, and 24/7 reports never mix channels; missing metadata stays unclassified', () => {
+  const stores = [{ id: 'team', org_type: 'team' }, { id: 'club', org_type: 'club' }, { id: 'school', org_type: 'all_school' }];
+  const orders = [order('direct'), ...['team', 'club', 'school', 'missing'].map(id => order(id, { webstore_id: id }))];
+  for (const [source, ids] of Object.entries({direct:['direct'],webstore:['team'],club:['club'],all_school:['school'],unclassified:['missing']})) {
+    const report = buildAtOnceReport({...options,stores,orders,source});
+    expect(report.rows.map(r => r.id)).toEqual(ids);
+    expect(report.intake).toBe(100);
+    expect(report.open).toHaveLength(1);
+    expect(report.groups.reduce((sum, g) => sum + g.value, 0)).toBe(100);
+  }
+  expect(buildAtOnceReport({...options, orders, stores:[], source:'webstore'}).intake).toBe(0);
+  expect(buildAtOnceReport({...options, orders, stores:[], source:'all_school'}).intake).toBe(0);
 });
