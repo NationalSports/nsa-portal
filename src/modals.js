@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import VendorPriceLists from './VendorPriceLists';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { _pick, szRank, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES, BALL_SIZES } from './constants';
@@ -138,6 +139,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit,vendorPOs,on
   </div></div>
   {(vendor.b2b_url||vendor.b2b_username||(vendor.catalog_files||[]).length>0)&&<VendorB2BPanel vendor={vendor}/>}
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
+  <VendorPriceLists key={vendor.id} vendor={vendor}/>
   <VendorPOTracking pos={vendorPOs} onOpenPO={onOpenPO} fmtCreatedAt={fmtCreatedAt}/></div>)}
 
 // ─── PHASE 4: PURCHASE ORDER TRACKING (per vendor) ───
