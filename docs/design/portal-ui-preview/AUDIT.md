@@ -6,7 +6,55 @@ This is an audit of the design prototype, not an application rollout. The runtim
 
 The earlier claim that 22 navigation areas were clickable described navigation coverage, not feature parity. Several areas had been reduced too far. The design is not ready to replace the full existing portal.
 
-## Corrections in this pass
+## October 11: page-by-page source comparison and preview pass
+
+The latest `main` was fetched read-only for this comparison: `738f91e73552aaffd6cdafdf5d94baad50fb5253`. Its runtime files match the earlier local comparison checkout. No runtime files were edited. Source review inventoried 1,405 UI label/header/action entries across the relevant files; that inventory guides the review, but is not a claim that every conditional state has been modeled.
+
+The prototype now separates navigation, record context, and operational views instead of sending every section through a generic five-column table and detail form. Every staff navigation page was opened and inspected visually. Priority record tabs were exercised separately. Wide tables reflow into labeled records at narrower widths; money values remain intact, and mobile receiving keeps its size inputs beside the quantities and status they affect. Secondary actions use an explicit More actions menu.
+
+| Preview page | Comparison source | Information/actions restored or retained |
+|---|---|---|
+| Dashboard | `App.js:rDash` | New-UI role selector, work queues, owner/source links, overdue context, business pulse, and workflow entry points retained. Values remain illustrative; complete role-specific dashboards remain a separate requirement. |
+| Messages | `App.js:rMsg` | Read/unread and department/thread controls, source reference, recipients, mentions, attachments, compose/reply, mark-read actions; independent sample conversations retained. |
+| AI Inbox | `AiInbox.js` | Sender/date, matched customer, intent/summary, original request, SKU/color/sizes, stock-match state, acknowledgement/error, proposed reply, ignore, draft-estimate/Gmail-draft and reviewed cart-command entry points. |
+| AI Tasks | `AiTasks.js` | Email requests distinguished from bot jobs; task/source IDs, customer, dates, status, acknowledgement, errors, instructions, cart/result context, and source-email links. The previous ordinary to-do list was the wrong model. |
+| Estimates | `App.js:rEst`, `OrderEditor.js` | Created/customer/memo/items/total/rep/status/SO/email; filters and sorting; quote lines with size/pricing/decoration detail, ledger, billing/delivery context, art/messages, send/schedule/approval/PDF, copy/delete/conversion controls. |
+| Sales Orders | `App.js:rSO` | Created, customer/memo/rep, expected date, total, art, receiving, unread/shipping, and independent overall status; filters and record actions. Other-account orders still open their own context. |
+| Invoices | `InvoicesPage.js` | Total/paid/balance, dates/age/due, rep/source, customer grouping, past-due actions, invoice lines, payment links, credit/split/void actions, cost variance and POs, PDF/packing-slip/send/SMS/follow-up controls. Drafts remain separate from collectible balances. |
+| Receive Payments | `ReceivePaymentsPage.js` | Received payment vs invoice allocation, unapplied vs other credits, date/method/reference/note, family scope, fill-oldest/clear, allocation history, manage/unapply, unapplied deletion, historical-payment entry points. |
+| OMG Stores | `App.js:rOMG` | Channel, customer, rep/CSR/artist, dates/status, ingestion, SKU/art/deco groups, parent orders, production packet, profit ledger, deposits, collected/remitted tax, filing/reversal and export entry points. This is no longer a copy of the webstore tabs. |
+| Webstores | `Webstores.js` | Store metadata and create/clone/launch/close; catalog variants/packages, cost/price/fundraising, live-stock/ETA fields, art/color-way/personalization controls, buyer orders/refunds/labels, reports/exports, batches, per-size sourcing/decoration stock, roster invitations, coupons, appearance/settings. |
+| Sales Tools | `App.js:rSalesTools` | Actual My Day, Quote Forms, Numbers List, Size Sorter, Quick Reorder, Deco Calculator, Mockup Helper, and Image Vectorizer workspaces; their inputs, source records, and actions replace the earlier invented generic tool list. |
+| Jobs | `App.js:rJobs`, `OrderEditor.js` | Existing rich List/Kanban and separate item/art/production statuses retained. Job size allocations are capped to demand even if the PO records an overage. |
+| Uniform Jobs | `uniform/UniformOrdersAdmin.js` | Queue/Board lanes, customer/contact/account and working/commission rep, quantity/total, payment and production separately, proof/approved version and lock, rep review, roster/downloads, tracking, and SO-conversion controls. Latest-proof lock gates are visible. |
+| Art Dashboard | `App.js:rArtist` | Order proof collections retained; additional artist request queue and production-file views expose assignment, request state, mock/file readiness, method/placement/size/color-way, versions, claim/edit/reject, file upload and rep-approval entry points. |
+| Production Board | `App.js:rProd2` | Rich job context and same data across List/Kanban retained, with separate art/goods/production readiness rather than one readiness badge. Live floor clocks/machine assignment and release permissions still require implementation review. |
+| Warehouse | `App.js:rWarehouse`, `BaggingStation.js` | Item Fulfillment, Scan to Receive, Ready for Deco, Ready to Ship, Deliver, Bagging Queue, Stock POs, My Tasks, and Recent Actions; rep/source/age/destination/stock coverage; assignment, short-pull, per-size receipt, overage review, boxes, carrier/weight/dimensions/cost, labels, delivery, task, and shortage-resolution entry points. |
+| Purchase Orders | `App.js:rPOs`, `rBatchPOs`, `OrderEditor.js` PO detail | Sales-order, batch, inventory, decoration, booking, and drop-ship distinctions; PO/vendor/customer/SO/rep/item, ordered/received/cancelled/open, created/expected, cost/source/batch, filters/sort/scan/new-stock-PO; size-ledger receiving, history, labels, tracking, editing/cancellation, vendor bills/freight/claims, email/PDF actions. |
+| Customers | `CustDetail.js`, `App.js:rCust` | Parent/subaccount context, tag, rep/CSR, tier/terms/tax/colors/search tags, balances; Orders, Jobs, Messages, Contacts, Overview, Stores, Promo/credits, Artwork, Catalog, Roster, Reporting, Invoices, Addresses; statement/email/payment/portal/copy/archive/delete actions. |
+| Vendors | `modals.js:VendDetail/VendorModal`, `App.js:rVend` | Type/provider, contact/rep/address, terms, owed, PO eligibility, inventory, automation/scan settings, catalog/B2B placeholders, scoped PO list, product catalog, API test/pricing-sync and edit actions. No real credentials are included. |
+| Team | `App.js:rTeam` | Directory, access management, onboarding, inactive members, role/status/email/phone, CSR assignment, page-access checkboxes, role defaults, invite/link/add-email/deactivate/reactivate controls. Production permissions are not changed. |
+| Reports | `App.js:rReports` | Sales/Customers/Production/Finance groups; all 14 report views, rep/customer/date controls, raw tables and export entry points alongside the proposed charts; pipeline, products, reps, stores, customer/CSR, production/decorator/time/labor, inventory/warehouse, receivables and tax fields. Sample report views do not reconcile to a live ledger. |
+| Settings | `App.js:rSettings` | Actual Company Info, Decoration, Financial, Customer Tiers, Lists & Options, Labor Rates, Coach Portal, Webstores, Uniform Builder/Patterns/Orders tabs; contact/terms/logo, price breaks/vendor routing, tax/payment/freight, bins/lists, rates/follow-ups/disclaimer, store/uniform fields and actions. |
+| Coach sections | `CoachPortal.js` | Home/rep/balance/review context; order sizes and receiving; customer-only invoice totals/lines/PDF/payment preview; roster invitations/opened/ordered; shop size/art/personalization/delivery choices and builder/cart entry points; spend/program periods and statements; continuous approval collection and account-scoped messages retained. Staff costs, jobs, and vendor threads stay out of the customer review. |
+
+### Priority procurement and warehouse checks
+
+- **Open quantity is per size:** ordered, received, cancelled, billed/shipped, open, and overage are individually readable. A cancelled quantity remains visible, and active receipt-box denominators exclude cancellations.
+- **Overages remain enterable:** a receipt can exceed the open ordered quantity. The preview names the overage in a review dialog, then records the receipt date, worker, bin, sizes, quantity, and notes. Job/coach fulfillment shows the units that cover demand; the PO preserves the actual larger receipt.
+- **Drop ship and service POs do not arrive at the warehouse:** they retain their destination/service context and bypass warehouse receipt entry. Billed direct-shipment quantities appear as shipped.
+- **Batch/source identity stays visible:** batch/vendor/customer/SO references and source-PO labels survive the combined view. Standalone inventory POs can be created without a sales order.
+- **Picking is different from receiving:** IF detail exposes per-size shelf stock, requested/pulled/still-needed/short, bin, destination, rep, and age. Short-close actions retain the order demand concept; they are not cancellation actions.
+- **Shipping is job-based:** finished-job identity, ready date, size contents, boxes, carrier/tracking, weight/dimensions, actual shipping cost vs customer charge, label/pickup and rep-notification controls are represented separately from receipt entry.
+
+### Validation and limits of this pass
+
+The browser walk passed 22 staff navigation pages and 217 tab/detail selections, plus the nine coach sections at desktop and phone widths. It exercised partial/overage receipt review/history, IF detail, shipping detail, bagging detail, all 14 report views, and mobile navigation. Staff layouts were checked at 1024, 736, 390, and 320 pixels; coach layouts at 1024, 390, and 320. The existing proof review, per-placement/shared changes, bulk reviewed approvals, lightbox navigation, revision isolation, and artwork attachment checks also passed.
+
+This pass restores design destinations for the principal fields/actions seen in the source. It is **not** a guarantee of exhaustive production parity. Advanced actions mostly open contextual sample dialogs; many filters and integrations are visual representations. This does not execute vendor ordering, live inventory changes, label purchase, messaging, payment posting, refunds, invitations, permissions, or server-side approvals. Actual row sets, access rules, calculation definitions, loading/failure states, multi-order/source allocations, destructive-action guards, and provider-specific dialogs still need validation when a production implementation is authorized. The application routes listed later in this audit remain outside this click-through's current navigation scope.
+
+
+## Earlier corrections
 
 1. **Wrong record context:** Other sales orders previously opened CCAA's sample editor. They now open their own contextual sample details, items, jobs, and billing records. CCAA remains the fully editable editor fixture. Customer-related records are filtered to the selected account, and records without attached sample art no longer show CCAA art.
 2. **Frozen financial ledger:** Item edits changed a line total but left the order ledger fixed. Decoration cost is now visible beside decoration sell price. The sample ledger, quantities, sales-order total, and related draft invoice update from the same sample item model. The initial sample remains $3,795.62 total and $2,001.24 cost. This calculation does not cover all of the application's costing cases.
@@ -23,7 +71,9 @@ The earlier claim that 22 navigation areas were clickable described navigation c
 
 Visual review captured all 22 staff navigation screens and separately inspected the order editor, order Jobs, job details, job Art, job Sizes / receiving, PO receiving, Tracking, and Kanban. Order/job layouts were checked at 1024, 736, 390, and 320 pixels. A partial-size receipt was verified across receiving, the order item, and job details. This remains a sample-data visual review; the remaining operational gaps below are still open.
 
-## Section-by-section findings still to resolve
+## Earlier findings and remaining production-validation requirements
+
+This table records the earlier audit baseline. The dated October 11 mapping above supersedes its descriptions of reduced visual coverage; the live policies and advanced edge cases listed here remain implementation checks.
 
 | Area | Important information/actions to retain | Audit status |
 |---|---|---|

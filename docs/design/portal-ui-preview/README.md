@@ -8,7 +8,9 @@ Open `index.html` in a browser to explore it. Fonts and the bundled preview runt
 
 ## Review paths
 
-- Start in the **SO-2877 order editor** to inspect the item status, art status, production status, receiving progress, PO/batch links, and colored per-size received/required boxes. They remain visible with extra details collapsed.
+- Start in **Purchase Orders** for the procurement and warehouse pass. Use All POs and source/vendor/rep filters; inspect a regular PO, INVPO-1007 (booking inventory), DPO-8001 (service), or PO-60660 (drop ship). The Receiving tab shows the complete size ledger and receipt-review/history flow.
+- In **Warehouse**, explore Item Fulfillment, Scan to Receive, Ready for Deco, Ready to Ship, Deliver, Bagging Queue, Stock POs, My Tasks, and Recent Actions.
+- Open the **SO-2877 order editor** to inspect the item status, art status, production status, receiving progress, PO/batch links, and colored per-size received/required boxes. They remain visible with extra details collapsed.
 - Navigate to **Art Dashboard** and open **Fall Gear** to review the staff proof collection.
 - Choose **Preview coach portal** or **Coach view** for the customer experience. The coach sees one order collection, with a continuous garment and placement strip, an enlarged gallery, and one art conversation.
 - Approve a placement and advance, or inspect multiple placements and approve the reviewed placements together.
@@ -26,6 +28,12 @@ The global Jobs screen uses the same rich List/Kanban layout. Job details retain
 The list preserves the current production UI's core information: job identity, artwork, decoration method and position, garment count, received/total units, items status, art status, production status, and job actions. Garment subrows keep SKU, name, color, and received/expected quantities for every size visible. The richer Kanban cards display these same fields, plus artist, need-by, PO context, and notes. Split, count, outside-decoration, and tracking context can also appear when present.
 
 Both layouts are local sample views. Updating a preview production stage is reflected in both; the sample blocks production progression until art is complete and goods are received. Production implementation must use the existing live allocation, mock checks, permissions, and workflow gates rather than the sample model.
+
+## Detailed page pass
+
+The rest of the click-through now has section-specific fields and action entry points based on the current runtime code: estimates/orders, invoices/payments, customer/vendor/team records, AI email requests and bot jobs, real sales tools, uniform Queue/Board and proof-lock states, OMG financial/tax operations, webstore catalog/order/sourcing/roster/coupon tabs, all 14 reporting views, and the actual settings tabs. Coach orders, billing/invoice details, roster invitations, shop choices, and spend statements were expanded too. Read the dated page-by-page map in AUDIT.md for the source references and remaining production-validation requirements.
+
+Advanced actions usually open contextual sample dialogs. Many filters are visual controls; this is still a design click-through, not a working application. The browser walk checked 22 staff pages, 217 tab/detail selections, and the nine coach sections at desktop/mobile widths. Procurement checks include overage receipt/history, inventory/booking/service/drop-ship distinctions, and capped job fulfillment.
 
 ## Proposed approval model
 
