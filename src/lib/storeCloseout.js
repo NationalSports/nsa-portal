@@ -5,3 +5,9 @@ export function storeCommissionReady(invoice, so) {
   const store = isStoreSalesOrder(so) || /^(omg|webstore):/.test(invoice?.idempotency_key || '');
   return !store || isStoreFinanciallyClosed(so);
 }
+
+// Frozen at closeout from the Accounting Report; WEB card costs are handled separately.
+export function omgCloseoutPlatformCost(so) {
+  if (!so?.omg_store_id) return 0;
+  return Math.max(0, Number(so.store_closeout_platform_cost ?? ((Number(so._omg_omg_fees)||0)+(Number(so._omg_cc_fees)||0))) || 0);
+}

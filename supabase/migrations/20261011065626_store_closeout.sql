@@ -3,7 +3,8 @@
 alter table public.sales_orders
   add column if not exists store_closed_at timestamptz,
   add column if not exists store_costs_recorded_at timestamptz,
-  add column if not exists store_closed_by text;
+  add column if not exists store_closed_by text,
+  add column if not exists store_closeout_platform_cost numeric;
 
 create or replace function public.finalize_webstore_batch(
   p_so_id text,
@@ -321,6 +322,9 @@ returns jsonb language plpgsql security invoker set search_path='' as $$
 declare
   s public.sales_orders%rowtype;
   i public.invoices%rowtype;
+  v_omg public.omg_stores%rowtype;
+  v_platform_cost numeric := 0;
+  v_saved_total numeric;
   v_count integer; v_num bigint; v_funds numeric; v_paid numeric; v_apply numeric;
   v_ref text; v_ids uuid[]; v_result jsonb; v_lines jsonb; v_total numeric;
 begin
@@ -395,9 +399,21 @@ begin
     select * into i from public.invoices where id=v_result->>'invoice_id';
     if i.total is distinct from (v_result->>'invoice_total')::numeric then raise exception 'Existing invoice differs from store totals. Reconcile before closing.'; end if;
   else
-    select greatest(coalesce(nullif(s._omg_acct_collected,0),o._omg_acct_collected,0),0),
-      'OMG ' || coalesce(nullif(o._omg_sale_code,''),replace(s.omg_store_id,'OMG-sale_',''))
-      into v_funds,v_ref from public.omg_stores o where o.id=s.omg_store_id;
+    select * into v_omg from public.omg_stores where id=s.omg_store_id for update;
+    v_funds := greatest(coalesce(v_omg._omg_acct_collected,0),0);
+    v_ref := 'OMG ' || coalesce(nullif(v_omg._omg_sale_code,''),replace(s.omg_store_id,'OMG-sale_',''));
+    if coalesce(v_omg._omg_grand_total,0)<=0 or abs(v_funds-v_omg._omg_grand_total)>=1 then
+      raise exception 'OMG Dollar and Accounting Reports must reconcile before closeout';
+    end if;
+    if abs(coalesce(s._omg_acct_collected,0)-v_funds)>0.005
+      or abs(coalesce(s._omg_omg_fees,0)-coalesce(v_omg._omg_omg_fees,0))>0.005
+      or abs(coalesce(s._omg_cc_fees,0)-coalesce(v_omg._omg_cc_fees,0))>0.005 then
+      raise exception 'OMG report changed since SO creation. Reconcile SO collections and fees before closeout';
+    end if;
+    v_platform_cost := coalesce(v_omg._omg_omg_fees,0)+coalesce(v_omg._omg_cc_fees,0)+coalesce(v_omg._omg_invoiced_fees,0);
+    if v_platform_cost<0 or coalesce(v_omg._omg_omg_fees,0)<0 or coalesce(v_omg._omg_cc_fees,0)<0 or coalesce(v_omg._omg_invoiced_fees,0)<0 then
+      raise exception 'OMG platform costs must be nonnegative';
+    end if;
     if v_funds is null or v_funds<=0 then raise exception 'Enter and verify the OMG Accounting Report collections before closeout.'; end if;
     if i.id is null then
       if exists(select 1 from public.invoices where idempotency_key='omg:'||s.omg_store_id or so_id=s.id) then
@@ -410,6 +426,18 @@ begin
       select round(sum((l->>'amount')::numeric)+coalesce((p_invoice->>'shipping')::numeric,0),2)
         into v_total from jsonb_array_elements(v_lines) l;
       if v_total is null or v_total<=0 or v_total is distinct from (p_invoice->>'total')::numeric then raise exception 'Store pricing does not reconcile'; end if;
+      -- Standard OMG ingest stores the complete retail sell on each SO item;
+      -- decorations arrive at zero sell. Never accept arbitrary browser totals.
+      select round(sum(coalesce(it.unit_sell,0)*q.qty),2) into v_saved_total
+      from public.so_items it cross join lateral(select case when coalesce(sum(v.value::numeric),0)>0 then sum(v.value::numeric) else greatest(coalesce(it.est_qty,0),0) end qty from jsonb_each_text(coalesce(it.sizes,'{}')) v) q
+      where it.so_id=s.id;
+      v_saved_total := round(v_saved_total + case when s.shipping_type='pct' then round(v_saved_total*coalesce(s.shipping_value,0)/100,2) else coalesce(s.shipping_value,0) end,2);
+      if v_saved_total is null or abs(v_total-v_saved_total)>0.005 then
+        raise exception 'OMG draft differs from saved order pricing. Reconcile custom prices before closeout';
+      end if;
+      if exists(select 1 from jsonb_array_elements(v_lines) l where coalesce((l->>'qty')::numeric,0)<=0 or coalesce((l->>'rate')::numeric,-1)<0 or abs(coalesce((l->>'amount')::numeric,0)-(l->>'qty')::numeric*(l->>'rate')::numeric)>0.005) then
+        raise exception 'OMG invoice line quantities and prices do not reconcile';
+      end if;
       perform pg_advisory_xact_lock(hashtext('nsa_invoices_id_mint'));
       select greatest(coalesce(max((regexp_match(id,'(\d+)'))[1]::bigint),0),1000)+1 into v_num from public.invoices;
       insert into public.invoices(id,customer_id,so_id,idempotency_key,type,inv_type,date,due_date,total,paid,status,memo,tax,tax_rate,tax_exempt,shipping,line_items,created_at,updated_at)
@@ -421,6 +449,8 @@ begin
     v_funds := least(v_funds,i.total);
   end if;
   if i.id is null or i.so_id is distinct from s.id or i.customer_id is distinct from s.customer_id then raise exception 'Existing accounting needs review before closeout'; end if;
+  -- Different SO/store IDs can still refer to the same platform sale code.
+  perform pg_advisory_xact_lock(hashtext('store-funds:'||v_ref));
   select coalesce(sum(amount),0) into v_paid from public.invoice_payments where invoice_id=i.id;
   if abs(v_paid-coalesce(i.paid,0))>0.005 then raise exception 'Invoice paid total and payment ledger differ. Reconcile before closeout.'; end if;
   -- Any existing application counts toward the invoice balance. A store-ref row
@@ -439,7 +469,7 @@ begin
   end if;
   update public.invoices set paid=v_paid,status=case when v_paid>=total-0.005 then 'paid' when v_paid>0 then 'partial' else 'open' end,updated_at=now()
     where id=i.id returning * into i;
-  update public.sales_orders set store_closed_at=now(),store_costs_recorded_at=now(),store_closed_by=p_actor_id,status='complete'
+  update public.sales_orders set store_closed_at=now(),store_costs_recorded_at=now(),store_closed_by=p_actor_id,store_closeout_platform_cost=v_platform_cost,status='complete'
     where id=s.id returning * into s;
   update public.assigned_todos set status='completed',completed_at=now(),completed_by=p_actor_id,
     completion_note='Store closed; costs confirmed and payments reconciled.',updated_at=now() where id='store-closeout:'||s.id;
@@ -454,8 +484,8 @@ grant execute on function public.close_store(text,bigint,text,boolean,boolean,js
 create function public.guard_store_closeout() returns trigger language plpgsql security invoker set search_path='' as $$
 begin
   if tg_table_name='sales_orders' then
-    if (tg_op='INSERT' and (new.store_closed_at is not null or new.store_costs_recorded_at is not null or new.store_closed_by is not null))
-      or (tg_op='UPDATE' and (new.store_closed_at,new.store_costs_recorded_at,new.store_closed_by) is distinct from (old.store_closed_at,old.store_costs_recorded_at,old.store_closed_by)) then
+    if (tg_op='INSERT' and (new.store_closed_at is not null or new.store_costs_recorded_at is not null or new.store_closed_by is not null or new.store_closeout_platform_cost is not null))
+      or (tg_op='UPDATE' and (new.store_closed_at,new.store_costs_recorded_at,new.store_closed_by,new.store_closeout_platform_cost) is distinct from (old.store_closed_at,old.store_costs_recorded_at,old.store_closed_by,old.store_closeout_platform_cost)) then
       if current_user<>'service_role' or current_setting('nsa.close_store',true) is distinct from new.id then raise exception 'Use Close Store to confirm costs and shipment'; end if;
     end if;
   elsif tg_table_name='invoices' then

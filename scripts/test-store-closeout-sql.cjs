@@ -12,10 +12,10 @@ create table team_members(id text primary key,is_active boolean);insert into tea
 create table customers(id text primary key,payment_terms text,primary_rep_id text);insert into customers values('C','net30','rep');
 create table sales_orders(id text primary key,customer_id text,source text,webstore_id uuid,omg_store_id text,deleted_at timestamptz,
   _version bigint default 1,created_at text default '2026-09-01',created_by text default 'rep',rep_id text,memo text,status text default 'need_order',deco_pos jsonb default '[]',
-  _omg_processing numeric,_omg_tax numeric,_omg_shipping numeric,_omg_cc_fees numeric,_webstore_fundraise numeric,_omg_acct_collected numeric);
+  shipping_type text default 'flat',shipping_value numeric default 0,_omg_omg_fees numeric default 0,_omg_processing numeric,_omg_tax numeric,_omg_shipping numeric,_omg_cc_fees numeric,_webstore_fundraise numeric,_omg_acct_collected numeric default 100);
 create function increment_version() returns trigger language plpgsql as $$begin new._version=old._version+1;return new;end$$;
 create trigger trg_sales_orders_version before update on sales_orders for each row execute function increment_version();
-create table omg_stores(id text primary key,_omg_acct_collected numeric,_omg_sale_code text);
+create table omg_stores(id text primary key,_omg_acct_collected numeric,_omg_sale_code text,_omg_grand_total numeric default 100,_omg_omg_fees numeric default 0,_omg_cc_fees numeric default 0,_omg_invoiced_fees numeric default 0);
 create table webstore_orders(id uuid primary key,store_id uuid,so_id text,backorder_of uuid,status text,payment_mode text,original_total numeric,total numeric,refunded_amt numeric,
   subtotal numeric,fundraise_amt numeric,discount_amt numeric,tax numeric,processing_fee numeric,shipping_fee numeric,cc_fee numeric);
 create table so_items(id serial primary key,so_id text,item_index int,sku text,name text,color text,unit_sell numeric,est_qty numeric,sizes jsonb);
@@ -87,6 +87,7 @@ await assert.rejects(db.exec("insert into commission_snapshots values('O','bad')
 await db.exec("insert into payment_receipts(id,customer_id,amount) values('R','C',100)");
 await assert.rejects(close('O'),/unapplied or held/);
 await db.exec("delete from payment_receipts where id='R'");
+await db.exec("insert into so_items(so_id,item_index,unit_sell,est_qty,sizes) values('O',0,50,2,'{\"M\":2}')");
 r=await close('O');assert.equal(r.payments.length,1);assert.equal(Number(r.invoice.paid),100);assert.equal(r.payments[0].ref,'OMG O');
 await close('O');assert.equal((await db.query("select count(*)::int n from invoice_payments where ref='OMG O'")).rows[0].n,1);
 await db.exec("insert into commission_snapshots values('O','ok')");
@@ -131,6 +132,19 @@ await assert.rejects(db.exec("insert into commission_snapshots values('PART','PA
 await db.exec("delete from invoice_payments where ref='WEB COLLISION';update webstore_orders set refunded_amt=50 where so_id='COLLISION'");
 await assert.rejects(close('COLLISION'),/Refunded or cancelled/);
 assert.equal((await db.query("select count(*)::int n from invoices where so_id='COLLISION'")).rows[0].n,0);
+// Adversarial OMG drafts/reports must fail atomically, even with a valid staff actor.
+await db.exec("insert into omg_stores(id,_omg_acct_collected,_omg_sale_code,_omg_omg_fees,_omg_cc_fees,_omg_invoiced_fees) values('OMG-ADV',100,'ADV',9,3,2);insert into sales_orders(id,customer_id,omg_store_id,_omg_omg_fees,_omg_cc_fees) values('ADV','C','OMG-ADV',9,3);insert into so_items(so_id,item_index,unit_sell,est_qty,sizes) values('ADV',0,50,2,'{\"M\":2}')");
+const valid={total:100,shipping:0,line_items:[{desc:'Shirts',qty:2,rate:50,amount:100}]};
+await assert.rejects(close('ADV',null,true,true,{total:1,shipping:0,line_items:[{qty:1,rate:1,amount:1}]}),/saved order pricing/);
+await assert.rejects(close('ADV',null,true,true,{total:100,shipping:0,line_items:[{qty:2,rate:1,amount:100}]}),/line quantities and prices/);
+await db.exec("update omg_stores set _omg_acct_collected=101 where id='OMG-ADV'");
+await assert.rejects(close('ADV',null,true,true,valid),/Reports must reconcile/);
+await db.exec("update omg_stores set _omg_acct_collected=100,_omg_cc_fees=4 where id='OMG-ADV'");
+await assert.rejects(close('ADV',null,true,true,valid),/report changed/);
+assert.equal((await db.query("select count(*)::int n from invoices where so_id='ADV'")).rows[0].n,0);
+await db.exec("update omg_stores set _omg_cc_fees=3 where id='OMG-ADV'");
+r=await close('ADV',null,true,true,valid);assert.equal(Number(r.sales_order.store_closeout_platform_cost),14);
+assert.equal(Number(r.invoice.paid),100,'platform fees must not reduce gross payment application');
 await db.exec('set role authenticated');await assert.rejects(close('D'),/permission denied/);
 await assert.rejects(db.exec("update sales_orders set store_closed_at=now() where id='D'"),/Use Close Store/);
 console.log('Passed: deferred accounting, due date, unfinished jobs, stale version, cost/shipment confirmation, atomic close, repeated close/batch, legacy reuse, duplicate invoices, unapplied receipts, permissions and commission gate.');

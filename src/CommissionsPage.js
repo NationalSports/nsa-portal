@@ -1,3 +1,4 @@
+import { omgCloseoutPlatformCost } from './lib/storeCloseout';
 import { decoPoEditTotals } from './lib/decoPoEdit';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -248,7 +249,9 @@ export default function CommissionsPage({adminReports=false}={}){
         if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
         if(storeShipRev)dtl.push({kind:'bucket',label:'Webstore shipping charged at checkout',rev:storeShipRev,cost:0});
       }
-      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost;
+      const omgPlatformCost=omgCloseoutPlatformCost(so);
+      if(dtl&&omgPlatformCost)dtl.push({kind:'bucket',label:'OMG platform and card fees',rev:0,cost:omgPlatformCost});
+      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost+omgPlatformCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
