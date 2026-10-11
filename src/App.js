@@ -101,6 +101,7 @@ import { canReceivePayments } from './lib/receivePaymentsAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
+import { shouldAutoCloseInvoicedSO } from './lib/prepaidStoreFulfillment';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
@@ -7542,10 +7543,11 @@ export default function App(){
   // billing. When the order is ALREADY fully billed (every line's qty covered by non-void
   // invoices — the same buildInvoicedQtyMap test that gates OrderEditor's "Close Sales
   // Order" button), leaving it there is a stale prompt that invites double-invoicing
-  // (SO-1149 / SO-1288, Aug 2026). So the moment production finishes or the last job
-  // ships on a fully-invoiced order, persist status='complete'. Deliberately never fires
-  // on under-invoiced orders — those must stay visible in the invoicing funnel, and
-  // orders whose invoices are later deleted are reverted by the delete handler, not here.
+  // (SO-1149 / SO-1288, Aug 2026). Native webstore invoices are paid at checkout, so
+  // invoice coverage cannot close those orders: they stay in the fulfillment workflow
+  // until calcSOStatus observes shipment/delivery. Deliberately never fires on
+  // under-invoiced orders — those must stay visible in the invoicing funnel, and orders
+  // whose invoices are later deleted are reverted by the delete handler, not here.
   const _autoClosedSOs=React.useRef(new Set());
   React.useEffect(()=>{
     if(dbLoading)return;
@@ -7561,7 +7563,7 @@ export default function App(){
         const qty=_szTot>0?_szTot:safeNum(it.est_qty);
         return qty-(invMap.get(soLineKey(it,idx))||0)>0;
       });
-      if(hasRemaining)return;
+      if(!shouldAutoCloseInvoicedSO(so,{status:st,hasInvoices:soInvs.length>0,hasRemainingQty:hasRemaining}))return;
       _autoClosedSOs.current.add(so.id);
       savSO({...so,status:'complete',updated_at:new Date().toLocaleString()});
       logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');

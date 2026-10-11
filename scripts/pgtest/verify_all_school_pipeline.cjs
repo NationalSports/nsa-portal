@@ -5,6 +5,8 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('node:assert/strict');
+const { snapshot } = require('./pipeline_snapshot.cjs');
+const snapshots = [];
 const { PGlite } = require('@electric-sql/pglite');
 
 const root = path.resolve(__dirname, '../..');
@@ -37,7 +39,8 @@ const near = (actual, expected, label) => assert.ok(
       alter table webstore_orders add column order_source text, add column tax numeric default 0,
         add column shipping_fee numeric default 0, add column processing_fee numeric default 0,
         add column cc_fee numeric default 0, add column stripe_pi_id text,
-        add column tax_state text, add column tax_rate numeric, add column payment_mode text;
+        add column tax_state text, add column tax_rate numeric, add column payment_mode text, add column shipped_at timestamptz;
+      alter table webstore_order_items add column shipped_qty integer default 0;
       alter table webstore_products add column image_url text;
       alter table webstore_products add column sku text, add column display_name text,
         add column available_sizes jsonb default '[]';
@@ -95,6 +98,7 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/00237_pull_house_inventory.sql'));
     await db.exec(read('supabase/migrations/00192_job_stage_machine.sql'));
     await db.exec(read('supabase/migrations/00205_release_gate.sql'));
+    await db.exec(read('supabase/migrations/00220_teamshop_stage_guard.sql'));
     // The sequential-ID migration intentionally validates every converter.
     // Three unrelated converters are signature-compatible scratch stubs; the
     // tested All School converter remains the production migration definition.
@@ -121,7 +125,9 @@ const near = (actual, expected, label) => assert.ok(
     `);
     await db.exec(read('supabase/migrations/20261008193918_keep_sales_order_ids_sequential.sql'));
     await db.exec(read('supabase/migrations/20261009054131_all_school_checkout_accounting.sql'));
-    console.log('PASS current All School foundation, conversion, DTF, purchasing, inventory-cost, pull, release, sequential-ID, and checkout-accounting migrations apply');
+    await db.exec(read('supabase/migrations/20261011064155_club_verified_transfer_pull.sql'));
+    await db.exec(read('supabase/migrations/20261011063832_at_once_fulfillment_completion.sql'));
+    console.log('PASS current All School foundation, conversion, DTF, purchasing, inventory-cost, pull, release, sequential-ID, checkout-accounting, and verified material-release migrations apply');
 
     // A paid fake web checkout, with two garment units and a DTF transfer that
     // is initially out of stock. Payment and checkout are represented by the
@@ -130,8 +136,7 @@ const near = (actual, expected, label) => assert.ok(
     const recipe = {
       webstore_product_id: '20000000-0000-0000-0000-000000000001',
       product_id: 'GARMENT', sku: 'PC61', color: 'Navy',
-      decorations: [{ art_id: 'crest', type: 'dtf', placement: 'full_front',
-        art_url: 'https://example.invalid/crest.png' }],
+      decorations: [], // One stocked transfer design, not an additional custom-art job.
       transfer_codes: ['SCHOOL-CREST'],
       transfer_inventory: [{ code: 'SCHOOL-CREST', label: 'School crest',
         decoration_type: 'dtf', application_method: 'heat_press', width_in: 4,
@@ -170,6 +175,7 @@ const near = (actual, expected, label) => assert.ok(
     assert.equal((await db.query('select status from webstore_orders where id=$1',[oid])).rows[0].status,'batched');
     console.log('PASS fake paid checkout converts once to SO + paid invoice/payment; no manual invoice step');
 
+    snapshots.push(await snapshot(db,conversion.so_id,'converted','need_order',60));
     const job = (await db.query('select id,so_id from so_jobs where so_id=$1',[conversion.so_id])).rows[0];
     const soItem = (await db.query('select id,sizes,source_webstore_item_ids from so_items where so_id=$1',[conversion.so_id])).rows[0];
     const readiness = async () => (await db.query(
@@ -178,7 +184,14 @@ const near = (actual, expected, label) => assert.ok(
     const short = (await db.query('select reserve_all_school_decorations($1) result',[oid])).rows[0].result;
     assert.equal(short.short_qty,2);
     assert.equal((await readiness()).reason,'decoration_not_physically_consumed');
-    console.log('PASS transfer allocation records shortage and keeps production blocked');
+    // Even a caller claiming art and garment readiness cannot release via the
+    // stage RPC while transfer allocations remain merely reserved. Override is
+    // also subject to physical All School material readiness.
+    await db.query("update so_jobs set art_status='art_complete',item_status='received' where so_id=$1 and id=$2",[job.so_id,job.id]);
+    await assert.rejects(() => db.query(`select advance_job_stage(
+      p_so_id=>$1,p_job_id=>$2,p_event=>'release',p_actor=>'pgtest',p_override=>true,p_reason=>'test')`,
+      [job.so_id,job.id]), /NSA_ALL_SCHOOL_MATERIALS_NOT_READY/);
+    console.log('PASS transfer allocation records shortage and keeps SQL production release blocked, including override');
 
     // The garment is also short on warehouse stock. The production PO engine
     // places the two-unit backorder in its own PO; supplier submission is
@@ -201,6 +214,7 @@ const near = (actual, expected, label) => assert.ok(
     const recorded = (await db.query(`select record_all_school_po_submission($1,$2,$3,$4,$5,$6) result`,
       [plan.purchase_order.id,token,'submitted','FAKE-SUPPLIER-PO',null,[]])).rows[0].result;
     assert.ok(recorded);
+    snapshots.push(await snapshot(db,job.so_id,'purchase ordered','waiting_receive',60));
     console.log('PASS garment shortage creates a dedicated All School PO and guarded synthetic submission record');
 
     // Warehouse inventory replenishment is a separate inventory PO lane. A
@@ -213,10 +227,13 @@ const near = (actual, expected, label) => assert.ok(
     const poLine = (await db.query('select id from purchase_order_lines where po_id=$1',[inventoryPo.id])).rows[0].id;
     await db.query('select receive_store_inventory_po($1,$2,$3,$4)',[poLine,receiptRequest,2,5]);
     assert.equal((await db.query("select quantity from product_inventory where product_id='GARMENT' and size='M'")).rows[0].quantity,2);
+    const pendingPick='a0000000-0000-0000-0000-000000000001';
+    await db.query(`insert into so_item_pick_lines(pick_id,so_item_id,sizes,status) values($1,$2,'{"M":2}','pick')`,[pendingPick,soItem.id]);
+    snapshots.push(await snapshot(db,job.so_id,'pick assigned','needs_pull',60));
     const pickId = 'a0000000-0000-0000-0000-000000000001';
     await db.query('select pull_store_inventory($1)',[[{so_id:job.so_id,product_id:'GARMENT',size:'M',qty:2,pick_id:pickId,source_item_ids:soItem.source_webstore_item_ids}]]);
-    await db.query(`insert into so_item_pick_lines(pick_id,so_item_id,sizes,status)
-      values($1,$2,'{"M":2}','pulled')`,[pickId,soItem.id]);
+    await db.query(`update so_item_pick_lines set status='pulled' where pick_id=$1 and so_item_id=$2`,[pickId,soItem.id]);
+    snapshots.push(await snapshot(db,job.so_id,'garments pulled; DTF waiting','items_received',60));
     assert.equal((await db.query("select quantity from product_inventory where product_id='GARMENT' and size='M'")).rows[0].quantity,0);
     const pickSnapshot=(await db.query("select qty,unit_cost,stock_pulled from store_inventory_cost_snapshots where source_key like 'pick:%'")).rows[0];
     assert.equal(pickSnapshot.qty,2);near(pickSnapshot.unit_cost,5,'picked garment receipt cost');assert.equal(pickSnapshot.stock_pulled,true);
@@ -251,13 +268,51 @@ const near = (actual, expected, label) => assert.ok(
       p_so_id=>$1,p_job_id=>$2,p_event=>'release',p_actor=>'pgtest') result`,[job.so_id,job.id])).rows[0].result;
     assert.equal(released.ok,true);
     assert.equal((await db.query('select prod_status from so_jobs where so_id=$1 and id=$2',[job.so_id,job.id])).rows[0].prod_status,'staging');
+    snapshots.push(await snapshot(db,job.so_id,'released','in_production',60));
     await db.query("select advance_job_stage($1,$2,'start_run','pgtest')",[job.so_id,job.id]);
     await db.query("select advance_job_stage($1,$2,'decorated','pgtest')",[job.so_id,job.id]);
     await db.query("select advance_job_stage($1,$2,'packed','pgtest')",[job.so_id,job.id]);
     assert.equal((await db.query('select prod_status from so_jobs where so_id=$1 and id=$2',[job.so_id,job.id])).rows[0].prod_status,'completed');
     console.log('PASS job release is gated by art/material readiness and completes through staging, run, decorate, pack');
+    snapshots.push(await snapshot(db,job.so_id,'packed, not shipped','ready_to_invoice',60));
+    assert.notEqual((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    // Simulate verified source-line shipment reconciliation, not a status drag.
+    await db.query('update webstore_order_items set shipped_qty=1 where id=$1',[itemId]);
+    await db.query('update webstore_orders set shipped_at=now() where id=$1',[oid]);
+    assert.notEqual((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    snapshots.push(await snapshot(db,job.so_id,'partial shipment','ready_to_invoice',60));
+    await db.query('update webstore_order_items set shipped_qty=2 where id=$1',[itemId]);
+    await db.query('update webstore_orders set shipped_at=now() where id=$1',[oid]);
+    assert.equal((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    snapshots.push(await snapshot(db,job.so_id,'fully shipped','complete',60));
+    assert.equal((await db.query('select count(*)::int n from invoices where so_id=$1',[job.so_id])).rows[0].n,1);
+    console.log('PASS partial shipment stays open; final source quantity closes server-side without another invoice or manual advancement');
+    // A void removes fulfillment proof; only this trigger's own completion is
+    // reopened. A replacement shipment closes again without another invoice.
+    await db.query('update webstore_order_items set shipped_qty=0 where id=$1',[itemId]);
+    await db.query('update webstore_orders set shipped_at=null where id=$1',[oid]);
+    assert.notEqual((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    snapshots.push(await snapshot(db,job.so_id,'shipment voided','ready_to_invoice',60));
+    // Also prove out-of-order delivery: shipment reconciliation can arrive
+    // before the production completion event, without prematurely closing.
+    await db.query("update so_jobs set prod_status='in_process' where so_id=$1 and id=$2",[job.so_id,job.id]);
+    await db.query('update webstore_order_items set shipped_qty=2 where id=$1',[itemId]);
+    await db.query('update webstore_orders set shipped_at=now() where id=$1',[oid]);
+    assert.notEqual((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    snapshots.push(await snapshot(db,job.so_id,'shipment before production completion','in_production',60));
+    await db.query("select advance_job_stage($1,$2,'decorated','pgtest')",[job.so_id,job.id]);
+    assert.equal((await db.query('select status from sales_orders where id=$1',[job.so_id])).rows[0].status,'complete');
+    snapshots.push(await snapshot(db,job.so_id,'production completion after shipment','complete',60));
+    assert.equal((await db.query('select count(*)::int n from invoices where so_id=$1',[job.so_id])).rows[0].n,1);
+    console.log('PASS shipment void reopens; production/shipment events reconcile in either order without duplicate invoice');
+    if(process.env.AT_ONCE_SNAPSHOT_FILE) fs.writeFileSync(process.env.AT_ONCE_SNAPSHOT_FILE,JSON.stringify(snapshots,null,2));
   } finally {
-    await db.close();
+    try {
+      // This handle was constructed in-memory above and cannot point at a hosted DB.
+      await db.exec('drop schema public cascade; create schema public;');
+      assert.equal((await db.query("select count(*)::int n from information_schema.tables where table_schema='public'")).rows[0].n,0);
+      console.log('PASS wipe cleanup: disposable public schema removed, zero fixture tables remain');
+    } finally { await db.close(); }
   }
 })().catch(error => {
   console.error(error);

@@ -30,6 +30,11 @@ jobs:
         env:
           CI: true
 
+      - name: At-Once / 24-7 fake-order lifecycle and dashboard reconciliation
+        run: |
+          npm install --prefix "$RUNNER_TEMP/at-once-db" --no-audit --no-fund @electric-sql/pglite@0.3.14
+          NODE_PATH="$RUNNER_TEMP/at-once-db/node_modules" node scripts/pgtest/verify_at_once_flow.cjs
+
       - name: Payable snapshot reliability tests
         run: node --test tests/qbo-payable-snapshot.test.cjs tests/qbo-payable-canary.test.cjs tests/qbo-payable-po-canary.test.cjs tests/qbo-payable-po-canary-handler.test.cjs
 

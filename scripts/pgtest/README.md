@@ -59,3 +59,31 @@ The concurrency property (second buyer blocks on the per-(product,size) advisory
 lock until the first commits, then correctly reads the committed holds) was
 verified with two racing sessions; it needs two live connections, so it isn't in
 the scripted scenarios — see the PR that introduced 00171 for the transcript.
+
+## At-Once / 24/7 fake-order proof
+
+`verify_at_once_flow.cjs` runs disposable Club and All School PGlite scenarios,
+checks atomic automatic pick-task assignment, then passes their hydrated orders into the actual React order-status, value,
+and dashboard calculations. Install `@electric-sql/pglite@0.3.14` in a scratch
+prefix and expose its `node_modules` through `NODE_PATH`; run this script from
+the repository root with the normal project dependencies installed.
+
+The scenarios cover paid conversion and replay, purchasing/receiving,
+garment picking, transfer inventory, production, partial/full dispatch, and
+completion without a second invoice. Club supplier purchasing remains a
+review queue by design; neither garment nor DTF supplier POs are automatically
+created for Club orders. The scheduled pick worker queues available stock without
+a manual Send to Warehouse step, while physical pull confirmation stays required.
+All School also covers shipment void/reopening and reversed event arrival.
+
+These tests use synthetic payment and physical-work confirmations. They do
+not contact Stripe, suppliers, ShipStation, or a hosted database. The All
+School scenario exercises dedicated garment procurement and inventory
+replenishment as distinct lanes. A physical pick/receipt/production/dispatch
+confirmation remains necessary; paying an order cannot manufacture stock or
+prove shipment. Deployment settings still control scheduled automation.
+
+Each database is created in memory. Fixture cleanup runs in `finally`; the
+Club transaction rolls back and the All School disposable schema is removed.
+The combined runner removes its exported snapshot directory on success and
+failure. No fake orders are inserted into production or the shared preview.

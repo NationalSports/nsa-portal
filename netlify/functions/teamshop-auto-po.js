@@ -615,9 +615,18 @@ function dtfBatchDecision({ pendingNeeds, setting, now }) {
 // SO ids born from a teamshop/club webstore order — the auto-PO engine's scope.
 async function teamshopClubSoIds(admin) {
   const res = await admin.from('webstore_orders')
-    .select('so_id, order_source').in('order_source', ['teamshop', 'club']).not('so_id', 'is', null).limit(5000);
+    .select('so_id, webstores!inner(org_type)').in('webstores.org_type', ['teamshop', 'club']).not('so_id', 'is', null).limit(5000);
   if (res.error) throw res.error;
   return [...new Set((res.data || []).map((r) => r.so_id).filter(Boolean))];
+}
+
+// Club transfer needs remain visible in the shared ledger for review, but
+// automatic DTF ordering is authorized for Team Shop sources only.
+async function teamshopSoIds(admin) {
+  const res = await admin.from('webstore_orders')
+    .select('so_id, webstores!inner(org_type)').eq('webstores.org_type', 'teamshop').not('so_id', 'is', null).limit(5000);
+  if (res.error) throw res.error;
+  return new Set((res.data || []).map((r) => r.so_id).filter(Boolean));
 }
 
 // Record a pending DTF print need per active DTF job that has none yet (idempotent
@@ -688,14 +697,27 @@ async function sweepDtf(admin, actor) {
   const rec = await recordDtfNeeds(admin);
   if (rec && rec.enabled === false) return { ok: true, enabled: false, batched: false, note: 'DTF needs table (00211) not applied' };
 
+  // Resolve the authorized purchasing population before the bounded needs scan,
+  // otherwise Club-only rows could fill the first page and starve Team Shop jobs.
+  let eligibleSoIds;
+  try { eligibleSoIds = await teamshopSoIds(admin); }
+  catch (e) { return { ok: false, error: 'Unable to verify DTF source eligibility: ' + (e.message || String(e)) }; }
+  if (!eligibleSoIds.size) return { ok: true, batched: false, reason: 'no_pending', totalQty: 0, pending: 0, recorded: rec.recorded || 0 };
+
   const pendRes = await admin.from('teamshop_dtf_print_needs')
-    .select('id, so_id, job_id, qty, created_at').eq('status', 'pending').is('dismissed_at', null).limit(5000);
+    .select('id, so_id, job_id, qty, created_at').eq('status', 'pending').is('dismissed_at', null)
+    .in('so_id', [...eligibleSoIds]).limit(5000);
   if (pendRes.error) {
     if (isMissingRelation(pendRes.error)) return { ok: true, enabled: false, batched: false };
     return { ok: false, error: pendRes.error.message };
   }
   const pending = pendRes.data || [];
-  const decision = dtfBatchDecision({ pendingNeeds: pending, setting, now: new Date().toISOString() });
+  // Keep Club needs pending for manual review; they must not enter the DTF
+  // threshold, claim set, draft PO, or auto-submit path.
+  // Keep the source guard defensive in case a mocked or unexpected query result
+  // contains rows outside the database-side filter.
+  const eligiblePending = pending.filter((n) => eligibleSoIds.has(n.so_id));
+  const decision = dtfBatchDecision({ pendingNeeds: eligiblePending, setting, now: new Date().toISOString() });
   if (!decision.batch) return { ok: true, batched: false, ...decision, recorded: rec.recorded || 0 };
 
   // CLAIM the needs FIRST, atomically, THEN build the PO from ONLY the rows we
@@ -704,7 +726,7 @@ async function sweepDtf(admin, actor) {
   // both read needs [1,2,3] create TWO POs (different max-id refs) both containing
   // 1,2,3 → a double DTF order. Now a concurrent sweep's claim of the same ids
   // updates zero rows (they're no longer 'pending'), so its PO can't overlap.
-  const claimIds = pending.filter((n) => (Number(n.qty) || 0) > 0).map((n) => n.id);
+  const claimIds = eligiblePending.filter((n) => (Number(n.qty) || 0) > 0).map((n) => n.id);
   if (!claimIds.length) return { ok: true, batched: false, reason: 'no_pending', ...decision };
   const claimRes = await admin.from('teamshop_dtf_print_needs')
     .update({ status: 'ordered', vendor: setting.vendor, ordered_at: new Date().toISOString() })

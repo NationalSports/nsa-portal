@@ -17,6 +17,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 const rel = require('../../netlify/functions/teamshop-auto-release');
 const {
   artRecordProdReady, jobArtReady, jobFulfillment, jobReleasable, jobArtIds, hasDst, runRelease, jobDtfReady,
+  jobTransferCodes, clubTransferPullReady,
 } = rel;
 
 // ── Pure: art readiness ─────────────────────────────────────────────────────
@@ -99,6 +100,41 @@ test('jobReleasable requires BOTH gates', () => {
   expect(jobReleasable(job, artOk, ctxFull).ready).toBe(true);
   expect(jobReleasable(job, artOk, ctxShort).ready).toBe(false);
   expect(jobReleasable(job, () => ({ status: 'approved' }), ctxFull).ready).toBe(false); // art not prod-ready
+});
+
+describe('Club transfer-code pull readiness', () => {
+  const transferJob = {
+    deco_type: 'heat_press',
+    items: [{ item_idx: 0, deco_idxs: [4], sizes: { S: 2 } }],
+  };
+  const itemForIndex = () => ({ id: 11 });
+  const decorations = { 11: [
+    { deco_index: 3, type: 'heat_press', transfer_code: 'OTHER' },
+    { deco_index: 4, type: 'heat_press', transfer_code: 'CLUB-TRANSFER' },
+  ] };
+
+  test('reads only transfer codes attached to this job’s decoration indexes', () => {
+    expect(jobTransferCodes(transferJob, itemForIndex, decorations)).toEqual(['CLUB-TRANSFER']);
+  });
+
+  test('requires verified physical pull and matching code; legacy boolean alone is insufficient', () => {
+    const code = ['CLUB-TRANSFER'];
+    expect(clubTransferPullReady(transferJob, code, [{ transfers_pulled: false }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{ transfers_pulled: true }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{
+      transfers_pulled: true, transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: ['OTHER'],
+    }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{
+      transfers_pulled: true, transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: code,
+    }]).ready).toBe(true);
+  });
+
+  test('fails closed when transfer decoration readiness could not be loaded', () => {
+    expect(clubTransferPullReady(transferJob, [], [], false)).toMatchObject({ ready: false, reason: 'transfer_readiness_unavailable' });
+    expect(clubTransferPullReady(transferJob, [], [], true)).toMatchObject({ required: false, ready: true });
+  });
 });
 
 // ── DTF prints gate (00212) ──────────────────────────────────────────────────
@@ -276,6 +312,33 @@ describe('runRelease', () => {
     expect(s.released).toEqual([]);
     expect(s.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'dtf_prints' }]);
     expect(admin.rpcs.length).toBe(0);
+  });
+
+  test('Club heat_press transfer job is held until its order has a verified matching stock pull', async () => {
+    const clubJob = { ...AUTO_JOB, deco_type: 'heat_press', items: [{ item_idx: 0, deco_idx: 4, sizes: { S: 2 } }] };
+    const baseClubTables = (orderPatch = {}) => baseTables({
+      webstore_orders: { data: [{
+        so_id: 'SO-1', order_source: 'club', store_id: 'STORE-1', transfers_pulled: false,
+        ...orderPatch,
+      }], error: null },
+      so_jobs: { data: [clubJob], error: null },
+      so_item_decorations: { data: [{ so_item_id: 11, deco_index: 4, type: 'heat_press', transfer_code: 'CLUB-TRANSFER' }], error: null },
+    });
+
+    const unpulled = makeAdmin(baseClubTables());
+    const held = await runRelease(unpulled, 'schedule');
+    expect(held.released).toEqual([]);
+    expect(held.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'transfer_pull_unverified' }]);
+    expect(unpulled.rpcs).toEqual([]);
+
+    const verified = makeAdmin(baseClubTables({
+      transfers_pulled: true,
+      transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: ['CLUB-TRANSFER'],
+    }));
+    const released = await runRelease(verified, 'schedule');
+    expect(released.released.map((row) => row.job_id)).toEqual(['JOB-1']);
+    expect(verified.rpcs.filter((call) => call.fn === 'advance_job_stage')).toHaveLength(1);
   });
 
   test('the same DTF job releases once its prints are received', async () => {

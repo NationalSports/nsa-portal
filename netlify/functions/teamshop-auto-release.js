@@ -170,6 +170,41 @@ function jobReleasable(job, artLookup, ctx) {
   return { ready: true, ful };
 }
 
+// Transfer-code decorations are stored on SO items; job.items carries the deco
+// indexes that belong to that production job. Older job payloads may have only
+// deco_idx, so retain that singular form too.
+function jobTransferCodes(job, itemForIndex, decorationsByItem) {
+  const codes = new Set();
+  for (const ji of (job.items || [])) {
+    const item = itemForIndex(ji.item_idx);
+    if (!item) continue;
+    const rows = decorationsByItem[item.id] || [];
+    const indices = Array.isArray(ji.deco_idxs) ? ji.deco_idxs.map(String)
+      : ji.deco_idx != null ? [String(ji.deco_idx)] : null;
+    const matching = indices
+      ? rows.filter((d) => indices.includes(String(d.deco_index)))
+      : rows.filter((d) => (d.type || d.deco_type) === job.deco_type);
+    matching.forEach((d) => { if (d.transfer_code) codes.add(String(d.transfer_code)); });
+  }
+  return [...codes];
+}
+
+function clubTransferPullReady(job, transferCodes, pullOrders, decorationsAvailable = true) {
+  if (decorationsAvailable !== true) {
+    return { required: true, ready: false, reason: 'transfer_readiness_unavailable' };
+  }
+  if (!transferCodes.length) return { required: false, ready: true };
+  if (!Array.isArray(pullOrders) || !pullOrders.length) {
+    return { required: true, ready: false, reason: 'transfer_pull_unverified' };
+  }
+  const ready = pullOrders.every((order) => {
+    if (order.transfers_pulled !== true || !order.transfers_pull_verified_at) return false;
+    const verifiedCodes = new Set(Array.isArray(order.transfers_pull_verified_codes) ? order.transfers_pull_verified_codes.map(String) : []);
+    return transferCodes.every((code) => verifiedCodes.has(code));
+  });
+  return { required: true, ready, reason: ready ? null : 'transfer_pull_unverified' };
+}
+
 // ── Data loading ─────────────────────────────────────────────────────────────
 async function loadSettings(admin) {
   const res = await admin.from('teamshop_settings').select('*').limit(1);
@@ -298,6 +333,16 @@ async function runRelease(admin, actor) {
   if (!jobs.length) return summary;
 
   const candidateSoIds = [...new Set(jobs.map((j) => j.so_id))];
+  const clubSoIds = candidateSoIds.filter((soId) => soIdMap[soId] === 'club');
+  const clubPullRows = clubSoIds.length ? await safe('club_transfer_pull_status', async () => {
+    const r = await admin.from('webstore_orders')
+      .select('so_id, transfers_pulled, transfers_pull_verified_at, transfers_pull_verified_codes')
+      .in('so_id', clubSoIds);
+    if (r.error) throw r.error;
+    return r.data || [];
+  }, null) : [];
+  const pullOrdersBySo = {};
+  (clubPullRows || []).forEach((order) => { (pullOrdersBySo[order.so_id] ||= []).push(order); });
 
   // ── Art pool: so_art_files (per SO) + customers.art_files (per SO customer) ──
   const soArt = await safe('so_art_files', async () => {
@@ -341,6 +386,15 @@ async function runRelease(admin, actor) {
   const itemIds = [];
   items.forEach((it) => { itemBySoIdx[it.so_id + '\u0000' + it.item_index] = it; itemIds.push(it.id); });
 
+  const decorationRows = itemIds.length ? await safe('so_item_decorations', async () => {
+    const r = await admin.from('so_item_decorations')
+      .select('so_item_id, deco_index, type, transfer_code').in('so_item_id', itemIds);
+    if (r.error) throw r.error; return r.data || [];
+  }, null) : [];
+  const decorationsAvailable = decorationRows !== null;
+  const decorationsByItem = {};
+  (decorationRows || []).forEach((row) => { (decorationsByItem[row.so_item_id] ||= []).push(row); });
+
   const picks = itemIds.length ? await safe('pick_lines', async () => {
     const r = await admin.from('so_item_pick_lines').select('so_item_id, sizes, status').in('so_item_id', itemIds);
     if (r.error) throw r.error; return r.data || [];
@@ -373,6 +427,23 @@ async function runRelease(admin, actor) {
         pulledFor: (itemId, sz) => pulledBy[itemId + '\u0000' + sz] || 0,
         receivedFor: (itemId, sz) => receivedBy[itemId + '\u0000' + sz] || 0,
       };
+      if (soIdMap[job.so_id] === 'club') {
+        const transferCodes = decorationsAvailable
+          ? jobTransferCodes(job, ctx.itemForIndex, decorationsByItem)
+          : [];
+        // If the decoration read failed, heat_press may be a transfer-code job;
+        // fail closed rather than allowing an unavailable lookup to bypass stock.
+        const transferCheck = clubTransferPullReady(
+          job,
+          transferCodes,
+          pullOrdersBySo[job.so_id],
+          decorationsAvailable || job.deco_type !== 'heat_press',
+        );
+        if (!transferCheck.ready) {
+          summary.skipped.push({ so_id: job.so_id, job_id: job.id, reason: transferCheck.reason });
+          continue;
+        }
+      }
       if (soIdMap[job.so_id] === 'all_school') {
         const material = await admin.rpc('all_school_materials_ready', { p_so_id: job.so_id, p_job_id: job.id });
         if (material.error || material.data?.ready !== true) {
@@ -451,3 +522,5 @@ module.exports.jobFulfillment = jobFulfillment;
 module.exports.artRecordProdReady = artRecordProdReady;
 module.exports.jobArtIds = jobArtIds;
 module.exports.hasDst = hasDst;
+module.exports.jobTransferCodes = jobTransferCodes;
+module.exports.clubTransferPullReady = clubTransferPullReady;

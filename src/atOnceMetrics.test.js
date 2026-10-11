@@ -72,3 +72,11 @@ test('24/7 At-Once combines club and All School only, including backlog and tren
   expect(report.daily.reduce((sum,d)=>sum+d.value,0)).toBe(200);
   expect(buildAtOnceReport({...options,orders,stores,source:'omg'}).rows.map(r=>r.id)).toEqual(['ingest','omg-link']);
 });
+
+test('prepaid shipped job flags without confirmed shipments do not hide fulfillment workload', () => {
+  const so=order('flag-only',{webstore_id:'club',items:[{sizes:{M:2},decorations:[{kind:'art'}]}],jobs:[{id:'JOB',prod_status:'shipped',total_units:2}]});
+  expect(calcSOStatus(so)).toBe('ready_to_invoice');
+  expect(calcSOStatus({...so,_shipments:[{contents_unconfirmed:true,items:[]}]})).toBe('ready_to_invoice');
+  expect(calcSOStatus({...so,_shipments:[{items:[{sizes:{M:1}}]}]})).toBe('ready_to_invoice');
+  expect(calcSOStatus({...so,status:'complete'})).toBe('complete');
+});
