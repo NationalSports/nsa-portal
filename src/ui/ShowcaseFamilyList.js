@@ -26,13 +26,23 @@ function FamilyCard({ group, busy, act, onReview }) {
   const needsUpdate = needsFamilyGeneration(group);
   const review = group.items.filter(({ asset }) => asset?.status === 'review').length;
   const errors = [...new Set(group.items.map(({ asset }) => asset?.error_details).filter(Boolean))];
+  const thumbnail = group.items.find(i=>i.asset?.showcase_image_url)
+    || group.items.find(i=>i.asset?.approved_showcase_image_url) || group.items[0];
+  const thumbnailUrl = thumbnail.asset?.showcase_image_url || thumbnail.asset?.approved_showcase_image_url;
+  const baked = (thumbnail.decorations || []).some(d=>d.baked && (d.side || 'front')==='front');
+  const standardThumbnailUrl = baked ? thumbnail.standard_image_url || thumbnail.supplier_image_url
+    : thumbnail.supplier_image_url || thumbnail.standard_image_url;
   const generate = (newMaster = false) => {
-    if (newMaster && !window.confirm('Generate a new base garment for this entire item? This incurs a new AI image charge. Existing approved images stay in place until replacements are approved.')) return;
+    if (newMaster && !window.confirm('Create new poses and lighting for this item’s colors? Each color incurs a new AI image charge. Existing approved images stay in place until replacements are approved.')) return;
     act(group.key,'generate_family',{family_key:group.key,new_master:newMaster,showcase_settings:{decoration_type:finish,revision_notes:group.items[0].asset?.showcase_settings?.revision_notes || ''}});
   };
   return <section style={{ border:'1px solid #e2e8f0',borderRadius:10,marginBottom:12,overflow:'hidden' }}>
     <div style={{ display:'flex',gap:14,padding:16,alignItems:'center',flexWrap:'wrap' }}>
-      <img src={group.items[0].supplier_image_url || group.items[0].standard_image_url} alt="" width={68} height={82} style={{objectFit:'contain'}} />
+      <div style={{width:68,flexShrink:0}}>
+        {thumbnailUrl
+          ? <img src={thumbnailUrl} alt={`${group.name} Showcase preview`} width={68} height={82} style={{objectFit:'contain'}} />
+          : <ShowcaseProductImage item={thumbnail} url={standardThumbnailUrl} height={82} alt={`${group.name} with decoration`} />}
+      </div>
       <div style={{flex:1,minWidth:200}}>
         <div style={{fontSize:14,fontWeight:800}}>{group.name}</div>
         <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{group.colors.length} colors · {group.designs} designs · {group.items.length} combinations</div>
@@ -98,10 +108,10 @@ export default function ShowcaseFamilyList({ items, busy, error, act }) {
           if(window.confirm('Cancel all active items? Provider requests already in flight may still incur a charge.')) act('cancel_all','cancel_all');
         }}>Cancel all</button>}
         <button className="btn btn-sm btn-primary" disabled={busy || !count} onClick={()=>{
-          if(window.confirm(`Generate ${count} base items and all their color/logo combinations? Each item uses up to one paid AI image generation; saved bases are reused. Color analysis also incurs usage charges.`)) act('generate_all','generate_all_families');
+          if(window.confirm(`Generate ${count} base items and all their color/logo combinations? Each color needs a paid image generation, and additional designs use paid edits. Saved color images are reused.`)) act('generate_all','generate_all_families');
         }}>Generate all ({count})</button>
       </div>
-      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>One shared garment per item. Colors are sampled from supplier photos; saved logos are applied to each combination. Refresh images keeps the current pose and lighting. Choose Change pose & lighting to change the pose or lighting. Approve images individually or use Approve all for the generated images awaiting approval.</p>
+      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>Each color starts from its own supplier photo. Additional designs reuse that color’s finished image. Refresh images requests a design edit that preserves the pose and lighting; review the result for changes. Choose Change pose & lighting to change the pose or lighting. Approve images individually or use Approve all for the generated images awaiting approval.</p>
       <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>Photo lighting can affect color accuracy. Compare fabric texture, manufacturer marks and decoration placement with the original photos. Approved images remain in use until you approve replacements.</p>
     </div>
     <div style={{padding:14}}>{!groups.length && <p>Add products to the catalog first.</p>}{groups.map((group)=><FamilyCard key={group.key} group={group} busy={busy} act={act} onReview={setReviewId}/>)}</div>
