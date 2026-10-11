@@ -89,6 +89,7 @@ export function EnabledSalesOrderEditGate({editor:Editor,...props}) {
     {loaded?<div inert={state.phase==='editing'?undefined:''} aria-disabled={state.phase!=='editing'}>
       <Editor {...props} order={order} recoveryEditorRef={target}
         onSave={save(props.onSave)} onSaveNow={save(props.onSaveNow)} onEmergencySave={save(props.onEmergencySave)}
+        onSaveArtFiles={props.onSaveArtFiles?save(props.onSaveArtFiles):undefined}
         onBack={props.onBack}/>
     </div>:<SalesOrderReadView order={props.order} customer={props.customer}/>}
   </div>;

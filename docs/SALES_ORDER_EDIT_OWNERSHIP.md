@@ -38,7 +38,7 @@ user. The old generation cannot save, renew or release the new owner's lease.
 All roles come from active team_members records, never user-editable JWT data.
 
 Loss of ownership, expiry or failed renewal pauses the mounted editor, blocks
-its full-save callbacks, and attempts to preserve its actual buffered contents
+its full-save and artwork-file save callbacks, and attempts to preserve its actual buffered contents
 through the existing IndexedDB recovery handoff. Storage failure leaves the
 editor mounted and displays an error; it does not claim the draft is durable.
 **Keep draft & close** waits for that preservation before leaving. There is no

@@ -26,10 +26,16 @@ test('competing owner leaves order readable with no editor or save callback',asy
 test('failed full read never opens a partially hydrated editor',async()=>{
  loadRecoveryDocument.mockRejectedValue(new Error('incomplete'));await render();await click('Edit order');expect(latest).toBeNull();expect(host.textContent).toContain('incomplete');
 });
+test('artwork-file save carries the active ownership fence',async()=>{
+ const saveArt=jest.fn().mockResolvedValue(true);await render({onSaveArtFiles:saveArt});await click('Edit order');
+ const result=await latest.onSaveArtFiles({...latest.order,art_files:[{id:'art-1'}]});
+ expect(result).toBe(true);expect(saveArt.mock.calls[0][0]).toMatchObject({art_files:[{id:'art-1'}],_editLease:{generation:1}});
+});
 test('takeover notification freezes mounted editor and blocks a retained callback',async()=>{
- const preserve=jest.fn().mockResolvedValue({});const ref={current:null};await render({recoveryEditorRef:ref});await click('Edit order');
+ const preserve=jest.fn().mockResolvedValue({});const ref={current:null};const saveArt=jest.fn().mockResolvedValue(true);await render({recoveryEditorRef:ref,onSaveArtFiles:saveArt});await click('Edit order');
  ref.current={preserve};const previous=latest;await act(async()=>window.dispatchEvent(new CustomEvent('nsa:edit-lease-lost',{detail:{id:'SO-1',session:latest.order._editLease.session}})));
  expect(host.querySelector('[inert]')).toBeTruthy();expect(previous.onSaveNow({...fresh,memo:'late'})).toBe(false);expect(saved).not.toHaveBeenCalled();expect(preserve).toHaveBeenCalled();
+ expect(previous.onSaveArtFiles({...fresh,art_files:[{id:'late-art'}]})).toBe(false);expect(saveArt).not.toHaveBeenCalled();
 });
 
 test('disabled rollout preserves the existing editor and makes no lease request',async()=>{
