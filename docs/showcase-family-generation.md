@@ -75,7 +75,24 @@ cancellation, partial failures, batch queuing, and PGlite database transitions.
 The UI suites cover generation, review/revision, approval, and bulk actions.
 They do not establish real image quality or exact artwork preservation.
 
-Keep PR #2509 draft until actual full-color generations and follow-up design
-edits have been visually reviewed. The requested two in-app-browser generation
-cycles remain blocked in the previous session because its Browser control tools
-were absent. Do not treat unit-test counts as those live checks.
+On 2026-10-11, six single-image in-app-browser cycles completed, each followed
+by a five-minute wait and inspection of the new request's actual result:
+
+- Black NKFD9889 with original Serra artwork and Serra Tail artwork rendered
+  successfully, but the compact, square silhouette read as youth/unisex.
+- Explicit women's form guidance plus adult-proportion review feedback produced
+  a longer, less square NKFD9889 torso with gentle waist definition. This is one
+  observed improvement, not proof that the default prompt always gets fit right.
+- A medium-quality refresh reused that revised high-quality color image. The
+  silhouette, pocket, cords and Swoosh looked stable, but the logo moved slightly
+  lower. Usage reported 1,756 output tokens versus 7,024 for high quality; billed
+  dollars per accepted image were not measured.
+- Team Anthracite CN9402, previously blocked by drawstring tracing, generated
+  successfully with visible heather, white cords, zipper and women's shape. Its
+  first artwork was undersized. A feedback revision brought the artwork closer
+  to the supplier reference's scale; exact artwork/placement remains unverified.
+
+All new candidates remain in review. Nothing was approved or published. Keep
+PR #2509 draft: gold PC90H, other styles/colors, and medium edits that actually
+replace one design with another still need live coverage. Successful generation
+and passing automated tests do not establish exact garment or artwork fidelity.
