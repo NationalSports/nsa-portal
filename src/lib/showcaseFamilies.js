@@ -32,7 +32,7 @@ function groupShowcaseItems(items = []) {
     colors: [...new Set(group.items.map((item) => item.color).filter(Boolean))],
     designs: [...new Set(group.items.map((item) => item.variant_group_id || JSON.stringify((item.decorations || []).map((d) => d.art_id || d.art_url))))].length,
     working: group.items.some(({ asset }) => ['queued', 'generating'].includes(asset?.status)),
-    eligible: group.items.every((item) => item.kind !== 'bundle' && item.supplier_image_url),
+    eligible: group.items.some((item) => item.kind !== 'bundle' && item.supplier_image_url),
   }));
 }
 function needsFamilyGeneration(group) {

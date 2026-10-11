@@ -70,7 +70,7 @@ function buildStateSnapshot(store, catalog, assetRows) {
     const asset = byWp[product.webstore_product_id];
     return {
       ...product,
-      asset: asset || {
+      asset: asset ? {...asset, standard_image_url:product.standard_image_url} : {
         store_id: store.id,
         webstore_product_id: product.webstore_product_id,
         product_id: product.product_id,
@@ -265,7 +265,7 @@ exports.handler = async (event) => {
       return reply(200, { ok: true, store: data, fallback_count: fallbackCount });
     }
 
-    if (['generate_family', 'generate_all_families', 'cancel_family'].includes(action)) {
+    if (['generate_image', 'generate_family', 'generate_all_families', 'cancel_family'].includes(action)) {
       const { queueFamilies, transition } = require('./_showcaseFamily');
       const catalog = await getCatalog(admin, storeId, store.store_art);
       const { data, error } = await admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId);
@@ -292,8 +292,9 @@ exports.handler = async (event) => {
         return reply(200,{ok:true});
       }
       if (body.showcase_settings && !DECORATION_FINISHES.some(([key]) => key === body.showcase_settings.decoration_type)) return reply(400,{error:'Invalid decoration finish'});
+      if (action === 'generate_image' && !body.webstore_product_id) return reply(400,{error:'Choose an image combination'});
       const result = await queueFamilies({admin,store,catalog,assets,key:String(body.family_key || ''),all:action==='generate_all_families',
-        settings:body.showcase_settings,newMaster:body.new_master===true,baseUrl:getWorkerBaseUrl(event)});
+        targetId:action==='generate_image'?String(body.webstore_product_id):undefined,settings:body.showcase_settings,newMaster:body.new_master===true,baseUrl:getWorkerBaseUrl(event)});
       return reply(result.failed_count && !result.queued_count ? 502 : 202,{ok:!result.failed_count,...result});
     }
 
@@ -331,6 +332,15 @@ exports.handler = async (event) => {
         || (settings.revision_notes !== undefined && (typeof settings.revision_notes !== 'string' || settings.revision_notes.length > 1000))) {
         return reply(400, { error: 'Choose a valid decoration finish and keep review notes under 1,000 characters' });
       }
+    }
+
+    if (action === 'save_supplier_photo') {
+      const catalog = await getCatalog(admin,storeId,store.store_art);
+      const item = catalog.find(m=>m.webstore_product_id===wpId);
+      if (!item) return reply(404,{error:'Store product not found'});
+      const {saveSupplierPhoto}=require('./_showcaseSource');
+      const url=await saveSupplierPhoto(admin,storeId,item,body.image_data);
+      return reply(200,{ok:true,supplier_image_url:url});
     }
 
     if (action === 'save_settings') {
@@ -402,7 +412,7 @@ exports.handler = async (event) => {
         if (familyError) throw new Error(familyError.message);
         const {groupShowcaseItems} = require('../../src/lib/showcaseFamilies');
         const {catalogSignature} = require('./_showcaseFamily');
-        const group = groupShowcaseItems(await getCatalog(admin,storeId,store.store_art)).find((g)=>g.key===ready.analysis.family.key);
+        const group = groupShowcaseItems(await getCatalog(admin,storeId,store.store_art)).find((g)=>g.key===(family?.inputs?.catalog_family_key || ready.analysis.family.key));
         if (!family || family.request_id!==ready.generation_request_id || !group || catalogSignature(group.items)!==family.inputs.catalog_signature)
           return reply(409,{error:'The catalog or artwork changed. Generate the item again before approving.'});
       }

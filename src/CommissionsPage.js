@@ -1,3 +1,5 @@
+import { decoPoEditTotals } from './lib/decoPoEdit';
+import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 // Commissions page — lifted verbatim out of App() (was `function rCommissions()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
@@ -209,7 +211,7 @@ export default function CommissionsPage({adminReports=false}={}){
       });
       // Outside deco POs — SO-level cost bucket
       const _db0=cost;
-      (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+      (so.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
       const manualPoRows=manualPoCostRows(so);const manualPoCost=manualPoRows.reduce((a,row)=>a+row.amount,0);cost+=manualPoCost;
       if(dtl&&cost-_db0-manualPoCost>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0-manualPoCost});
       if(dtl)manualPoRows.forEach(row=>dtl.push({kind:'bucket',label:'Manual PO cost'+(row.po_id?' · '+row.po_id:'')+(row.payment_label?' · Paid by '+row.payment_label:''),rev:0,cost:row.amount}));
@@ -371,7 +373,7 @@ export default function CommissionsPage({adminReports=false}={}){
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
           safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
-        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+        (so.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
         cost+=manualPoCostTotal(so);
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
@@ -417,7 +419,7 @@ export default function CommissionsPage({adminReports=false}={}){
           }
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
-        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);const c=bc>0?bc:safeNum(dp.qty||0)*safeNum(dp.unit_cost||0);decoCost+=c});
+        (so.deco_pos||[]).forEach(dp=>{decoCost+=decoPoCost(dp)});
         const totalRev=promoRev;const baseShip=so.shipping_type==='pct'?totalRev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=rQ(baseShip*1.25);
         const manualCost=manualPoCostTotal(so);
@@ -1054,7 +1056,7 @@ export default function CommissionsPage({adminReports=false}={}){
               if(Array.isArray(it.po_lines)&&d.poLines.length)out.po_lines=it.po_lines.map((pl,pi)=>{const pd=d.poLines.find(x=>x.pi===pi);if(!pl||!pd)return pl;const t=String(pd.unitCost).trim();return{...pl,unit_cost:t===''?null:num(pd.unitCost)}});
               return out;
             });
-            const deco_pos=(s.deco_pos||[]).map((dp,di)=>{const dd=m.decoPos.find(x=>x.di===di);if(!dd)return dp;return{...dp,unit_cost:num(dd.unitCost)}});
+            const deco_pos=(s.deco_pos||[]).map((dp,di)=>{const dd=m.decoPos.find(x=>x.di===di);if(!dd||num(dd.unitCost)===safeNum(dp.unit_cost))return dp;return{...dp,...decoPoEditTotals(dp,{po_mode:dp.po_mode,qty:dp.qty,unit_cost:num(dd.unitCost)},items)}});
             const next={...s,items,deco_pos,updated_at:new Date().toLocaleString()};
             if(m.ship!==m.shipOrig){const sv2=num(m.ship);next._shipping_cost=sv2;next._shipstation_cost=sv2}
             if(m.freight!==m.freightOrig)next._inbound_freight=num(m.freight);

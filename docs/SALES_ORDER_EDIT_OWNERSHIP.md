@@ -17,8 +17,9 @@
    rep, CSR, art, warehouse and accounting workflows below before production
    enablement. The flag is build-time; change it and rebuild to enable/disable.
    A preview pointed at production can acquire a real claim on the synthetic order.
-4. Enable on production only after those checks. This PR does not apply its
-   migration or enable the flag on production.
+4. Enable on production only after those checks. The pilot migration has been
+   applied to the production database, where claims remain restricted to the
+   synthetic order. The production frontend flag remains off.
 
 ## Behavior
 

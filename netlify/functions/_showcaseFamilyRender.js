@@ -1,6 +1,19 @@
 const sharp = require('sharp');
 const clamp = (x, lo = 0, hi = 255) => Math.max(lo, Math.min(hi, x));
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+// Match the placement editor's contain-fitted 4:5 coordinate frame exactly.
+async function placementReference(bytes, placements = []) {
+  const framed = await sharp(bytes, { limitInputPixels: 40000000 }).rotate()
+    .resize(1000, 1250, { fit: 'contain', background: '#ffffff' }).png().toBuffer();
+  if (!placements.length) return framed;
+  const guides = placements.map(([id, p]) => {
+    if (![p.x,p.y,p.w].every(Number.isFinite) || p.w <= 0 || p.w > 100 || p.x < 0 || p.x > 100 || p.y < 0 || p.y > 100) throw new Error('Invalid saved logo placement');
+    const x=p.x*10, y=p.y*12.5, w=p.w*10;
+    const label=String(id).replace(/[^a-zA-Z0-9]/g,'').slice(0,8);
+    return `<rect x="${x-w/2}" y="${y-w/2}" width="${w}" height="${w}" fill="none" stroke="#ff00ff" stroke-width="3"/><path d="M${x-8},${y}h16 M${x},${y-8}v16" stroke="#ff00ff" stroke-width="2"/><text x="${x-w/2}" y="${y-w/2-6}" fill="#aa00aa" font-size="18">${label}</text>`;
+  }).join('');
+  return sharp(framed).composite([{input:Buffer.from(`<svg width="1000" height="1250">${guides}</svg>`)}]).png().toBuffer();
+}
 async function pixels(bytes) {
   return sharp(bytes, { limitInputPixels: 40000000 }).rotate().toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
 }
@@ -10,7 +23,7 @@ function rect(value) {
   if (x < 0 || y < 0 || w < .01 || h < .01 || w > .3 || h > .3 || x + w > 1 || y + h > 1) throw new Error('Fabric sampling rectangle is outside its supplier photo');
   return value;
 }
-async function sampleFabric(bytes, patches, texture = 'solid') {
+async function sampleFabric(bytes, patches, texture = 'solid', colorway = '') {
   if (!Array.isArray(patches) || patches.length < 2 || patches.length > 8) throw new Error('At least two clean fabric samples are required');
   const { data, info: { width, height } } = await pixels(bytes);
   const samples = [];
@@ -28,11 +41,22 @@ async function sampleFabric(bytes, patches, texture = 'solid') {
   // color-name lookup or average the whole photo (which includes the backdrop).
   samples.sort((a, b) => a.reduce((v, c) => v + c, 0) - b.reduce((v, c) => v + c, 0));
   const mid = samples.slice(Math.floor(samples.length * .2), Math.ceil(samples.length * .8));
-  const result = { rgb: [0, 1, 2].map((c) => median(mid.map((p) => p[c]))), pixels: samples.length, patches };
+  // A heather color name is supporting evidence, never a replacement RGB value.
+  if (/\bheather(?:ed)?\b|\bmarled\b/i.test(colorway)) texture = 'heather';
+  const result = { texture, colorway, rgb: [0, 1, 2].map((c) => median(mid.map((p) => p[c]))), pixels: samples.length, patches };
   if (texture === 'heather') {
+    // Average the retained yarn tones rather than choosing the dark median.
+    // Keep the same outlier trim so stray background pixels cannot wash it out.
+    result.rgb = [0,1,2].map(c => Math.round(mid.reduce((sum,p) => sum+p[c],0)/mid.length));
     const [x,y,w,h] = rect(patches[0]);
-    const tile = await sharp(bytes).rotate().extract({left:Math.floor(x*width),top:Math.floor(y*height),width:Math.floor(w*width),height:Math.floor(h*height)}).resize(64,64).greyscale().raw().toBuffer();
-    const smooth = await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).raw().toBuffer();
+    const tw = Math.min(64,Math.floor(w*width)), th = Math.min(64,Math.floor(h*height));
+    // Crop at native resolution: shrinking an entire patch averages the light
+    // and dark yarn together and turns black heather into nearly solid black.
+    const tile = await sharp(bytes).rotate().extract({left:Math.floor(x*width),top:Math.floor(y*height),width:tw,height:th}).resize(64,64).greyscale().raw().toBuffer();
+    const smooth = await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).greyscale().raw().toBuffer();
+    // Sharp expands a one-channel raw input to RGB unless explicitly converted
+    // back to greyscale. Subtracting RGB bytes by pixel index creates false bands.
+    if (smooth.length !== tile.length) throw new Error('Fabric texture channel mismatch');
     // Actual small-scale supplier texture, with lighting removed. Mirrored
     // tiling avoids a repeating hard seam; master folds still provide shading.
     result.grain = Array.from(tile,(v,i)=>clamp(v-smooth[i],-35,35));
@@ -56,10 +80,17 @@ function polygons(value) {
 // Reject broad or sparse traces rather than deleting an arbitrary strip of logo.
 function validateStrands(value = []) {
   if (!Array.isArray(value) || value.length > 12) throw new Error('Invalid drawstring paths');
-  for (const strand of value) {
-    if (!Array.isArray(strand.points) || strand.points.length < 3 || strand.points.length > 80 ||
-      strand.points.some(p => !Array.isArray(p) || p.length !== 3 || p.some(v => !Number.isFinite(v)) || p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1 || p[2] <= 0 || p[2] > .025))
-      throw new Error('Drawstring trace needs correction: use tight centerlines and actual widths');
+  for (const [index,strand] of value.entries()) {
+    if (!Array.isArray(strand?.points) || strand.points.length < 3 || strand.points.length > 80)
+      throw new Error(`Drawstring trace ${index+1}: provide 3–80 centerline points`);
+    strand.points = strand.points.map((p, j) => {
+      const raw = Array.isArray(p) ? p : p && typeof p === 'object' ? [p.x,p.y,p.width] : [];
+      const point = raw.map(v => typeof v === 'string' && v.trim() ? Number(v) : v);
+      if (point.length !== 3 || point.some(v => !Number.isFinite(v))) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: expected numeric [x,y,width]`);
+      if (point[0]<0 || point[0]>1 || point[1]<0 || point[1]>1) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: x/y must be normalized 0..1`);
+      if (point[2]<=0 || point[2]>.025) throw new Error(`Drawstring trace ${index+1}, point ${j+1}: width ${point[2]} must be actual narrow strand width, greater than 0 and at most 0.025 of image width; exclude shadows and surrounding fabric`);
+      return point;
+    });
   }
   return value;
 }
@@ -124,7 +155,7 @@ function recolor(master, rgb, grain) {
       // Keep black readable without raising it to gray; preserve highlights and
       // folds for white instead of clipping every lit pixel to white.
       const base = rgb[c];
-      let value = shade <= 1 ? base * Math.pow(shade, .85) : base + (255 - base) * (1 - Math.exp(-(shade - 1) * 1.8));
+      let value = shade <= 1 ? base * Math.pow(shade, .85) : base * (1 + .28 * (1 - Math.exp(-(shade - 1))));
       if (grain?.length === 4096) {
         const mirror = (n) => n % 128 < 64 ? n % 128 : 127 - n % 128;
         value += grain[mirror(Math.floor(i/master.info.width))*64+mirror(i%master.info.width)] * Math.min(1,shade);
@@ -230,4 +261,4 @@ async function decorationDetail(output, master, quad) {
   return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
     .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
 }
-module.exports = { normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+module.exports = { placementReference, normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };

@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import GarmentMockCard, { MockCoversTable, LogoDetailTiles } from './GarmentMockCard';
 import JobGarmentProgress, { garmentProgress, GarmentDecorationSpecs } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
-import { assignLogoArtwork, logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
+import { assignLogoArtwork, logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, productionLogoCandidates } from './lib/logoDetail';
 import { safeArt, safeNum, safeSizes, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile, _isImgUrl } from './utils';
 
@@ -49,6 +49,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
   const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
     url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, colorWayId: slot.cwId, colorWays: logoColorWayOptions(slot.artFile), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
+    productionPngs: productionLogoCandidates(slot.artFile),
     onAssign: onSaveOrder && (choice => run(async () => {
       const { order: updated } = assignLogoArtwork(getOrder(), { ...choice, artId: slot.artId, garmentKey: garmentMockKey(item), side: slot.side });
       return onSaveOrder(updated, 'Artwork version assignment');
@@ -58,6 +59,12 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
       const url = await fileUpload(files[0], 'nsa-web-logos');
       const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, colorWayId, { url, name: files[0].name }), 'Logo detail');
       if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: colorWayId, url });
+      return ok;
+    }),
+    onUseProductionPng: (file, colorWayId = slot.cwId) => run(async () => {
+      if (colorWayId === undefined) throw new Error('Choose and save this garment’s artwork version first.');
+      const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, colorWayId, file), 'Logo detail');
+      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId, url: file.url });
       return ok;
     }),
     onRemove: (url, colorWayId = slot.cwId) => run(async () => {

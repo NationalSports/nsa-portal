@@ -75,7 +75,7 @@ it('refuses generic art replacement of stock-linked offerings but allows explici
 
 it('requires exact production files for approval and identifies setup invalidation fields', () => {
   const item = { product_id: 'blank', sku: 'TEE', image_url: 'exact-mock.png', transfer_codes: ['DTF'] };
-  expect(productionSetupError(item, [])).toMatch(/inventory/);
+  expect(productionSetupError(item, [])).toMatch(/inventory/i);
   expect(productionSetupError({ ...item, image_url: null }, [])).toMatch(/mockup/);
   const stock = { code: 'DTF', application_method: 'heat_press', width_in: 8, height_in: 10, production_file: { bucket: 'all-school-art', path: 'private/print.ai', name: 'print.ai' } };
   expect(productionSetupError(item, [stock])).toBe('');

@@ -1,3 +1,4 @@
+import { decoPoCost } from './lib/decoPoCost';
 import { inventoryPickCosts } from './lib/inventoryCosts';
 import InventoryCostDetails from './allSchool/InventoryCostDetails';
 import BatchPoReservationsNotice from './BatchPoReservationsNotice';
@@ -4120,7 +4121,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem)});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
-    (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    (o.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
     // OMG team-store money model (set when an SO is pulled from an OMG store):
     //  • _omg_processing = the online-processing fee CHARGED TO PARENTS — it's
     //    revenue collected to cover fees, so it adds to rev (not cost).
@@ -7356,7 +7357,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
-                      <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
+                      <span style={{fontSize:9,color:'#94a3b8'}}>Internal — a transparent PNG here can be selected as Logo Detail in the job</span>
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>

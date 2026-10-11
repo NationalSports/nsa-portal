@@ -107,10 +107,12 @@ async function assertPublicImageUrl(rawUrl) {
 }
 
 async function fetchRemoteImage(rawUrl, redirects = 0) {
+  if (/\/(?:Image404ErrorHandler\.jsp|ImageNotAvailable\.[a-z]+)(?:[?\/]|$)/i.test(rawUrl)) throw new Error('Supplier photo is unavailable. Replace this color’s supplier photo before creating its image.');
   if (redirects > 3) throw new Error('Source image redirected too many times');
   const url = await assertPublicImageUrl(rawUrl);
   const res = await fetch(url, {
     method: 'GET',
+    signal: AbortSignal.timeout(20000),
     redirect: 'manual',
     headers: { Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8' },
   });
@@ -267,7 +269,7 @@ function parseJsonObject(text) {
   throw new Error('Kimi returned an invalid analysis response');
 }
 
-async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt }) {
+async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt, beforeAttempt }) {
   const config = getKimiConfig();
   if (!config.key) throw new Error('Kimi/Moonshot is not configured');
   const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
@@ -317,7 +319,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
     },
     ...images.map((image) => ({ type: 'image_url', image_url: { url: dataUrl(image) } })),
   ];
-  const res = await fetch(KIMI_URL, {
+  const payload = await require('./_showcaseAnalysisRequest').analysisRequest(KIMI_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.key}`,
@@ -335,9 +337,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
       response_format: { type: 'json_object' },
       thinking: { type: 'disabled' },
     }),
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Kimi analysis failed (${res.status}): ${payload?.error?.message || 'unknown provider error'}`);
+  }, { beforeAttempt });
   const text = payload?.choices?.[0]?.message?.content;
   return {
     analysis: parseJsonObject(text),

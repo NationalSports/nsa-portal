@@ -83,6 +83,21 @@ export async function logoFileProblem(f) {
   return '';
 }
 
+// Production files can contain print separations or opaque proofs, so verify an existing PNG
+// before making it the customer-visible logo detail. A blocked image read is not evidence of
+// transparency.
+export async function logoUrlProblem(file) {
+  if (!/\.png(?:[?#]|$)/i.test(file?.name || '') && !/\.png(?:[?#]|$)/i.test(file?.url || '')) return 'Choose a PNG production file for the logo detail.';
+  const pixels = await readPixels(file.url, 300);
+  if (!pixels) return 'Could not verify transparency in this PNG. Upload the original in Logo Detail instead.';
+  let transparent = false, visible = false;
+  for (let i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] < 250) transparent = true;
+    if (pixels[i] > 128) visible = true;
+  }
+  return transparent && visible ? '' : 'This PNG does not have a transparent background. Upload a transparent logo PNG instead.';
+}
+
 // Small logo-detail tiles, one per garment color a shared mock covers. A tile whose color way has
 // no logo detail yet can be uploaded right here (its garment has no card of its own).
 // tiles = [{ key, url, bg, label, onUpload? }]
@@ -182,6 +197,16 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     try { const ok = await fn(); if (ok === false) setError('Could not save the logo detail. Please try again.'); }
     catch (e) { setError(e.message || 'Could not save the logo detail. Please try again.'); }
   };
+  const useProductionPng = async file => {
+    if (busy || uploadLock.current) return;
+    uploadLock.current = true; setSaving(true); setError('');
+    try {
+      const bad = await logoUrlProblem(file);
+      if (bad) { setError(bad); return; }
+      if (await logo.onUseProductionPng(file) === false) setError('Could not save the logo detail. Please try again.');
+    } catch (e) { setError(e.message || 'Could not save the logo detail. Please try again.'); }
+    finally { uploadLock.current = false; setSaving(false); }
+  };
   const upload = async files => {
     if (!files.length || !logo.onUpload || busy || uploadLock.current) return;
     if (choosingVersion) { setError('Save the artwork choice before uploading the logo PNG.'); return; }
@@ -236,6 +261,10 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     </div>}
     {!choosingVersion && assigned && <p className="panel-hint">Artwork: <strong>{assigned.label}</strong>{assigned.colors && <> · Ink / thread: {assigned.colors}</>}</p>}
     {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.</p>}
+    {!logo.url && !choosingVersion && !!logo.productionPngs?.length && !!logo.onUseProductionPng && <div className="production-logo-options">
+      <p className="panel-hint">Already uploaded under Production Files? Choose a transparent PNG for this artwork version:</p>
+      {logo.productionPngs.map(file => <button key={file.url} type="button" disabled={busy} onClick={() => useProductionPng(file)}>Use {file.name} as logo detail</button>)}
+    </div>}
     {logo.blockedReason && <p role="alert" className="mock-error">{logo.blockedReason}</p>}
     {logo.needsColorWay && !sourceLogo.onAssign && !logo.blockedReason && <p className="panel-hint">Choose the artwork version in Art Library → Apply to items first.</p>}
     {logo.onUpload && <div className="panel-actions">

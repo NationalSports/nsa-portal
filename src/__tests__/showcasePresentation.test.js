@@ -421,7 +421,8 @@ describe('Showcase completion email', () => {
       summary,
       reviewUrl: 'https://preview.example/?pg=webstores',
     });
-    expect(email.subject).toContain('finished with 1 issue');
+    expect(email.subject).toContain('partially completed');
+    expect(email.html).not.toContain('Showcase generation complete');
     expect(email.html).toContain('Hi Steve &amp; Team');
     expect(email.html).toContain('&lt;Mountain House&gt;');
     expect(email.html).toContain('Review Showcase images');
@@ -513,4 +514,13 @@ test('public details come only from the approved set, including during regenerat
     {webstore_product_id:'draft',qa_result:{detail_images:[{url:'private'}]}},
     {webstore_product_id:'legacy',approved_showcase_image_url:'hero'}
   ])).toEqual({live:[{url:'old-approved'}],legacy:[]});
+});
+
+test('failed redo email excludes older ready images from other requests',()=>{
+ const summary=summarizeAssets([{status:'review',generation_request_id:'old'}, {status:'failed',generation_request_id:'redo'}],['redo']);
+ expect(summary).toEqual({total:1,review:0,approved:0,failed:1});
+ const email=buildShowcaseReviewEmail({store:{name:'Serra'},rep:{name:'Steve'},summary,reviewUrl:'https://example.com'});
+ expect(email.subject).toContain('generation failed');
+ expect(email.html).toContain('no new images waiting');
+ expect(email.html).not.toContain('generation complete');
 });

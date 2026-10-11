@@ -1,3 +1,4 @@
+const { decoPoCost } = require('./lib/decoPoCost');
 const { inventoryPickCosts } = require('./lib/inventoryCosts');
 /* eslint-disable */
 // ═══════════════════════════════════════════════
@@ -1100,9 +1101,7 @@ function calcTotals(o, cust) {
   });
   // Outside-deco POs live at the SO level (so.deco_pos), not per-item
   (o.deco_pos || []).forEach(dp => {
-    const bc = safeNum(dp._bill_cost);
-    if (bc > 0) { cost += bc; return; }
-    cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
+    cost += decoPoCost(dp);
   });
   cost += manualPoCostTotal(o);
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);

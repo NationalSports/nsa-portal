@@ -21,6 +21,7 @@ async function setup(decorated=false) {
  await db.query('insert into webstores values($1)',[store]);
  const members=ids.map((id,i)=>({webstore_product_id:id,product_id:'p'+i,sku:`HOOD-Color${Math.floor(i/3)}`,color:`Color${Math.floor(i/3)}`,brand:'Nike',standard_image_url:'supplier'+Math.floor(i/3),supplier_image_url:'supplier'+Math.floor(i/3),decorations:decorated?[{art_url:'logo.png',x:50,y:40,w:30,placement:'full_front'}]:[],settings:{decoration_type:'auto',revision_notes:''}}));
  for(const m of members){await db.query('insert into products values($1)',[m.product_id]);await db.query('insert into webstore_products values($1,$2,$3,true,\'product\')',[m.webstore_product_id,store,m.product_id]);}
+ await db.exec(fs.readFileSync('supabase/migrations/20261009054310_showcase_source_repair.sql','utf8'));
  const group=groupShowcaseItems(members)[0];
  const inputs=familyInputs(group,[]);
  const queue=async(req=request,newBase=false)=>(await db.query('select queue_showcase_family($1,$2,$3,$4,$5) as result',[store,group.key,req,inputs,newBase])).rows[0].result;
@@ -60,8 +61,8 @@ test('worker renders 15 combinations with one master generation, then reuses it'
  },storage:{from:()=>({upload:async()=>{uploaded++;return {};},getPublicUrl:(p)=>({data:{publicUrl:'https://storage/'+p}})})},from:()=>{throw new Error('Email disabled in fixture');}};
  const deps={getCatalog:async()=>members,fetchImage:async()=>({bytes:Buffer.from('image'),contentType:'image/png'}),
   generate:async()=>{generated++;return {bytes:Buffer.from('master'),contentType:'image/png',model:'test'};},
-  analyze:async({analysisPrompt})=>({model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
-  render:{validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
+  analyze:async({analysisPrompt,images})=>(analysisPrompt.startsWith('Inspect') || (assert.ok(images.slice(1).every(image=>image.contentType==='image/png')), assert.ok(Object.values(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(p=>!('placement' in p))), assert.ok(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).every(id=>/^p[0-9]+$/.test(id)))), {model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:images.length},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:Object.fromEntries(Object.keys(JSON.parse(analysisPrompt.split('PLACEMENTS=')[1])).map(id=>[id,[[.3,.3],[.6,.3],[.6,.6],[.3,.6]]]))}}),
+  render:{placementReference:async bytes=>bytes,validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
  try{
   const leader=await queue();
   const asset={...leader,analysis:{family:{key:group.key}}};
@@ -72,5 +73,45 @@ test('worker renders 15 combinations with one master generation, then reuses it'
   const next=await queue(request2);
   await runFamilyJob(admin,{...next,analysis:asset.analysis},'https://site',deps);
   assert.equal(generated,1);assert.equal(uploaded,61);
+  const retry=await queue('00000000-0000-4000-8000-000000000099');
+  const rejectedDeps={...deps,analyze:async request=>request.analysisPrompt.startsWith('Inspect') ? deps.analyze(request) : {analysis:{supported:false,reason:'Cannot map the leg placement'}}};
+  await assert.rejects(runFamilyJob(admin,{...retry,analysis:asset.analysis},'https://site',rejectedDeps),/Cannot map the leg placement/);
+  const saved=(await db.query('select master,status from webstore_showcase_families')).rows[0];
+  assert.equal(saved.status,'failed');assert.equal(saved.master.mapping_diagnostics.attempts.length,2);
+  assert.ok(saved.master.url);assert.equal(generated,1);
+  const recover=await queue('00000000-0000-4000-8000-000000000100');
+  await runFamilyJob(admin,{...recover,analysis:asset.analysis},'https://site',deps);
+  assert.equal(generated,1);
+  const canonical=(await db.query('select master from webstore_showcase_families')).rows[0].master;
+  const full=familyInputs(group,[]);
+  const single=familyInputs(group,[],undefined,ids[5]);
+  single.shared_master=canonical;single.master_signature=full.master_signature;single.source=full.source;
+  const before=(await db.query('select * from webstore_showcase_assets where webstore_product_id<>$1 order by id',[ids[5]])).rows;
+  const singleKey=group.key+':image:'+ids[5];
+  const singleRequest='00000000-0000-4000-8000-000000000101';
+  const queued=(await db.query('select queue_showcase_family($1,$2,$3,$4,false) result',[store,singleKey,singleRequest,single])).rows[0].result;
+  await assert.rejects(queue('00000000-0000-4000-8000-000000000102'),/already queued/);
+  const uploadsBefore=uploaded;
+  await runFamilyJob(admin,{...queued,analysis:{family:{key:singleKey}}},'https://site',deps);
+  assert.equal(uploaded-uploadsBefore,2);assert.equal(generated,1);
+  assert.deepEqual((await db.query('select * from webstore_showcase_assets where webstore_product_id<>$1 order by id',[ids[5]])).rows,before);
+
+  const missingRequest='00000000-0000-4000-8000-000000000103';
+  const skippedLeader=await queue(missingRequest);
+  const missingDeps={...deps,fetchImage:async url=>{if(url==='supplier1')throw new Error('Photo missing');return deps.fetchImage(url);}};
+  await runFamilyJob(admin,{...skippedLeader,analysis:asset.analysis},'https://site',missingDeps);
+  const partial=(await db.query('select status,error_details from webstore_showcase_assets')).rows;
+  assert.equal(partial.filter(r=>r.status==='review').length,12);
+  assert.equal(partial.filter(r=>r.status==='failed'&&r.error_details.startsWith('Skipped')).length,3);
+  const recoveredLeader=await queue('00000000-0000-4000-8000-000000000105');
+  await runFamilyJob(admin,{...recoveredLeader,analysis:asset.analysis},'https://site',{
+    ...missingDeps,recoverImage:async()=>({...await deps.fetchImage('current1'),sourceUrl:'current1'})
+  });
+  assert.equal((await db.query("select count(*)::int n from webstore_showcase_assets where status='review'")).rows[0].n,15,'recovered references survive catalog validation and finish the batch');
+  assert.equal(members[3].supplier_image_url,'supplier1','recovery must not mutate catalog identity');
+  const missingSourceLeader=await queue('00000000-0000-4000-8000-000000000104',true);
+  await runFamilyJob(admin,{...missingSourceLeader,analysis:asset.analysis},'https://site',{...deps,fetchImage:async url=>{if(url==='supplier0')throw new Error('Missing first color');return deps.fetchImage(url);}});
+  assert.equal((await db.query("select count(*)::int n from webstore_showcase_assets where status='review'")).rows[0].n,12);
+
  }finally{await db.close();}
 });
