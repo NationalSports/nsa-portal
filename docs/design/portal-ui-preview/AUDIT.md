@@ -19,6 +19,9 @@ The earlier claim that 22 navigation areas were clickable described navigation c
 9. **Store details were four generic tabs:** Catalog, Orders, Art & Logos, Analytics, Batches, Inventory, Roster, Coupons, Appearance, and Settings are represented with section-specific sample fields instead of the same detail form everywhere.
 10. **Sorting and new IDs were misleading:** Need-by sorting now actually sorts dates, and new sample estimate/order IDs are unique. Homepage overdue links open the matching sample account/order rather than always opening CCAA.
 11. **Search coverage was misleading:** The global search field advertised orders, jobs, and customers but searched only orders. It now shows results across sample record types. Search on restored table-based screens no longer tries to update a nonexistent generic list.
+12. **Status visibility was incomplete:** The order editor now keeps item, art, and production statuses, a received/required meter, PO/vendor/batch context, linked jobs, and labeled colored size boxes visible without expanding extra details. Jobs, order Jobs, List/Kanban, job details, and Tracking reuse these size quantities. Job Art and Sizes / receiving tabs are scoped to the selected job. Partial receiving updates all related sample views; PO/warehouse list statuses are derived rather than contradictory fixtures. On mobile, receiving rows become labeled cards with all counts, statuses, and entry controls visible.
+
+Visual review captured all 22 staff navigation screens and separately inspected the order editor, order Jobs, job details, job Art, job Sizes / receiving, PO receiving, Tracking, and Kanban. Order/job layouts were checked at 1024, 736, 390, and 320 pixels. A partial-size receipt was verified across receiving, the order item, and job details. This remains a sample-data visual review; the remaining operational gaps below are still open.
 
 ## Section-by-section findings still to resolve
 

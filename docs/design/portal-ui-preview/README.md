@@ -8,7 +8,8 @@ Open `index.html` in a browser to explore it. Fonts and the bundled preview runt
 
 ## Review paths
 
-- Start in **Art Dashboard** and open **Fall Gear** to review the staff proof collection.
+- Start in the **SO-2877 order editor** to inspect the item status, art status, production status, receiving progress, PO/batch links, and colored per-size received/required boxes. They remain visible with extra details collapsed.
+- Navigate to **Art Dashboard** and open **Fall Gear** to review the staff proof collection.
 - Choose **Preview coach portal** or **Coach view** for the customer experience. The coach sees one order collection, with a continuous garment and placement strip, an enlarged gallery, and one art conversation.
 - Approve a placement and advance, or inspect multiple placements and approve the reviewed placements together.
 - Request changes for one garment/placement or for all placements using shared artwork. The dialog names the affected placements before saving.
@@ -19,6 +20,8 @@ Open `index.html` in a browser to explore it. Fonts and the bundled preview runt
 ## Job visibility and layout
 
 The order's Jobs tab defaults to **List** and offers **Kanban** as an alternate view of the same job records. Order jobs are scoped to that order; the global Production Board can show jobs from multiple orders.
+
+The global Jobs screen uses the same rich List/Kanban layout. Job details retain separate statuses and per-size receiving boxes; Art and Sizes / receiving tabs show the selected job's information. Partial receipts remain amber, complete receipts green, in-transit units purple, and cancellations red, with text labels accompanying color. PO and warehouse statuses derive from the same sample quantities. Receiving switches to labeled size cards on mobile so its entry controls remain visible.
 
 The list preserves the current production UI's core information: job identity, artwork, decoration method and position, garment count, received/total units, items status, art status, production status, and job actions. Garment subrows keep SKU, name, color, and received/expected quantities for every size visible. The richer Kanban cards display these same fields, plus artist, need-by, PO context, and notes. Split, count, outside-decoration, and tracking context can also appear when present.
 
