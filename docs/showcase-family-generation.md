@@ -107,7 +107,20 @@ set's supplier neck label is not visible; concealment versus omission remains
 unconfirmed. No exact pixel-preservation or production-artwork guarantee follows
 from this visual review.
 
+The second whole-item test generated all 12 Port & Co PC90H combinations under
+batch `e8f9bd52-f869-4148-b261-f966db452ba9`, started 07:12:09 UTC on October 11.
+Gold, Jet Black, Royal and White each produced three designs, with four high
+color seeds and eight medium design edits. All 12 finished by 07:14:53 UTC with
+no errors or retries. Each was inspected in Before/After and enlarged hero views
+after the five-minute wait. Within-color hood, drawstrings, pocket, cuffs,
+fabric, neck label and pose remained visually consistent. Expected lettering
+and artwork borders were visible. The prior Gold horizontal placement issue
+was not apparent. Logo scale varies between independent color seeds: Gold and
+Jet Black look smaller across the chest than their standard references. This
+remains a review flag; exact size, label lettering and artwork pixels were not
+verified. No code change was made for this additional data point.
+
 All new candidates remain in review. Nothing was approved or published. Keep
-PR #2509 draft: gold PC90H and other styles/colors still need live coverage, and
-the charcoal neck-label detail needs review. Successful generation and passing
+PR #2509 draft: PC90H logo scale, the charcoal NKFD9889 neck-label detail, and
+other styles/colors still need review. Successful generation and passing
 automated tests do not establish exact garment or artwork fidelity.
