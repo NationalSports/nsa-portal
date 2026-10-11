@@ -120,7 +120,21 @@ Jet Black look smaller across the chest than their standard references. This
 remains a review flag; exact size, label lettering and artwork pixels were not
 verified. No code change was made for this additional data point.
 
+The third whole-item test generated all six women's CN9402 combinations under
+batch `dc34b59e-52dc-4e76-802d-cb66c7cb2397`, started 07:28:26 UTC on October 11.
+Team Black, Team Anthracite and Team Royal each produced two designs, with three
+high color seeds and three medium edits. All six finished by 07:30:39 UTC with
+no errors or additional retries, including Royal despite its prior missing-photo
+error. Each was inspected against the current supplier reference and enlarged
+after the five-minute wait. All six showed adult women's shoulder proportions,
+gentle waist shaping and full torso length, without obvious cropping or artificial
+cinching. Within each color the silhouette, zipper, white cords, pockets,
+heather, neck tag and Swoosh remained visually consistent. Serra script appears
+smaller than its standard reference, most noticeably on Black; this remains a
+review flag. Exact fit dimensions, decoration size and artwork pixels were not
+verified. No code change was made for this additional silhouette test.
+
 All new candidates remain in review. Nothing was approved or published. Keep
 PR #2509 draft: PC90H logo scale, the charcoal NKFD9889 neck-label detail, and
-other styles/colors still need review. Successful generation and passing
+CN9402 script scale and other styles/colors still need review. Successful generation and passing
 automated tests do not establish exact garment or artwork fidelity.
