@@ -19,16 +19,18 @@ test('stage drilldown opens the actual order and period controls remain interact
   click(container.querySelector('.ao-legend')); expect(container.querySelector('.ao-legend').getAttribute('aria-pressed')).toBe('false');
 });
 
-test.each([['at_once', 'At-Once', '$100'], ['stores', 'Stores', '$200'], ['24_7', '24/7', '$400']])('%s dashboard renders only its own new order value', (dashboard, title, expected) => {
+test.each([['at_once', 'At-Once', '$100'], ['stores', 'Stores', '$200'], ['24_7', '24/7 At-Once', '$700']])('%s dashboard renders only its own new order value', (dashboard, title, expected) => {
   const stores = [{id:'team',name:'Webstore',org_type:'team'},{id:'club',name:'Club',org_type:'club'},{id:'school',name:'School',org_type:'all_school'}];
   const orders = [null,'team','club','school'].map((webstore_id,i)=>({id:'SO-'+i,webstore_id,created_at:'2026-10-10',value:(i+1)*100,stage:'need_order'}));
   act(() => root.render(<AtOnceDashboard dashboard={dashboard} orders={orders} stores={stores} calcStatus={o=>o.stage} calcValue={o=>o.value} now={new Date(2026,9,10)} onOpenOrder={()=>{}}/>));
   expect(container.querySelector('h1').textContent).toBe(title+', at a glance.');
   expect(container.querySelector('.ao-metric-featured strong').textContent).toBe(expected);
-  if(dashboard==='stores'){
+  if(dashboard==='24_7'){
     const select=container.querySelector('[aria-label="Store type"]');
     act(()=>{select.value='club';select.dispatchEvent(new Event('change',{bubbles:true}));});
     expect(container.querySelector('.ao-metric-featured strong').textContent).toBe('$300');
     expect(container.querySelector('[aria-label="Store"]').textContent).not.toContain('School');
+  } else if(dashboard==='stores') {
+    expect(container.querySelector('[aria-label="Store type"]').textContent).not.toContain('Club stores');
   } else expect(container.querySelector('[aria-label="Store type"]')).toBeNull();
 });

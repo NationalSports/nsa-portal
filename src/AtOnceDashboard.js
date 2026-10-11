@@ -42,8 +42,8 @@ export default function AtOnceDashboard({ orders = [], customers = [], stores: s
   const [storeState, setStoreState] = useState(suppliedStores ? 'ready' : 'loading');
   const [retry, setRetry] = useState(0);
   const [days, setDays] = useState(30);
-  const dashboardTitle = dashboard === 'stores' ? 'Stores' : dashboard === '24_7' ? '24/7' : 'At-Once';
-  const [source, setSource] = useState(dashboard === 'stores' ? 'webstore' : dashboard === '24_7' ? 'all_school' : 'direct');
+  const dashboardTitle = dashboard === 'stores' ? 'Stores' : dashboard === '24_7' ? '24/7 At-Once' : 'At-Once';
+  const [source, setSource] = useState(dashboard === 'stores' ? 'webstore' : dashboard === '24_7' ? '24_7' : 'direct');
   const [storeId, setStoreId] = useState('all');
   const [queue, setQueue] = useState('open');
   const [search, setSearch] = useState('');
@@ -58,7 +58,7 @@ export default function AtOnceDashboard({ orders = [], customers = [], stores: s
         // Fetch only stores represented in this user's loaded orders; no unbounded catalog query.
         const ids = [...new Set(orders.map(o => o.webstore_id).filter(Boolean))], result = [];
         for (let i = 0; i < ids.length; i += 100) {
-          const { data, error } = await supabase.from('webstores').select('id,name,org_type').in('id', ids.slice(i, i + 100));
+          const { data, error } = await supabase.from('webstores').select('id,name,org_type,source').in('id', ids.slice(i, i + 100));
           if (error) throw error;
           result.push(...(data || []));
         }
@@ -79,8 +79,8 @@ export default function AtOnceDashboard({ orders = [], customers = [], stores: s
   };
   const chooseQueue = value => { setQueue(value); setSearch(''); setPage(0); };
   return <section className="ao-dashboard" aria-label={`${dashboardTitle} operations dashboard`}>
-    <header className="ao-heading"><div><div className="ao-eyebrow"><span/> OPERATIONS OVERVIEW</div><h1>{dashboardTitle}, at a glance<span>.</span></h1><p>{dashboard === '24_7' ? 'All School / 24/7 orders, from payment to fulfillment.' : dashboard === 'stores' ? 'Webstore operations. Club stores are reported separately using the store-type filter.' : 'Direct At-Once orders, from creation to the final handoff.'}</p></div><div className="ao-period" aria-label="Reporting period">{[7, 30, 90].map(n => <button type="button" key={n} aria-pressed={days === n} onClick={() => setDays(n)}>{n} days</button>)}</div></header>
-    <div className="ao-toolbar"><div className="ao-filters">{dashboard === 'stores' && <label>Store type<select aria-label="Store type" value={source} onChange={e => { setSource(e.target.value); setStoreId('all'); }}><option value="webstore">Webstores</option><option value="club">Club stores</option><option value="omg">OMG stores</option><option value="unclassified">Unclassified stores</option></select></label>}{dashboard !== 'at_once' && <label>Store<select aria-label="Store" value={storeId} onChange={e => setStoreId(e.target.value)} disabled={source === 'omg'}><option value="all">All {source === 'club' ? 'club stores' : source === 'webstore' ? 'webstores' : 'stores'}</option>{stores.filter(s => storeChannel(s) === source).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}</div><span className="ao-scope">{dateLabel(report.start)} – {dateLabel(new Date(report.end.getTime() - 1))} <span>· Intake period</span></span></div>
+    <header className="ao-heading"><div><div className="ao-eyebrow"><span/> OPERATIONS OVERVIEW</div><h1>{dashboardTitle}, at a glance<span>.</span></h1><p>{dashboard === '24_7' ? 'Club and All School stores, from payment to fulfillment.' : dashboard === 'stores' ? 'Regular webstores and separately classified OMG-ingested stores.' : 'Direct At-Once orders, from creation to the final handoff.'}</p></div><div className="ao-period" aria-label="Reporting period">{[7, 30, 90].map(n => <button type="button" key={n} aria-pressed={days === n} onClick={() => setDays(n)}>{n} days</button>)}</div></header>
+    <div className="ao-toolbar"><div className="ao-filters">{dashboard === 'stores' && <label>Store type<select aria-label="Store type" value={source} onChange={e => { setSource(e.target.value); setStoreId('all'); }}><option value="webstore">Webstores</option><option value="omg">OMG-ingested stores</option><option value="unclassified">Unclassified stores</option></select></label>}{dashboard === '24_7' && <label>Store type<select aria-label="Store type" value={source} onChange={e => { setSource(e.target.value); setStoreId('all'); }}><option value="24_7">All 24/7 At-Once stores</option><option value="club">Club stores</option><option value="all_school">All School stores</option></select></label>}{dashboard !== 'at_once' && <label>Store<select aria-label="Store" value={storeId} onChange={e => setStoreId(e.target.value)}><option value="all">All {source === 'club' ? 'club stores' : source === 'webstore' ? 'webstores' : 'stores'}</option>{stores.filter(s => storeChannel(s) === source || (source === '24_7' && ['club', 'all_school'].includes(storeChannel(s)))).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}</div><span className="ao-scope">{dateLabel(report.start)} – {dateLabel(new Date(report.end.getTime() - 1))} <span>· Intake period</span></span></div>
     {dashboard !== 'at_once' && storeState !== 'ready' && <div className="ao-notice" role="status">{storeState === 'loading' ? 'Loading store classification…' : 'Store classification is unavailable or incomplete. Totals below include only orders whose store type could be verified; unclassified orders are kept separate.'}{['error', 'partial'].includes(storeState) && <button type="button" onClick={() => setRetry(r => r + 1)}>Retry</button>}</div>}
     {dashboard !== 'at_once' && ['loading', 'error', 'unavailable'].includes(storeState) ? <div className="ao-panel ao-empty" role="status"><h2>{storeState === 'loading' ? 'Preparing store reporting…' : 'Store reporting is unavailable'}</h2><p>Verified store classifications are required before displaying totals.</p></div> : <>
     <div className="ao-metrics">

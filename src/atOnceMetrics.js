@@ -11,6 +11,7 @@ export const STAGES = [
 ];
 export function storeChannel(store) {
   if (!store) return 'unclassified';
+  if (store.source === 'omg') return 'omg';
   if (store.org_type === 'all_school') return 'all_school';
   if (store.org_type === 'club') return 'club';
   if (store.org_type === 'team') return 'webstore';
@@ -46,7 +47,7 @@ export function buildAtOnceReport({ orders = [], customers = [], stores = [], ca
     try { const result = calcValue(order); if (result !== null && result !== undefined && Number.isFinite(Number(result))) value = Number(result); } catch { /* Missing financial data is not a zero sale. */ }
     const due = portalDate(order.expected_date);
     return { order, id: order.id, customer: customerMap.get(order.customer_id)?.name || 'Unassigned customer', store: store?.name || (order.webstore_id ? 'Store ' + order.webstore_id : ''), channel, status, value, created: portalDate(order.created_at), due, overdue: status !== 'complete' && !!due && due < today };
-  }).filter(r => (source === 'all' || r.channel === source) && (storeId === 'all' || r.order.webstore_id === storeId));
+  }).filter(r => (source === 'all' || r.channel === source || (source === '24_7' && ['club', 'all_school'].includes(r.channel))) && (storeId === 'all' || r.order.webstore_id === storeId));
   const period = rows.filter(r => r.created && r.created >= start && r.created < end);
   const previous = rows.filter(r => r.created && r.created >= previousStart && r.created < start);
   const open = rows.filter(r => r.status !== 'complete');

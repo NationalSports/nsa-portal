@@ -60,3 +60,15 @@ test('direct, webstore, club, and 24/7 reports never mix channels; missing metad
   expect(buildAtOnceReport({...options, orders, stores:[], source:'webstore'}).intake).toBe(0);
   expect(buildAtOnceReport({...options, orders, stores:[], source:'all_school'}).intake).toBe(0);
 });
+
+test('24/7 At-Once combines club and All School only, including backlog and trend totals', () => {
+  const stores = [{id:'club',org_type:'club'},{id:'school',org_type:'all_school'},{id:'team',org_type:'team'},{id:'ingest',org_type:'club',source:'omg'}];
+  const orders = ['club','school','team','ingest','unknown'].map(id=>order(id,{webstore_id:id}));
+  orders.push(order('omg-link',{webstore_id:'club',omg_store_id:'OMG-42'}));
+  const report = buildAtOnceReport({...options,orders,stores,source:'24_7'});
+  expect(report.rows.map(r=>r.id)).toEqual(['club','school']);
+  expect(report.intake).toBe(200);
+  expect(report.open).toHaveLength(2);
+  expect(report.daily.reduce((sum,d)=>sum+d.value,0)).toBe(200);
+  expect(buildAtOnceReport({...options,orders,stores,source:'omg'}).rows.map(r=>r.id)).toEqual(['ingest','omg-link']);
+});
