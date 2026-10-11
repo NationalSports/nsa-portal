@@ -120,3 +120,37 @@ The application's route inventory also contains Products, Inventory, Batch POs, 
 ## Design acceptance rule
 
 Before any production implementation, every current field, action, filter, status, and access rule needs a visible or deliberately placed destination. Layout changes can make the interface calmer; they cannot silently narrow what users can see or do. Every remaining gap above stays open until its replacement is reviewed.
+
+## October 11 — Pro-inspired page character and compact rows
+
+Compared the operational lists with the current source, especially `rSOs` in `src/app.js` (compact rows with separate art, item coverage, messages, shipping and order status). The production browser required sign-in, so the source and supplied production screenshots were the comparison evidence. Arc Pro's public references informed the composition; no gated source or licensed components were copied.
+
+| Preview page | Visual treatment / public reference | Information and actions retained |
+| --- | --- | --- |
+| Dashboard | Athletic overview, compact priority queue, metrics dashboard | Existing business metrics, roles, workflow links, trends |
+| Messages | Inbox triage / support conversation split | Three scoped threads, recipients, departments, attachments, replies, record links |
+| AI Inbox | Source email / extraction split, review workspace | Email, intent, sizes, SKU, customer, acknowledgement/error, draft/cart/estimate actions |
+| AI Tasks | Agent-run queue, status counts and compact task grid | Source request, task kind, error/acknowledgement, detail/result/source actions |
+| Estimates | Compact quote register / data grid | ID, created, account/memo, items/total, rep, status, linked SO, email, open/convert/copy/delete |
+| Sales Orders | Compact operational register / data grid | Created/account/memo/due/rep, total, art, receipt count, unread, shipping, status, open/copy/delete |
+| Invoices | Accounting register + invoice-studio document detail | Totals/paid/balance, dates/age/source/rep, payments, credits, cost variance, documents and actions |
+| Receive Payments | Cash ledger with distinct funds-on-account band | Applied/unapplied, credits, invoice balances, allocation and management actions |
+| OMG Stores | Branded store rows with financial context | Channels, rep, dates, orders/revenue, profit/deposits and ingestion/export actions |
+| Webstores | Branded storefront directory | Revenue/orders, dates, customer/SO, clone/new/default actions; all detail tabs |
+| Sales Tools | Compact tool workbench | All eight tools, inputs/results and contextual actions |
+| Jobs | Dense list and project board | Independent item/art/production statuses, garment/size coverage, PO/batch, notes, artist, actions |
+| Uniform Jobs | Compact review register + board | Quote/units, customer/contact, commission/working reps, proof version/lock, payment, fulfillment/due/age |
+| Art Dashboard | Gallery-led order collection, artist queue, production-file grid | Continuous placement proofs, versioned approvals, library, assignments and file/production readiness |
+| Prod Board | Stage-coded board and compact list | Same fields and actions as Jobs, with per-size garment rows |
+| Warehouse | Station header + dispatch/receipt grids | All nine queues, size-level stock/receipt data, shortages, assignments, packing, labels and bagging |
+| Purchase Orders | Receipt register with inline status-colored size tiles | All source types, dates/rep/batch, cost, raw receipt/cancel/open units, overages, receipt history and actions |
+| Customers | Account-family directory with tagged identities | Tag/family, rep/CSR/contact, tier/terms/tax, search tags, A/R and all detail tabs/actions |
+| Vendors | Supplier directory and connection types | Provider/type/contact/terms/owed/status, eligibility, catalogs, pricing and API-test previews |
+| Team | Compact avatar directory / roles & permissions | Roles/CSR, email/phone, access/assignments, invite/deactivate actions and all access controls |
+| Reports | Split bar / metrics explorer plus labeled comparisons | All 14 report views, complete raw tables, record links, filters and export actions |
+| Settings | Section rail / settings page | All 11 sections, fields, pricing/shipping matrices and configuration actions |
+| Coach portal | High-contrast branded navigation + continuous gallery | All nine sections; per-placement/version approvals, reviewed scope, changes/conversation and order/billing/roster/store context |
+
+Public references: [Data grid](https://uiarc.dev/components/data-grid), [Invoice studio](https://uiarc.dev/components/blocks/invoice-studio), [Inbox triage](https://uiarc.dev/components/blocks/inbox-triage), [Project board](https://uiarc.dev/components/blocks/project-board), [Team directory](https://uiarc.dev/components/blocks/team-directory), [Settings page](https://uiarc.dev/components/blocks/settings-page), [Metrics dashboard](https://uiarc.dev/components/blocks/metrics-dashboard), [Release readiness](https://uiarc.dev/components/blocks/release-readiness).
+
+Validation: all 22 staff pages were visually inspected individually, followed by key record details, report subviews, coach proof review, mobile and theme screens. Existing 217 tab/detail checks, receipt-overage/job-allocation guards, warehouse workflows and scoped coach approvals passed. A separate density check measured desktop SO rows at 57px versus 206–216px before this pass; uniform review rows at 105px. Wider tables use contained horizontal scrolling on narrow desktop panels, and labeled rows on phones. Checked 1440, 1024, 736, 390 and 320px. No production runtime files changed. Earlier functional limitations remain: illustrative data, some filters and advanced actions are contextual previews, and this does not establish exhaustive production parity.

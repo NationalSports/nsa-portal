@@ -58,3 +58,7 @@ The audit pass restores contextual record/customer links, size-level partial rec
 The prototype includes illustrative garment shapes and sample artwork. These are layout examples, not final production proof assets. Reports include sample account breakdowns and sample conversion cohorts. Arc UI informed the interface direction; this prototype does not include licensed Arc Pro source.
 
 No production components, routes, dependencies, database schema, or deployment configuration are changed by this proposal.
+
+## Pro-inspired page design pass
+
+The local preview now uses compact order/quote registers, inline size-level PO receipts, a warehouse station layout, paper-style invoice details, source/extraction AI intake, directory identities, branded store rows and a settings section rail. Reports add labeled comparisons from their existing sample rows. The continuous coach art review remains one collection with exact placement/version approvals. Desktop SO rows measure 57px (previously 206–216px); all fields and action intents remain represented. This is an independent preview inspired by public Arc Pro examples, with no licensed Pro source copied. See AUDIT.md for the page map and validation.
