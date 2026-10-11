@@ -94,20 +94,37 @@ export function EnabledSalesOrderEditGate({editor:Editor,...props}) {
   </div>;
 }
 export function SalesOrderReadView({order,customer}) {
-  return <section aria-label="Sales order details" className="card" style={{padding:20}}>
-    <h2>{order.id} · {customer?.name||'Sales order'}</h2>
-    <p>{order.memo}</p><p>Status: {order.status||'Open'}{order.po_number?' · Customer PO: '+order.po_number:''}</p>
-    {order._itemsHydrated===false&&<p>Order details are still loading.</p>}
-    <div style={{overflowX:'auto'}}><table style={{width:'100%',textAlign:'left'}}>
-      <thead><tr><th>Item</th><th>Color</th><th>Sizes / quantities</th><th>Decoration</th><th>Purchase orders</th></tr></thead>
-      <tbody>{(order.items||[]).map((item,i)=><tr key={item.line_id||i}>
-        <td>{item.sku} {item.name}</td><td>{item.color}</td>
-        <td>{Object.entries(item.sizes||{}).map(([size,qty])=>size+': '+qty).join(', ')||item.qty_only||item.est_qty||'—'}</td>
-        <td>{(item.decorations||[]).map((d,i)=><div key={i}>{d.name||d.type||d.kind||'Decoration'} {d.location||''}</div>)}</td>
-        <td>{(item.po_lines||[]).map((p,i)=><div key={i}>{p.po_id} · {p.status||'Open'}</div>)}</td>
-      </tr>)}</tbody>
-    </table></div>
-    {!!order.jobs?.length&&<><h3>Production</h3><ul>{order.jobs.map(job=><li key={job.id}>{job.id} · {job.art_name||''} · {job.prod_status||job.status||'Open'}</li>)}</ul></>}
-    {!!order.art_files?.length&&<><h3>Artwork</h3><ul>{order.art_files.map((art,i)=><li key={art.id||i}>{art.name||art.id} · {art.status||''}</li>)}</ul></>}
+  const [tab,setTab]=useState('items');
+  const tabs=[['items','Line Items'],['art','Art Library'],['jobs','Jobs']];
+  const field=(label,value)=><div style={{minWidth:150,flex:'1 1 150px'}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:5}}>{label}</div><div style={{minHeight:35,padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:6,background:'#f8fafc',fontSize:12,color:'#334155'}}>{value||'—'}</div></div>;
+  return <section aria-label="Sales order details" style={{color:'#334155'}}>
+    <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'12px 16px',background:'white',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:12}}>
+      <strong style={{color:'#1e40af',fontSize:15}}>{order.id}</strong>
+      <span style={{padding:'3px 9px',borderRadius:12,background:'#f1f5f9',color:'#475569',fontSize:11,fontWeight:700}}>{(order.status||'Open').replace(/_/g,' ')}</span>
+      <span style={{color:'#1e40af',fontSize:12,fontWeight:600}}>{customer?.name||''}</span>
+      <span style={{color:'#64748b',fontSize:12,flex:1}}>{order.memo||''}</span>
+    </div>
+    <div className="card" style={{padding:16,marginBottom:12}}>
+      <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+        {field('Customer',customer?.name)}{field('Memo',order.memo)}{field('School PO #',order.po_number)}{field('Need-by',order.need_by||order.due_date)}
+      </div>
+    </div>
+    <nav aria-label="Sales order sections" style={{display:'flex',gap:4,borderBottom:'1px solid #cbd5e1',marginBottom:12}}>
+      {tabs.map(([key,label])=><button key={key} type="button" onClick={()=>setTab(key)} aria-current={tab===key?'page':undefined} style={{padding:'10px 16px',border:0,borderBottom:tab===key?'3px solid #2563eb':'3px solid transparent',background:'transparent',color:tab===key?'#1d4ed8':'#64748b',fontWeight:700,cursor:'pointer'}}>{label}</button>)}
+    </nav>
+    {tab==='items'&&<div>
+      {order._itemsHydrated===false&&<div role="status" style={{padding:12}}>Order details are still loading.</div>}
+      {(order.items||[]).map((item,i)=><div key={item.line_id||i} className="card" style={{padding:16,marginBottom:12}}>
+        <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}><strong style={{color:'#1e40af'}}>{item.sku||'Item'}</strong><strong>{item.name||''}</strong><span>{item.color||''}</span></div>
+        <div style={{marginTop:12,display:'flex',gap:16,flexWrap:'wrap',fontSize:12}}>
+          <div><strong>Sizes:</strong> {Object.entries(item.sizes||{}).map(([size,qty])=>size+': '+qty).join('   ')||item.qty_only||item.est_qty||'—'}</div>
+          {!!item.decorations?.length&&<div><strong>Decoration:</strong> {item.decorations.map(d=>[d.name||d.type||d.kind||'Decoration',d.location].filter(Boolean).join(' · ')).join(', ')}</div>}
+          {!!item.po_lines?.length&&<div><strong>Purchase orders:</strong> {item.po_lines.map(p=>[p.po_id,p.status].filter(Boolean).join(' · ')).join(', ')}</div>}
+        </div>
+      </div>)}
+      {!order.items?.length&&order._itemsHydrated!==false&&<div className="card" style={{padding:16}}>No line items.</div>}
+    </div>}
+    {tab==='art'&&<div className="card" style={{padding:16}}>{(order.art_files||[]).map((art,i)=><div key={art.id||i} style={{padding:'8px 0',borderBottom:'1px solid #e2e8f0'}}>{art.name||art.id} {art.status&&'· '+art.status}</div>)}{!order.art_files?.length&&'No artwork attached.'}</div>}
+    {tab==='jobs'&&<div className="card" style={{padding:16}}>{(order.jobs||[]).map((job,i)=><div key={job.id||i} style={{padding:'8px 0',borderBottom:'1px solid #e2e8f0'}}>{job.id} · {job.art_name||'Production job'} · {job.prod_status||job.status||'Open'}</div>)}{!order.jobs?.length&&'No production jobs.'}</div>}
   </section>;
 }

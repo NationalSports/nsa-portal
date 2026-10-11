@@ -23,8 +23,9 @@
 
 ## Behavior
 
-Opening a sales order shows a read-only overview (items, sizes, decorations,
-PO status, jobs and artwork). **Edit order** acquires a 120-second server lease
+Opening a sales order keeps the order layout under a view-only ownership banner,
+with read-only order fields and tabs for items, artwork and jobs. The
+side-effectful editor is not mounted until **Edit order** acquires a 120-second server lease
 and loads a complete current document before mounting either existing editor.
 Heartbeat renewal runs every 30 seconds. Viewing does not acquire a lease.
 The original editor's detailed tabs and actions remain available after entering

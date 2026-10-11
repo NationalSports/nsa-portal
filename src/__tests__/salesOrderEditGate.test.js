@@ -14,6 +14,8 @@ beforeEach(()=>{global.crypto=require('crypto').webcrypto;global.IS_REACT_ACT_EN
 afterEach(async()=>{await act(async()=>root.unmount());host.remove();if(owner)localStorage.setItem('nsa_user',owner);else localStorage.removeItem('nsa_user');jest.clearAllMocks();});
 test('view-only does not mount editor or write; StrictMode still allows explicit editing',async()=>{
  await render();expect(latest).toBeNull();expect(client.rpc).not.toHaveBeenCalled();expect(host.textContent).toContain('OLD');
+ expect(host.querySelector('[aria-label="Sales order sections"]')).toBeTruthy();
+ await click('Art Library');expect(client.rpc).not.toHaveBeenCalled();expect(saved).not.toHaveBeenCalled();
  await click('Edit order');expect(latest.order.memo).toBe('fresh');await click('Save edit');
  expect(saved.mock.calls[0][0]).toMatchObject({memo:'edited',_version:4,_editLease:{generation:1}});
 });
