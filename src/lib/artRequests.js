@@ -42,6 +42,9 @@ export function closeOpenArtRequests(reqs) {
 // an art_requested job whose only request was recalled is nobody's ask.
 export function jobAwaitingArtist(job) {
   if (!job) return false;
+  if (['production_files_needed', 'upload_emb_files', 'order_dtf_transfers'].includes(job.art_status)) {
+    return (Array.isArray(job.art_requests) ? job.art_requests : []).some(r => r?.type === 'production_files' && OPEN_ART_REQ_STATUSES.includes(r.status));
+  }
   if (job.art_status !== 'art_requested' && job.art_status !== 'art_in_progress') return false;
   return (Array.isArray(job.art_requests) ? job.art_requests : [])
     .some((r) => r && OPEN_ART_REQ_STATUSES.includes(r.status));
