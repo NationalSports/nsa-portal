@@ -18,8 +18,16 @@ describe('isArtJobsOnlyChange', () => {
       jobs: prev.jobs.map(j => j.id === 'JOB-2444-03' ? { ...j, art_status: 'art_complete', _art_moved: true } : j), updated_at: 'now' };
     expect(isArtJobsOnlyChange(prev, next)).toBe(true);
   });
-  it('routes a newly built job (added, none removed)', () => {
-    expect(isArtJobsOnlyChange(prev, { ...prev, jobs: [...prev.jobs, { id: 'JOB-2444-05' }] })).toBe(true);
+  // A stale tab's full save deletes every DB job missing from its list and re-inserts art rows it
+  // still holds — so adds of jobs and removals of art must bump the version (full save) to make
+  // that tab back off, instead of going light.
+  it('keeps the full save when a job is added (or has no id yet)', () => {
+    expect(isArtJobsOnlyChange(prev, { ...prev, jobs: [...prev.jobs, { id: 'JOB-2444-05' }] })).toBe(false);
+    expect(isArtJobsOnlyChange(prev, { ...prev, jobs: [...prev.jobs, { art_status: 'needs_art' }] })).toBe(false);
+  });
+  it('keeps the full save when an art row is removed; a new art row stays light', () => {
+    expect(isArtJobsOnlyChange(prev, { ...prev, art_files: [] })).toBe(false);
+    expect(isArtJobsOnlyChange(prev, { ...prev, art_files: [...prev.art_files, { id: 'af2', prod_files: [] }] })).toBe(true);
   });
   it('keeps the full save when a line item changes', () => {
     const next = { ...prev, jobs: [...prev.jobs], items: [{ ...prev.items[0], sizes: { M: 6 } }] };

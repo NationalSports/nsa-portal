@@ -28,9 +28,21 @@ export function isArtJobsOnlyChange(prev, next) {
   const artChanged = stableStringify(prev.art_files || []) !== stableStringify(next.art_files || []);
   const jobsChanged = stableStringify(prev.jobs || []) !== stableStringify(next.jobs || []);
   if (!artChanged && !jobsChanged) return false;          // nothing to save here; let the normal path decide
+  // Row ADDS and REMOVALS that another tab's stale full save would undo go through the full save,
+  // whose version bump makes that stale tab back off: the full save deletes every database job
+  // missing from its list (so a job added here would vanish), and re-inserts art rows it still
+  // holds (so an art row removed here would come back). Edits to existing rows and new art rows
+  // (whose deletion is guarded by known ids) stay on the light path.
+  const ids = rows => new Set((rows || []).map(r => r && r.id).filter(Boolean));
   if (jobsChanged) {
-    const nextIds = new Set((next.jobs || []).map(j => j && j.id).filter(Boolean));
-    if ((prev.jobs || []).some(j => j && j.id && !nextIds.has(j.id))) return false;
+    const prevIds = ids(prev.jobs), nextIds = ids(next.jobs);
+    if ([...prevIds].some(id => !nextIds.has(id))) return false;   // job removed
+    if ([...nextIds].some(id => !prevIds.has(id))) return false;   // job added
+    if ((next.jobs || []).some(j => j && !j.id)) return false;      // job without an id yet
+  }
+  if (artChanged) {
+    const nextArt = ids(next.art_files);
+    if ([...ids(prev.art_files)].some(id => !nextArt.has(id))) return false; // art row removed
   }
   return stableStringify(withoutArtJobs(prev)) === stableStringify(withoutArtJobs(next));
 }
