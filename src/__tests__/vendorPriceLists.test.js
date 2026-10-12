@@ -1,3 +1,5 @@
+let mockCreateOcr;
+jest.mock('tesseract.js',()=>({createWorker:(...args)=>mockCreateOcr(...args)}));
 let mockAuth;
 jest.mock('../../netlify/functions/_shared',()=>({corsHeaders:()=>({}),verifyUser:async()=>mockAuth}));
 jest.mock('../utils',()=>({authFetch:jest.fn()}));
@@ -75,13 +77,58 @@ test('Excel extraction preserves text SKUs, formatted prices, sheets and physica
   expect(result[0].content).toContain('Row 6: 1370399-001');
   expect(sheetChunks([['sku','cost'],['001','€12']], 'EU')[0].content).toContain('€12');
 });
-test('PDF extraction cites pages and refuses scanned pages without silently indexing a partial file',async()=>{
+
+function pdfFixture(pages) {
   const destroy=jest.fn(async()=>{});
-  window.pdfjsLib={GlobalWorkerOptions:{},getDocument:jest.fn(()=>({destroy,promise:Promise.resolve({numPages:2,getPage:async p=>({getTextContent:async()=>({items:p===1?[{str:'JY6033 Navy USD cost $20.00',transform:[0,0,0,0,10,40],hasEOL:true}]:[]})})})}))};
-  const file={name:'list.pdf',size:20,arrayBuffer:async()=>new ArrayBuffer(20)};
-  await expect(extractPriceList(file)).rejects.toThrow(/Page 2.*OCR/);
-  expect(destroy).toHaveBeenCalled();
-  window.pdfjsLib.getDocument=()=>({destroy,promise:Promise.resolve({numPages:1,getPage:async()=>({getTextContent:async()=>({items:[{str:'JY6033 Navy USD cost $20.00',transform:[0,0,0,0,10,40]}]})})})});
+  window.pdfjsLib={OPS:{paintImageXObject:85},GlobalWorkerOptions:{},getDocument:jest.fn(()=>({destroy,promise:Promise.resolve({numPages:pages.length,getPage:async p=>pages[p-1]})}))};
+  return {destroy,file:{name:'list.pdf',size:20,arrayBuffer:async()=>new ArrayBuffer(20)}};
+}
+function page(text='',image=false) {
+  return {getTextContent:async()=>({items:text?[{str:text,transform:[0,0,0,0,10,40]}]:[]}),getOperatorList:async()=>({fnArray:image?[85]:[]}),getViewport:({scale})=>({width:600*scale,height:800*scale}),render:()=>({promise:Promise.resolve(),cancel:jest.fn()}),cleanup:jest.fn()};
+}
+afterEach(()=>{jest.restoreAllMocks();delete window.pdfjsLib;});
+test('searchable PDFs keep native text and never start OCR',async()=>{
+  mockCreateOcr=jest.fn();
+  const {file,destroy}=pdfFixture([page('JY6033 Navy USD cost $20.00')]);
   expect((await extractPriceList(file))[0]).toEqual({location:'PDF page 1',content:'JY6033 Navy USD cost $20.00'});
-  delete window.pdfjsLib;
+  expect(mockCreateOcr).not.toHaveBeenCalled();expect(destroy).toHaveBeenCalled();
+});
+test('mixed PDFs automatically OCR scans and selectable headings over scanned tables',async()=>{
+  jest.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({});
+  const worker={recognize:jest.fn().mockResolvedValueOnce({data:{text:'1370399-001 USD Cost $12.50',confidence:94}}).mockResolvedValueOnce({data:{text:'JY6033 Cost $20.00',confidence:60}}),terminate:jest.fn(async()=>{})};
+  mockCreateOcr=jest.fn(async()=>worker);
+  const {file,destroy}=pdfFixture([page('Native price list row $10.00'),page('',true),page('Vendor price list Fall 2026',true)]);
+  const progress=jest.fn(),chunks=await extractPriceList(file,progress);
+  expect(chunks).toHaveLength(3);expect(chunks[0].location).toBe('PDF page 1');
+  expect(chunks[1]).toMatchObject({location:'PDF page 2 · OCR 94% confidence · verify prices and SKUs',content:'1370399-001 USD Cost $12.50'});
+  expect(chunks[2].location).toMatch(/page 3.*LOW CONFIDENCE/);
+  expect(chunks[2].content).toContain('Vendor price list Fall 2026');expect(chunks[2].content).toContain('JY6033 Cost $20.00');
+  expect(mockCreateOcr).toHaveBeenCalledTimes(1);expect(worker.recognize).toHaveBeenCalledTimes(2);
+  expect(worker.terminate).toHaveBeenCalledTimes(1);expect(destroy).toHaveBeenCalled();
+  expect(progress).toHaveBeenCalledWith('Reading scanned PDF page 2 with OCR…');
+});
+test('unreadable OCR aborts whole extraction and cleans up worker and PDF',async()=>{
+  jest.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({});
+  const worker={recognize:jest.fn(async()=>({data:{text:'  ',confidence:0}})),terminate:jest.fn(async()=>{})};
+  mockCreateOcr=jest.fn(async()=>worker);
+  const {file,destroy}=pdfFixture([page('Native price $20.00'),page('',true)]);
+  await expect(extractPriceList(file)).rejects.toThrow(/could not read page 2/);
+  expect(worker.terminate).toHaveBeenCalled();expect(destroy).toHaveBeenCalled();
+});
+test('OCR engine failure aborts cleanly',async()=>{
+  jest.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({});
+  const worker={recognize:jest.fn(async()=>{throw new Error('OCR network error');}),terminate:jest.fn(async()=>{})};
+  mockCreateOcr=jest.fn(async()=>worker);
+  const {file,destroy}=pdfFixture([page('',true)]);
+  await expect(extractPriceList(file)).rejects.toThrow('OCR network error');
+  expect(worker.terminate).toHaveBeenCalled();expect(destroy).toHaveBeenCalled();
+});
+test('OCR operation deadline rejects rather than leaving upload stuck',async()=>{
+  const {withDeadline}=require('../lib/vendorPriceListOcr');
+  jest.useFakeTimers();
+  try {
+    const pending=withDeadline(new Promise(()=>{}),'OCR page 2',25);
+    const assertion=expect(pending).rejects.toThrow(/timed out/);
+    jest.advanceTimersByTime(26);await assertion;
+  } finally {jest.useRealTimers();}
 });

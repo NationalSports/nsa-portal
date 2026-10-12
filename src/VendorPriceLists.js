@@ -42,7 +42,7 @@ export default function VendorPriceLists({vendor}) {
       <label>Expires on <input aria-label="Price list expiry date" className="form-input" type="date" value={expires} onChange={e=>setExpires(e.target.value)} disabled={busy}/></label>
       <label className="btn btn-secondary">Upload price list<input aria-label="Upload vendor price list" type="file" accept=".pdf,.xls,.xlsx" onChange={upload} disabled={busy} style={{display:'block',maxWidth:240}}/></label>
     </div>
-    <p style={{fontSize:11,color:'#64748b'}}>Up to 20 MB. PDFs must contain searchable text; scan-only pages need OCR first. Dates are optional. Future and expired lists stay on file but are excluded from search.</p>
+    <p style={{fontSize:11,color:'#64748b'}}>Up to 20 MB. Scanned PDF pages are read automatically with OCR. Keep this tab open while processing; check OCR prices and SKUs against the original. Dates are optional. Future and expired lists stay on file but are excluded from search.</p>
     {status&&<p role="status">{status}</p>}{error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}
     {!docs.length&&!error&&<p>No price list uploaded. This vendor can still be used normally.</p>}
     {docs.map(doc=><div key={doc.id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'8px 0',borderBottom:'1px solid #e2e8f0'}}>

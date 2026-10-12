@@ -1,3 +1,4 @@
+import { createPriceListOcr, pageNeedsOcr, withDeadline } from './vendorPriceListOcr';
 import { authFetch } from '../utils';
 import { supabase } from './supabase';
 
@@ -52,13 +53,13 @@ export async function extractPriceList(file, progress=()=>{}) {
     // Never evaluate PDF-embedded JavaScript/font programs.
     const task=pdfjs.getDocument({data:bytes,isEvalSupported:false});
     task.onPassword=()=>task.destroy();
-    const timer=setTimeout(()=>task.destroy(),120000);
+    const ocr=createPriceListOcr();
     try {
-      const pdf=await task.promise;
+      const pdf=await withDeadline(task.promise,'Opening PDF');
       if(pdf.numPages>300) throw new Error('Split PDFs longer than 300 pages into smaller lists.');
       for(let p=1;p<=pdf.numPages;p++) {
         progress(`Reading PDF page ${p} of ${pdf.numPages}…`);
-        const page=await pdf.getPage(p), text=await page.getTextContent();
+        const page=await withDeadline(pdf.getPage(p),`Loading page ${p}`), text=await withDeadline(page.getTextContent(),`Reading page ${p}`);
         let lastY=null, line='', lines=[];
         for(const item of text.items) {
           if(!item.str) continue;
@@ -68,12 +69,17 @@ export async function extractPriceList(file, progress=()=>{}) {
           if(item.hasEOL) {lines.push(line);line='';lastY=null;}
         }
         if(line) lines.push(line);
-        const content=lines.join('\n').trim();
-        // Do not silently mark a partly image-only price list as fully searchable.
-        if(content.length<15) throw new Error(`Page ${p} has no readable text. Upload a searchable/OCR PDF or the Excel price list.`);
-        for(let i=0;i<content.length;i+=10000) chunks.push({location:`PDF page ${p}${content.length>10000?` · section ${Math.floor(i/10000)+1}`:''}`,content:content.slice(i,i+10000)});
+        let content=lines.join('\n').trim(), ocrLabel='';
+        if(await withDeadline(pageNeedsOcr(page,pdfjs,content),`Inspecting page ${p}`)) {
+          const result=await ocr.recognize(page,p,progress);
+          content=content?`Selectable text:\n${content}\nOCR text:\n${result.text}`:result.text;
+          ocrLabel=` · ${result.label}`;
+        }
+        for(let i=0;i<content.length;i+=10000) chunks.push({location:`PDF page ${p}${content.length>10000?` · section ${Math.floor(i/10000)+1}`:''}${ocrLabel}`,content:content.slice(i,i+10000)});
+        page.cleanup?.();
+        if(chunks.length>2000 || chunks.reduce((n,c)=>n+c.content.length,0)>2000000) throw new Error('Too much text; split the list into smaller files.');
       }
-    } finally {clearTimeout(timer);await task.destroy();}
+    } finally {try {await ocr.close();} finally {await task.destroy();}}
   } else {
     progress('Reading spreadsheet sheets…');
     const XLSX=await import('xlsx');
