@@ -241,3 +241,16 @@ describe('Stripe payout runner orchestration',()=>{
     expect(qbo.requests.filter(row=>row.options.method==='POST')).toHaveLength(0);
   });
 });
+
+
+test('24/7 payout uses invoice-specific shared customer evidence while portal retains the school',async()=>{
+  const {admin,data}=makeAdmin();
+  data.app_state=data.app_state.filter(row=>row.id!==mapId('custQBMap','C-1'));
+  const row=data.app_state.find(row=>row.id===mapId('qbInvoiceMap','portal:INV-1'));
+  row.value=JSON.stringify({...JSON.parse(row.value),evidence:{at_once:true,api_readback:true,qbo_customer_id:'QC-1'}});
+  const qbo=makeQbo();
+  expect(await run({admin,qbo})).toMatchObject({posted:1,held:0});
+  expect(data.invoices[0].customer_id).toBe('C-1');
+  expect(await run({admin,qbo})).toMatchObject({posted:0});
+  expect(qbo.requests.filter(r=>r.options.method==='POST')).toHaveLength(1);
+});

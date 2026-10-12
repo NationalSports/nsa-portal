@@ -155,7 +155,7 @@ export function cardFeeLineUpdate(invoice, qboInvoice, salesItemId) {
     Id:String(qboInvoice.Id),SyncToken:String(qboInvoice.SyncToken),sparse:true,
     Line:[...lines.filter(line=>line?.DetailType!=='SubTotalLineDetail'),
       {DetailType:'SalesItemLineDetail',Amount:fee,Description:CARD_FEE_DESCRIPTION,
-        SalesItemLineDetail:{Qty:1,UnitPrice:fee,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},TaxCodeRef:{value:'NON'}}}],
+        SalesItemLineDetail:{Qty:1,UnitPrice:fee,ItemRef:{value:String(salesItemId)},TaxCodeRef:{value:'NON'}}}],
     TxnTaxDetail:{TotalTax:0},
   };
 }
@@ -244,8 +244,8 @@ export function buildInvoiceLines({invoice,description,salesItemId,taxItemId,pla
   if(discount>0&&!discountAccountId)throw new Error('discount_account_missing');
   if(plan&&!taxItemId)throw new Error('tax_item_missing');
   const lines=[{DetailType:'SalesItemLineDetail',Amount:gross,Description:clean(description).slice(0,4000),
-    SalesItemLineDetail:{Qty:1,UnitPrice:gross,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},...(plan?{TaxCodeRef:{value:'NON'}}:{})}}];
-  if(shipping>0)lines.push({DetailType:'SalesItemLineDetail',Amount:shipping,Description:'Customer shipping',SalesItemLineDetail:{Qty:1,UnitPrice:shipping,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},TaxCodeRef:{value:'NON'}}});
+    SalesItemLineDetail:{Qty:1,UnitPrice:gross,ItemRef:{value:String(salesItemId)},...(plan?{TaxCodeRef:{value:'NON'}}:{})}}];
+  if(shipping>0)lines.push({DetailType:'SalesItemLineDetail',Amount:shipping,Description:'Customer shipping',SalesItemLineDetail:{Qty:1,UnitPrice:shipping,ItemRef:{value:String(salesItemId)},TaxCodeRef:{value:'NON'}}});
   if(plan)lines.push({DetailType:'SalesItemLineDetail',Amount:tax,Description:plan.reconciled?`Sales tax — ${plan.state} ${plan.ratePct}% on $${money(plan.taxable).toFixed(2)}`:`Sales tax — ${plan.state} (as collected)`,SalesItemLineDetail:{Qty:1,UnitPrice:tax,ItemRef:{value:String(taxItemId),name:`NSA Portal Sales Tax — ${plan.state}`},TaxCodeRef:{value:'NON'}}});
   if(discount>0)lines.push({DetailType:'DiscountLineDetail',Amount:discount,Description:'Customer discount / credit — 40200',DiscountLineDetail:{PercentBased:false,DiscountAccountRef:{value:String(discountAccountId)}}});
   return lines;

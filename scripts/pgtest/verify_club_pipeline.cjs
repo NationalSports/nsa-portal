@@ -178,6 +178,14 @@ try {
     await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(`alter table webstore_orders add column tax numeric default 0,
+      add column shipping_fee numeric default 0,add column processing_fee numeric default 0,
+      add column cc_fee numeric default 0,add column stripe_pi_id text,add column tax_state text,
+      add column refunded_amt numeric default 0;
+      alter table sales_orders add column _omg_processing numeric default 0,add column _omg_tax numeric default 0,
+      add column _omg_shipping numeric default 0,add column _omg_cc_fees numeric default 0;
+      create function public.qbo_sales_source_snapshot(timestamptz) returns jsonb language sql as $$select '{"existing_wrapper":true}'::jsonb$$;`);
+    await db.exec(read('supabase/migrations/20261012141544_at_once_qbo_revenue.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
@@ -212,8 +220,8 @@ try {
              (gen_random_uuid(),$2,'1|8in|White','Digit 1','number',3,0.50),
              (gen_random_uuid(),$2,'2|8in|White','Digit 2','number',3,0.50)`, [transferId, sid, transferCode]);
     await db.query(`insert into webstore_orders
-      (id,store_id,status,order_number,buyer_name,buyer_email,subtotal,fundraise_amt,discount_amt,total)
-      values($1,$2,'paid',1010042,'Fake Buyer','fake@example.invalid',50,0,0,50)`, [orderId, sid]);
+      (id,store_id,status,order_number,buyer_name,buyer_email,subtotal,fundraise_amt,discount_amt,total,stripe_pi_id,tax,tax_state,shipping_fee,processing_fee)
+      values($1,$2,'paid',1010042,'Fake Buyer','fake@example.invalid',50,0,0,61,'pi_fake_club_1',4,'CA',5,2)`, [orderId, sid]);
     await db.query(`insert into webstore_order_items
       (id,order_id,product_id,sku,name,color,size,qty,unit_price,unit_fundraise,player_number,line_status)
       values($1,$2,$3,'PG-TEE','PGlite Tee','Navy','M',2,25,0,'12','pending')`, [itemId, orderId, productId]);
@@ -231,13 +239,32 @@ try {
     assert.equal(source.so_id, soId);
     const invoice = (await db.query('select * from invoices where so_id=$1', [soId])).rows[0];
     assert.ok(invoice, 'Club checkout conversion automatically creates its invoice');
-    near(invoice.total, 50, 'invoice total');
-    near(invoice.paid, 50, 'invoice paid amount');
+    near(invoice.total, 61, 'invoice total');
+    near(invoice.paid, 61, 'invoice paid amount');
     assert.equal(invoice.status, 'paid');
     const payment = (await db.query('select amount,method,ref from invoice_payments where invoice_id=$1', [invoice.id])).rows[0];
-    near(payment.amount, 50, 'checkout payment record');
+    near(payment.amount, 61, 'checkout payment record');
     assert.equal(payment.method, 'store');
-    assert.equal(payment.ref, 'CLUB 1010042');
+    assert.equal(payment.ref, 'Stripe pi_fake_club_1');
+    near(invoice.tax,4,'collected checkout tax'); near(invoice.shipping,5,'checkout shipping');
+    assert.equal(invoice.customer_id,customerId,'portal customer preserved');
+    const accounting=(await db.query('select qbo_sales_source_snapshot(now()) result')).rows[0].result;
+    assert.equal(accounting.existing_wrapper,true);
+    assert.equal(accounting.at_once_version,1);
+    assert.equal(accounting.at_once_sources[soId][0].stripe_pi_id,'pi_fake_club_1');
+    assert.equal(accounting.at_once_sources[soId][0].customer_id,customerId);
+    for (const kind of ['club','all_school']) {
+      await db.query('update webstores set org_type=$1 where id=$2',[kind,sid]);
+      await db.query('update webstore_orders set order_source=$1 where id=$2',[kind,orderId]);
+      const mapped=(await db.query('select qbo_sales_source_snapshot(now()) result')).rows[0].result;
+      assert.equal(mapped.at_once_sources[soId][0].org_type,kind);
+    }
+    await db.query("update webstores set source='omg' where id=$1",[sid]);
+    assert.deepEqual((await db.query('select qbo_sales_source_snapshot(now()) result')).rows[0].result.at_once_sources,{});
+    await db.query("update webstores set source='webstore',org_type='team' where id=$1",[sid]);
+    assert.deepEqual((await db.query('select qbo_sales_source_snapshot(now()) result')).rows[0].result.at_once_sources,{});
+    await db.query("update webstores set org_type='club' where id=$1",[sid]);
+    await db.query("update webstore_orders set order_source='club' where id=$1",[orderId]);
     const job = (await db.query(`select id,art_status,item_status,prod_status,total_units
       from so_jobs where so_id=$1`, [soId])).rows[0];
     assert.equal(job.art_status, 'art_complete', 'existing stocked transfer is auto-art complete');
@@ -279,7 +306,7 @@ try {
     assert.equal((await db.query('select count(*)::int n from so_jobs where so_id=$1', [soId])).rows[0].n, 1);
     console.log('PASS fake paid Club checkout converts once to 1010042 SO/job and paid invoice/payment; replay is duplicate-free');
 
-    await capture('club_conversion_need_order', 'need_order', 50);
+    await capture('club_conversion_need_order', 'need_order', 52);
     const soItem = (await db.query('select id from so_items where so_id=$1', [soId])).rows[0];
     const assigned = (await db.query('select public.assign_at_once_inventory_picks($1) result', [soId])).rows[0].result;
     assert.equal(assigned.created_lines, 1);
@@ -291,7 +318,7 @@ try {
     assert.equal((await db.query('select quantity from product_inventory where product_id=$1 and size=\'M\'', [productId])).rows[0].quantity, 2,
       'task assignment does not decrement inventory before the warehouse confirms a pull');
     await db.query("update sales_orders set status='needs_pull' where id=$1", [soId]);
-    await capture('club_pending_pick_needs_pull', 'needs_pull', 50);
+    await capture('club_pending_pick_needs_pull', 'needs_pull', 52);
     await expectSqlReject(() => db.query(`select advance_job_stage(
       p_so_id=>$1,p_job_id=>$2,p_event=>'release',p_actor=>'pgtest') result`, [soId, job.id]), /NSA_NOT_READY|NSA_TRANSFER/i);
 
@@ -369,13 +396,13 @@ try {
       'physical warehouse pull decrements the ledger only after an assigned task is confirmed');
     await db.query("update so_item_pick_lines set status='pulled' where id=$1", [pick.id]);
     await db.query("update sales_orders set status='items_received' where id=$1", [soId]);
-    await capture('club_pulled_items_received', 'items_received', 50);
+    await capture('club_pulled_items_received', 'items_received', 52);
 
     const released = (await db.query(`select advance_job_stage(
       p_so_id=>$1,p_job_id=>$2,p_event=>'release',p_actor=>'pgtest') result`, [soId, job.id])).rows[0].result;
     assert.equal(released.ok, true);
     await db.query("update sales_orders set status='in_production' where id=$1", [soId]);
-    await capture('club_staging_in_production', 'in_production', 50);
+    await capture('club_staging_in_production', 'in_production', 52);
     await db.query("select advance_job_stage($1,$2,'start_run','pgtest')", [soId, job.id]);
     await db.query("select advance_job_stage($1,$2,'decorated','pgtest')", [soId, job.id]);
     await db.query("select advance_job_stage($1,$2,'packed','pgtest')", [soId, job.id]);
@@ -385,7 +412,7 @@ try {
     assert.ok(completedJob.packed_at);
     await db.query('update so_jobs set fulfilled_units=total_units where so_id=$1 and id=$2', [soId, job.id]);
     await db.query("update sales_orders set status='ready_to_invoice' where id=$1", [soId]);
-    await capture('club_packed_ready_to_invoice', 'ready_to_invoice', 50);
+    await capture('club_packed_ready_to_invoice', 'ready_to_invoice', 52);
 
     await db.query('update webstore_order_items set shipped_qty=qty,line_status=\'shipped\' where id=$1', [itemId]);
     await db.query("update webstore_orders set status='shipped',shipped_at=now() where id=$1", [orderId]);
@@ -393,7 +420,7 @@ try {
     assert.equal(finalSo, 'complete', 'server completion closes the SO after full shipment and completed production');
     assert.equal((await db.query('select status from webstore_orders where id=$1', [orderId])).rows[0].status, 'shipped');
     assert.equal((await db.query('select line_status,shipped_qty from webstore_order_items where id=$1', [itemId])).rows[0].line_status, 'shipped');
-    await capture('club_shippedcomplete', 'complete', 50);
+    await capture('club_shippedcomplete', 'complete', 52);
     if (process.env.AT_ONCE_SNAPSHOT_FILE) {
       fs.writeFileSync(path.resolve(process.env.AT_ONCE_SNAPSHOT_FILE), JSON.stringify(snapshots, null, 2));
     }

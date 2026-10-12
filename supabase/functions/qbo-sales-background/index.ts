@@ -1,3 +1,4 @@
+import { AT_ONCE_ACCOUNT, AT_ONCE_ITEM, AT_ONCE_CUSTOMER, atOnceRoute } from './atOnce.js';
 import { QboClient, createAdmin, type QboFailure } from './qbo.ts';
 import {
   REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, cardFeeDriftEligible, cardFeeLineUpdate, classifyInvoiceDuplicate,
@@ -162,7 +163,8 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     if(sourceError||!source)throw Object.assign(new Error('Portal sales snapshot failed.'),{code:'source_snapshot_failed'});snapshot=source;
     if(clean(snapshot.legacy_config?.realm_id)!==REALM_ID)throw Object.assign(new Error('Portal QBO realm configuration changed unexpectedly.'),{code:'realm_config_changed'});
 
-    const requiredItemNames=['NSA Portal Sales',...['CA','AZ','CO','NV','TX','WA','WI','SD'].map(state=>`NSA Portal Sales Tax — ${state}`)];
+    if(snapshot.at_once_version!==1)throw new Error('At-Once source migration is required before this runner can post.');
+    const requiredItemNames=['NSA Portal Sales',AT_ONCE_ITEM,...['CA','AZ','CO','NV','TX','WA','WI','SD'].map(state=>`NSA Portal Sales Tax — ${state}`)];
     const invoiceFloor=(snapshot.invoices||[]).map((invoice:any)=>parseDate(invoice.date||invoice.created_at)).filter(Boolean).sort()[0]||'2000-01-01';
     const slimCustomer=(row:any)=>({Id:row.Id,DisplayName:row.DisplayName,CompanyName:row.CompanyName,Active:row.Active,SyncToken:row.SyncToken,SalesTermRef:row.SalesTermRef,PrimaryEmailAddr:row.PrimaryEmailAddr,BillAddr:row.BillAddr,ShipAddr:row.ShipAddr,Balance:row.Balance});
     const slimInvoice=(row:any)=>({Id:row.Id,DocNumber:row.DocNumber,CustomerRef:row.CustomerRef,TxnDate:row.TxnDate,TotalAmt:row.TotalAmt,Balance:row.Balance,SalesTermRef:row.SalesTermRef,DueDate:row.DueDate});
@@ -179,6 +181,11 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     if(!partnerTaxEnabled)throw Object.assign(new Error('QBO Automated Sales Tax setting changed; invoice writes are blocked.'),{code:'tax_mode_changed'});
     const income=accountByNumber(accounts,'40000',['Income']),discount=accountByNumber(accounts,'40200',['Income']),ar=accountByNumber(accounts,'11000',['Accounts Receivable']),deposit=accountByNumber(accounts,'11010',['Other Current Asset']);
     const salesItem=itemByName(items,'NSA Portal Sales',String(income.Id));
+    const atOnceIncome=accountByNumber(accounts,AT_ONCE_ACCOUNT,['Income']);
+    const atOnceItem=itemByName(items,AT_ONCE_ITEM,String(atOnceIncome.Id));
+    const atOnceCustomers=(await qbo.query(`SELECT * FROM Customer WHERE DisplayName = '${escapeQbo(AT_ONCE_CUSTOMER)}' MAXRESULTS 2`))?.QueryResponse?.Customer||[];
+    if(atOnceCustomers.length!==1||atOnceCustomers[0].Active===false||!atOnceCustomers[0].SalesTermRef?.value)throw new Error('At-Once QBO customer or terms are missing.');
+    const atOnceCustomerId=String(atOnceCustomers[0].Id);
     const taxItems=new Map<string,any>();for(const [state,number] of Object.entries({CA:'25200',AZ:'25205',CO:'25215',NV:'25220',TX:'25225',WA:'25230',WI:'25201',SD:'25201'})){
       const account=accountByNumber(accounts,number,['Other Current Liability']);
       const matches=items.filter(row=>row?.Active!==false&&clean(row.Name)===`NSA Portal Sales Tax — ${state}`);
@@ -269,11 +276,17 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     const resyncCandidates:any[]=[];
     // New invoices still inside the settle window: their payments wait with them, quietly.
     const settlingInvoices=new Set<string>();
+    const atOnceHeld=new Set<string>();
     const customerById=new Map((snapshot.customers||[]).map((row:any)=>[String(row.id),row]));
     const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'});
     for(const invoice of snapshot.invoices||[]){
       if(invoice.deleted_at)continue;counters.invoices.examined++;
       const sourceId=`portal:${invoice.id}`,durable=clean(snapshot.invoice_links?.[sourceId]?.qbo_id),mappedId=clean(invoice.qb_invoice_id)||durable;
+      const route=atOnceRoute(invoice,snapshot);
+      if(route.reason){
+        atOnceHeld.add(String(invoice.id));counters.invoices.manual_review++;
+        review('invoice',sourceId,route.reason);add('invoice',sourceId,'classify','manual_review',mappedId||null,{reason:route.reason});continue;
+      }
       if(String(invoice.id)==='INV-63831'){
         counters.invoices.manual_review++;review('invoice',sourceId,'explicit_manual_block',{qbo_id:mappedId||null});
         add('invoice',sourceId,'manual_block','manual_review',mappedId||null,{reason:'explicit_manual_block'});continue;
@@ -293,6 +306,10 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           }catch{/* cosmetic for the Portal; never blocks the run */}
         }
         const drift=linkedInvoiceTotalDrift(invoice,existing);
+        if(drift&&route.atOnce&&String(existing.CustomerRef?.value)!==atOnceCustomerId){
+          atOnceHeld.add(String(invoice.id));counters.invoices.manual_review++;
+          review('invoice',sourceId,'at_once_historical_invoice_drift');continue;
+        }
         if(drift){
           invoiceTotalDrifted.add(String(invoice.id));
           const feeDrift=cardFeeDriftEligible(invoice,drift);
@@ -317,14 +334,14 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         if(base.action==='manual_review')review('invoice',sourceId,base.reason||'manual_review');continue;
       }
       if(invoiceStillSettling(invoice)){settlingInvoices.add(String(invoice.id));counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,{created_at:invoice.created_at,updated_at:invoice.updated_at});continue;}
-      const customerId=String(invoice.customer_id),qboCustomerId=effectiveCustomerMap.get(customerId);
+      const customerId=String(invoice.customer_id),qboCustomerId=route.atOnce?atOnceCustomerId:effectiveCustomerMap.get(customerId);
       if(!qboCustomerId){counters.invoices.manual_review++;review('invoice',sourceId,'customer_not_verified',{customer_id:customerId});add('invoice',sourceId,'classify','manual_review',null,{reason:'customer_not_verified'});continue;}
       let plan:any=null,taxItem:any=null;
       try{plan=taxPlan(invoice,customerById.get(customerId),partnerTaxEnabled);if(plan){taxItem=taxItems.get(plan.state);if(!taxItem)throw new Error('tax_item_missing');}}
       catch(error){counters.invoices.manual_review++;review('invoice',sourceId,safeError(error));add('invoice',sourceId,'classify','manual_review',null,{reason:safeError(error)});continue;}
       const duplicate=classifyInvoiceDuplicate({documentNumber:invoice.id,qboCustomerId,date:base.date,total:base.total},qboInvoices);
       if(duplicate.disposition==='manual_review'){counters.invoices.manual_review++;review('invoice',sourceId,'invoice_number_conflict',{conflicts:duplicate.conflicts});add('invoice',sourceId,'duplicate_check','manual_review',null,{conflicts:duplicate.conflicts});continue;}
-      invoiceCandidates.push({sourceId,invoice,date:base.date,total:base.total,qboCustomerId,plan,taxItem,duplicate});
+      invoiceCandidates.push({sourceId,invoice,date:base.date,total:base.total,qboCustomerId,plan,taxItem,duplicate,salesItemId:String(route.atOnce?atOnceItem.Id:salesItem.Id),route});
       add('invoice',sourceId,duplicate.disposition,writeAllowed(settings,'invoice',sourceId)?'queued_write':'proposed',duplicate.qboId||null,{date:base.date,total:base.total,customer_id:qboCustomerId});
     }
     if(claim.writes_enabled){
@@ -346,15 +363,20 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
             const dueDate=standardDueDate(candidate.date,qboCustomer.SalesTermRef?.name);
             const so=snapshot.sales_orders?.[candidate.invoice.so_id];
             const description=invoiceLineDescription(candidate.invoice,so);
-            const lines=buildInvoiceLines({invoice:candidate.invoice,description,salesItemId:String(salesItem.Id),taxItemId:candidate.taxItem?String(candidate.taxItem.Id):null,plan:candidate.plan,discountAccountId:String(discount.Id)});
-            const payload:any={DocNumber:candidate.invoice.id,TxnDate:candidate.date,CustomerRef:{value:String(candidate.qboCustomerId)},ARAccountRef:{value:String(ar.Id)},SalesTermRef:qboCustomer.SalesTermRef,Line:lines,...(dueDate?{DueDate:dueDate}:{}),...(candidate.plan?{TxnTaxDetail:{TotalTax:0}}:{})};
+            const lines=buildInvoiceLines({invoice:candidate.invoice,description,salesItemId:candidate.salesItemId,taxItemId:candidate.taxItem?String(candidate.taxItem.Id):null,plan:candidate.plan,discountAccountId:String(discount.Id)});
+            const payload:any={...(candidate.route.atOnce?{PrivateNote:`24/7 store order ${candidate.route.orderNumber}; portal invoice ${candidate.invoice.id}`} : {}),DocNumber:candidate.invoice.id,TxnDate:candidate.date,CustomerRef:{value:String(candidate.qboCustomerId)},ARAccountRef:{value:String(ar.Id)},SalesTermRef:qboCustomer.SalesTermRef,Line:lines,...(dueDate?{DueDate:dueDate}:{}),...(candidate.plan?{TxnTaxDetail:{TotalTax:0}}:{})};
             const created=(await qbo.request('/invoice',{method:'POST',body:JSON.stringify(payload)})).Invoice;if(!created?.Id)throw new Error('QBO invoice create returned no ID.');
             verified=(await qbo.request(`/invoice/${created.Id}`)).Invoice;result='created';
           }
           const identity=classifyInvoiceDuplicate({documentNumber:candidate.invoice.id,qboCustomerId:candidate.qboCustomerId,date:candidate.date,total:candidate.total},[verified]);
           if(identity.disposition!=='link_existing'||!Number.isFinite(Number(verified.Balance))||Number(verified.Balance)<-.005||Number(verified.Balance)>Number(verified.TotalAmt)+.005)throw new Error('QBO invoice failed identity or balance read-back.');
           if(candidate.plan){const taxLine=(verified.Line||[]).find((line:any)=>line.DetailType==='SalesItemLineDetail'&&String(line.SalesItemLineDetail?.ItemRef?.value)===String(candidate.taxItem.Id));if(!taxLine||money(taxLine.Amount)!==money(candidate.plan.tax)||money(verified.TxnTaxDetail?.TotalTax)!==0)throw new Error('QBO invoice failed tax read-back.');}
-          await persistLink(admin,{realm:REALM_ID,mapKey:'qbInvoiceMap',sourceId:candidate.sourceId,qboId:String(verified.Id),evidence:{result,api_readback:true,duplicate_preflight:'normalized_number_customer_date_cents',run_id:runId,date:candidate.date,total:candidate.total}});
+          if(candidate.route.atOnce){
+            const salesLines=(verified.Line||[]).filter((line:any)=>line.DetailType==='SalesItemLineDetail');
+            if(!salesLines.some((line:any)=>String(line.SalesItemLineDetail?.ItemRef?.value)===candidate.salesItemId)
+              ||salesLines.some((line:any)=>![candidate.salesItemId,String(candidate.taxItem?.Id)].includes(String(line.SalesItemLineDetail?.ItemRef?.value))))throw new Error('At-Once revenue item failed read-back.');
+          }
+          await persistLink(admin,{realm:REALM_ID,mapKey:'qbInvoiceMap',sourceId:candidate.sourceId,qboId:String(verified.Id),evidence:{result,qbo_customer_id:candidate.qboCustomerId,sales_item_id:candidate.salesItemId,at_once:candidate.route.atOnce,api_readback:true,duplicate_preflight:'normalized_number_customer_date_cents',run_id:runId,date:candidate.date,total:candidate.total}});
           const update=await admin.from('invoices').update({qb_invoice_id:String(verified.Id)}).eq('id',candidate.invoice.id).is('qb_invoice_id',null).select('id');
           if(update.error)throw new Error('Portal invoice link update failed after QBO read-back.');
           effectiveInvoiceMap.set(String(candidate.invoice.id),String(verified.Id));qboInvoiceById.set(String(verified.Id),verified);qboInvoices.push(verified);qboIds.invoices.push(String(verified.Id));counters.invoices[result==='created'?'created':'exact_existing']++;
@@ -371,7 +393,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});
           if(data!==true)throw Object.assign(new Error('Invoice source is already being processed.'),{code:'source_busy'});locked=true;
           const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
-          const update=cardFeeLineUpdate(candidate.invoice,fresh,String(salesItem.Id));
+          const update=cardFeeLineUpdate(candidate.invoice,fresh,String(String(fresh.CustomerRef?.value)===atOnceCustomerId?atOnceItem.Id:salesItem.Id));
           await qbo.request('/invoice',{method:'POST',body:JSON.stringify(update)});
           const verified=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
           if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)
@@ -389,7 +411,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
       // Portal edits made after the QBO write. Lines are rebuilt exactly as a fresh
       // create would build them, applied to a fresh read under the invoice claim, and
       // read back; the invoice's payments post in this run only once QBO agrees.
-      const knownItemIds=[String(salesItem.Id),...[...taxItems.values()].map((item:any)=>String(item.Id))];
+      const knownItemIds=[String(salesItem.Id),String(atOnceItem.Id),...[...taxItems.values()].map((item:any)=>String(item.Id))];
       // Same per-run cap as creates. Past the cap the drift stays an open review (payments
       // held), so an invoice can never sit out of step with QBO without anyone seeing it.
       const resyncLimit=Number(settings.invoice_batch_limit)||25;
@@ -403,14 +425,14 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         try{
           const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});
           if(data!==true)throw Object.assign(new Error('Invoice source is already being processed.'),{code:'source_busy'});locked=true;
-          const customerId=String(candidate.invoice.customer_id),qboCustomerId=effectiveCustomerMap.get(customerId);
+          const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          const customerId=String(candidate.invoice.customer_id),qboCustomerId=String(fresh.CustomerRef?.value)===atOnceCustomerId?atOnceCustomerId:effectiveCustomerMap.get(customerId);
           let plan:any=null,taxItem:any=null;
           try{plan=taxPlan(candidate.invoice,customerById.get(customerId),partnerTaxEnabled);if(plan){taxItem=taxItems.get(plan.state);if(!taxItem)throw new Error('tax_item_missing');}}
           catch(error){throw Object.assign(new Error(safeError(error)),{code:safeError(error)});}
           let lines:any[];
-          try{lines=buildInvoiceLines({invoice:candidate.invoice,description:invoiceLineDescription(candidate.invoice,snapshot.sales_orders?.[candidate.invoice.so_id]),salesItemId:String(salesItem.Id),taxItemId:taxItem?String(taxItem.Id):null,plan,discountAccountId:String(discount.Id)});}
+          try{lines=buildInvoiceLines({invoice:candidate.invoice,description:invoiceLineDescription(candidate.invoice,snapshot.sales_orders?.[candidate.invoice.so_id]),salesItemId:String(qboCustomerId===atOnceCustomerId?atOnceItem.Id:salesItem.Id),taxItemId:taxItem?String(taxItem.Id):null,plan,discountAccountId:String(discount.Id)});}
           catch(error){throw Object.assign(new Error(safeError(error)),{code:`resync_${safeError(error)}`});}
-          const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
           const update=invoiceResyncUpdate({invoice:candidate.invoice,qboInvoice:fresh,qboCustomerId,lines,knownItemIds,discountAccountId:String(discount.Id),bookCloseDate:preferences?.AccountingInfoPrefs?.BookCloseDate});
           await qbo.request('/invoice',{method:'POST',body:JSON.stringify(update)});
           const verified=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
@@ -447,7 +469,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
       if(invoice.deleted_at||clean(invoice.status).toLowerCase()==='void'||String(invoice.id)==='INV-63831')continue;
       // The invoice-level drift review already names the cause; posting here would
       // only overpay the stale QBO balance and raise a second, vaguer alert.
-      if(invoiceTotalDrifted.has(String(invoice.id)))continue;
+      if(invoiceTotalDrifted.has(String(invoice.id))||atOnceHeld.has(String(invoice.id)))continue;
       // Held by the settle window; its payments post in the run that creates it.
       if(settlingInvoices.has(String(invoice.id)))continue;
       const sourceRows=sourcePaymentsByInvoice.get(String(invoice.id))||[];if(!sourceRows.length&&money(invoice.paid)<=0)continue;

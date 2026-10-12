@@ -116,7 +116,7 @@ describe('held records carry diagnosable evidence',()=>{
     expect(edge).toContain("review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift,cc_fee:money(invoice.cc_fee)})");
   });
   test('payments for a drifted invoice are suppressed so one alert explains the cause',()=>{
-    expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id)))continue;');
+    expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id))||atOnceHeld.has(String(invoice.id)))continue;');
   });
   test('a refused payment records the amounts that refused it',()=>{
     expect(edge).toContain("code:'payment_amount_conflict',details:{payment_amount:candidate.amount,qbo_invoice_balance:balance");
@@ -251,7 +251,7 @@ describe('card-fee write is gated, fresh, and read back',()=>{
     expect(edge).toContain("if(feeDrift&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){");
   });
   test('built from a fresh QBO read taken under the invoice claim',()=>{
-    expect(edge).toMatch(/acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request\(`\/invoice\/\$\{candidate\.qboId\}`\)\)\.Invoice;\s*const update=cardFeeLineUpdate\(candidate\.invoice,fresh,String\(salesItem\.Id\)\);/);
+    expect(edge).toMatch(/acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request\(`\/invoice\/\$\{candidate\.qboId\}`\)\)\.Invoice;\s*const update=cardFeeLineUpdate\(candidate\.invoice,fresh,String\(String\(fresh.CustomerRef\?\.value\)===atOnceCustomerId\?atOnceItem.Id:salesItem.Id\)\);/);
   });
   test('payments are released only after QBO reads back the Portal total',()=>{
     expect(edge).toContain("if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)");

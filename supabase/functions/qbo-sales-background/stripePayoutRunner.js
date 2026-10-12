@@ -5,11 +5,11 @@ const fail=code=>{throw Object.assign(new Error(code),{code});};
 const expectedDeposit=payload=>({payload,marker:payload.PrivateNote,amountCents:payload.Line.reduce((n,l)=>n+Math.round(Number(l.Amount)*100),0)});
 const checked=result=>{if(result.error)fail('stripe_payout_source_read_failed');return result.data;};
 const linkKey=(realm,mapKey,id)=>'_qb_link_v1_'+encodeURIComponent(JSON.stringify([realm,mapKey,id]));
-async function link(admin,realm,mapKey,id){
+async function link(admin,realm,mapKey,id,withEvidence=false){
   const row=checked(await admin.from('app_state').select('value').eq('id',linkKey(realm,mapKey,id)).maybeSingle());
   let value;try{value=JSON.parse(row?.value||'null');}catch{fail('stripe_payout_mapping_invalid');}
   if(!value||value.active===false||value.realm_id!==realm||value.map_key!==mapKey||value.source_id!==id||!value.qbo_id)fail('stripe_payout_mapping_missing');
-  return String(value.qbo_id);
+  return withEvidence?value:String(value.qbo_id);
 }
 async function saveState(admin,payoutId,realm,row){
   const existing=checked(await admin.from('qbo_stripe_payout_postings').select('*').eq('stripe_payout_id',payoutId).maybeSingle());
@@ -34,8 +34,11 @@ async function paymentsFor(admin,qbo,transactions,realm){
       if(order?.so_id!==invoice.so_id||order?.stripe_pi_id!==tx.payment_intent_id)fail('stripe_payout_order_mapping_conflict');
     }
     const paymentId=await link(admin,realm,'qbPaymentMap',`payment:${row.id}`);
-    const invoiceId=await link(admin,realm,'qbInvoiceMap',`portal:${invoice.id}`);
-    const customerId=await link(admin,realm,'custQBMap',String(invoice.customer_id));
+    const invoiceLink=await link(admin,realm,'qbInvoiceMap',`portal:${invoice.id}`,true);
+    const invoiceId=String(invoiceLink.qbo_id);
+    // Invoice-specific verified identity supports the shared 24/7 QBO customer.
+    const customerId=invoiceLink.evidence?.at_once===true&&invoiceLink.evidence?.api_readback===true&&invoiceLink.evidence?.qbo_customer_id
+      ?String(invoiceLink.evidence.qbo_customer_id):await link(admin,realm,'custQBMap',String(invoice.customer_id));
     const liveInvoice=(await qbo.request(`/invoice/${invoiceId}`)).Invoice;
     if(!liveInvoice||String(liveInvoice.CustomerRef?.value)!==customerId||Math.round(Number(liveInvoice.TotalAmt)*100)!==Math.round(Number(invoice.total)*100))fail('stripe_payout_invoice_mapping_conflict');
     const payment=(await qbo.request(`/payment/${paymentId}`)).Payment;
