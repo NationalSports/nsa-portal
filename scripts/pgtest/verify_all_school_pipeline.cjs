@@ -132,6 +132,7 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
@@ -221,8 +222,9 @@ const near = (actual, expected, label) => assert.ok(
       values($1,$2,'GARMENT','PC61','M',2,2,'SanMar',500,'all_school_pending')`,[job.so_id,soItem.id]);
     const need = (await db.query('select id from teamshop_auto_po_needs where so_id=$1',[job.so_id])).rows[0].id;
     const shipTo = {companyName:'Fake School',address1:'1 Test Way',city:'Orange',region:'CA',postalCode:'92865',country:'US'};
+    await db.query("update webstore_orders set created_at=now()-interval '8 days' where id=$1",[oid]);
     const plan = (await db.query(`select plan_all_school_purchase($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) result`,
-      [sid,'SanMar','fake-school-order-1',[need],'minimum',false,'separate',100000,'pgtest',shipTo])).rows[0].result;
+      [sid,'SanMar','fake-school-order-1',[need],'max_wait',false,'separate',100000,'pgtest',shipTo])).rows[0].result;
     assert.ok(plan.purchase_order, `garment shortage should create a PO; got ${JSON.stringify(plan)}`);
     assert.equal(plan.purchase_order.origin,'auto');
     assert.equal((await db.query('select count(*)::int n from purchase_order_lines where po_id=$1',[plan.purchase_order.id])).rows[0].n,1);

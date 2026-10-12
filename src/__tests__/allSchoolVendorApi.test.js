@@ -78,3 +78,21 @@ test.each(['SanMar', 'S&S Activewear'])('configured %s account mismatch holds be
   expect(result).toMatchObject({ ok: false, state: 'held' });
   expect(ss).not.toHaveBeenCalled(); expect(sanmar).not.toHaveBeenCalled();
 });
+
+test.each([3, 2])('Momentec resolves exact SKU and verifies accepted quantity %s', async quantity => {
+  const mt=jest.fn(async event=>{
+    const service=event.queryStringParameters.service;
+    if(service==='style') return reply({productInfo:[{items:[{SKU:'790.080.M',colorName:'Black'}]}]});
+    if(service==='order') return reply({orderId:'MT-123'});
+    return reply({found:true,lines:[{itemNumber:'790.080.M',orderedQuantity:quantity}]});
+  });
+  const api=createVendorPurchaseAdapter({env:{...env,MOMENTEC_LOGON_ID:'dealer',MOMENTEC_PASSWORD:'secret'},momentecHandler:mt});
+  const header={...po,vendor:'Momentec'};
+  const resolved=await api.resolveVendorPurchaseOrder({purchaseOrder:header,lines:[source({sku:'790',meta:{color:'Black'}})]});
+  expect(resolved.ok).toBe(true);
+  expect(resolved.payload.items).toEqual([expect.objectContaining({sku:'790.080.M',quantity:'3'})]);
+  const result=await api.submitResolvedVendorPurchaseOrder({purchaseOrder:claim(header),resolved});
+  expect(result.ok).toBe(quantity===3);
+  if(quantity!==3) expect(result.state).toBe('unknown');
+  expect(mt.mock.calls.filter(([e])=>e.queryStringParameters.service==='order')).toHaveLength(1);
+});
