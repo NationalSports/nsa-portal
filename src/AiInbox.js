@@ -1,5 +1,6 @@
 /* eslint-disable */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './AiInbox.css';
 import { Icon } from './components';
 import { createGmailDraft, queueEmailCart } from './utils';
 
@@ -14,11 +15,29 @@ const fmtDate=value=>{
   return Number.isNaN(d.getTime())?'':d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 };
 
-export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
+export default function AiInbox({supabase,customers=[],onCreateEstimate,notify}){
   const[rows,setRows]=useState([]);
   const[loading,setLoading]=useState(true);
   const[selectedId,setSelectedId]=useState(null);
   const[filter,setFilter]=useState('open');
+  const[query,setQuery]=useState('');
+  const[loadError,setLoadError]=useState('');
+  const[health,setHealth]=useState(null);
+  const[checking,setChecking]=useState(false);
+  const[loadedAt,setLoadedAt]=useState(null);
+  const draftEdits=useRef({});
+  const checkConnection=async()=>{
+    setChecking(true);
+    try{
+      const {data:{session}}=await supabase.auth.getSession();
+      if(!session?.access_token)throw new Error('Sign in again to check the mailbox connection.');
+      const response=await fetch('/.netlify/functions/gmail-ai-health',{headers:{Authorization:'Bearer '+session.access_token}});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error||'Connection check failed');
+      setHealth(data);
+    }catch(error){setHealth({connected:false,message:error.message})}
+    finally{setChecking(false)}
+  };
   const[saving,setSaving]=useState(false);
   const[drafting,setDrafting]=useState(false);
   const[queueingCart,setQueueingCart]=useState(false);
@@ -26,16 +45,17 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
   const load=useCallback(async()=>{
     if(!supabase){setLoading(false);return}
     setLoading(true);
-    const{data,error}=await supabase.from('ai_inbox_messages').select('*').order('received_at',{ascending:false}).limit(100);
-    if(error){notify?.('AI Inbox could not load: '+error.message,'error')}
-    else{
-      setRows(data||[]);
+    try{
+      const{data,error}=await supabase.from('ai_inbox_messages').select('*').order('received_at',{ascending:false}).limit(100);
+      if(error)throw error;
+      setRows((data||[]).map(row=>Object.prototype.hasOwnProperty.call(draftEdits.current,row.id)?{...row,draft_body_text:draftEdits.current[row.id]}:row));
+      setLoadError('');setLoadedAt(new Date().toISOString());
       let linkedId=null;
       try{linkedId=new URLSearchParams(window.location.search).get('message')}catch{}
       setSelectedId(prev=>prev||((data||[]).some(x=>x.id===linkedId)?linkedId:null)||(data||[])[0]?.id||null);
-    }
-    setLoading(false);
-  },[supabase,notify]);
+    }catch(error){setLoadError(error.message||'Could not load inbox');}
+    finally{setLoading(false)}
+  },[supabase]);
 
   useEffect(()=>{load()},[load]);
   useEffect(()=>{
@@ -47,11 +67,18 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
   },[supabase,load]);
 
   const visible=useMemo(()=>rows.filter(row=>{
+    const hay=[row.sender_name,row.sender_email,row.subject,row.analysis?.summary].filter(Boolean).join(' ').toLowerCase();
+    if(query.trim()&&!hay.includes(query.trim().toLowerCase()))return false;
+    if(filter==='failed')return row.status==='failed';
+    if(filter==='review')return row.status==='needs_review';
     if(filter==='all')return true;
     if(filter==='done')return['draft_created','complete','ignored'].includes(row.status);
     return!['draft_created','complete','ignored'].includes(row.status);
-  }),[rows,filter]);
-  const selected=rows.find(row=>row.id===selectedId)||visible[0]||null;
+  }),[rows,filter,query]);
+  const selected=visible.find(row=>row.id===selectedId)||visible[0]||null;
+  const latest=rows[0]?.received_at;
+  const stale=latest&&Date.now()-new Date(latest).getTime()>48*60*60*1000;
+  const failed=rows.filter(row=>row.status==='failed').length;
   const customer=customers.find(c=>c.id===selected?.customer_id)||null;
   const lines=selected?.analysis?.lines||[];
   const stock=selected?.stock_checks||[];
@@ -62,9 +89,10 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
     if(!selected||!supabase)return false;
     setSaving(true);
     const next={...values,updated_at:new Date().toISOString()};
-    const{error}=await supabase.from('ai_inbox_messages').update(next).eq('id',selected.id);
+    const {data,error}=await supabase.from('ai_inbox_messages').update(next).eq('id',selected.id).select('id').maybeSingle();
     setSaving(false);
-    if(error){notify?.('Could not update email: '+error.message,'error');return false}
+    if(error||!data){notify?.('Could not update email: '+(error?.message||'Access denied or message no longer exists'),'error');return false}
+    if(values.draft_body_text===draftEdits.current[selected.id])delete draftEdits.current[selected.id];
     setRows(prev=>prev.map(row=>row.id===selected.id?{...row,...next}:row));
     return true;
   };
@@ -98,19 +126,30 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
     notify?.(result.already_queued?'Cart command was already queued.':'Cart command queued for the bot. It will stop before checkout.');
   };
 
-  if(loading)return<div className="card"><div className="card-body" style={{padding:32,textAlign:'center',color:'#64748b'}}>Loading AI Inbox…</div></div>;
-  return<div>
-    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,flexWrap:'wrap'}}>
-      <div style={{fontSize:13,color:'#64748b',flex:1}}>Customer emails and verified rep forwards sent to <strong>sales@nationalsportsapparel.com</strong> are analyzed here. Cart changes require approval, and nothing is ordered or emailed automatically.</div>
-      <button className="btn btn-sm btn-secondary" onClick={load}><Icon name="refresh" size={12}/> Refresh</button>
-      <select className="form-input" value={filter} onChange={e=>setFilter(e.target.value)} style={{width:140,fontSize:12}}>
-        <option value="open">Open</option><option value="done">Completed</option><option value="all">All</option>
-      </select>
+  return<div className="ai-inbox">
+    <div className="ai-inbox-heading">
+      <div><div className="ai-inbox-eyebrow">SALES WORKSPACE</div><h2>Email requests</h2><p>Review customer requests, prepare estimates, and check the work before taking action.</p></div>
+      <button className="btn btn-secondary" disabled={loading} onClick={load}>{loading?'Loading…':'Reload saved requests'}</button>
     </div>
-    <div style={{display:'grid',gridTemplateColumns:'minmax(300px,38%) minmax(0,1fr)',gap:14,alignItems:'start'}}>
-      <div className="card" style={{margin:0,maxHeight:'calc(100vh - 190px)',overflow:'auto'}}>
+    <section className={'ai-inbox-health '+(stale||failed||health?.connected===false?'needs-attention':'')} aria-label="Inbox health">
+      <div><strong>{health?.connected===false?'Sales mailbox needs attention':stale?'No recent requests imported':failed?'Some requests could not be processed':'Sales mailbox'}</strong>
+      <p>{health?.message||'sales@nationalsportsapparel.com · Scheduled mail checks run every 5 minutes in production.'}</p>
+      <p>{latest?'Newest saved email: '+fmtDate(latest)+'. ':'No saved emails yet. '}{failed>0?failed+' failed in the latest 100 requests. ':''}Reloading this page does not fetch mail from Gmail.</p>
+      {health?.connected&&<p>Google connection verified. This does not verify the importer or AI processing.</p>}</div>
+      <button className="btn btn-secondary" disabled={checking||!supabase} onClick={checkConnection}>{checking?'Checking…':'Check connection'}</button>
+    </section>
+    {loadError&&<div className="ai-inbox-error" role="alert">Could not load requests: {loadError}. Use Reload saved requests to try again.</div>}
+    <div className="ai-inbox-toolbar">
+      <input className="form-input" aria-label="Search requests" placeholder="Search sender or request…" value={query} onChange={e=>setQuery(e.target.value)}/>
+      <select className="form-input" aria-label="Request status" value={filter} onChange={e=>setFilter(e.target.value)}>
+        <option value="open">Open requests</option><option value="review">Ready for review</option><option value="failed">Failed</option><option value="done">Completed</option><option value="all">All requests</option>
+      </select>
+      <span>{visible.length} shown · latest 100{loadedAt?' · loaded '+fmtDate(loadedAt):''}</span>
+    </div>
+    <div className="ai-inbox-columns">
+      <div className="card ai-inbox-list" aria-label="Email requests">
         {visible.length===0?<div className="card-body" style={{padding:28,textAlign:'center',color:'#94a3b8'}}>No email requests in this view.</div>:
-          visible.map(row=><button key={row.id} onClick={()=>setSelectedId(row.id)} style={{width:'100%',display:'block',textAlign:'left',border:'none',borderBottom:'1px solid #e2e8f0',borderLeft:selected?.id===row.id?'4px solid #7c3aed':'4px solid transparent',padding:'12px 14px',background:selected?.id===row.id?'#faf5ff':'white',cursor:'pointer'}}>
+          visible.map(row=><button key={row.id} aria-pressed={selected?.id===row.id} onClick={()=>setSelectedId(row.id)} style={{width:'100%',display:'block',textAlign:'left',border:'none',borderBottom:'1px solid #e2e8f0',borderLeft:selected?.id===row.id?'4px solid #7c3aed':'4px solid transparent',padding:'12px 14px',background:selected?.id===row.id?'#faf5ff':'white',cursor:'pointer'}}>
             <div style={{display:'flex',gap:8,alignItems:'center'}}>
               <strong style={{fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{row.sender_name||row.sender_email}</strong>
               <span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{fmtDate(row.received_at)}</span>
@@ -125,20 +164,20 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
           </button>)}
       </div>
       {!selected?<div className="card"><div className="card-body" style={{padding:32,textAlign:'center',color:'#94a3b8'}}>Select an email.</div></div>:
-      <div className="card" style={{margin:0}}>
+      <div className="card ai-inbox-detail" style={{margin:0}}>
         <div className="card-header" style={{alignItems:'flex-start'}}>
           <div><h2 style={{margin:0,fontSize:16}}>{selected.subject||'(no subject)'}</h2><div style={{fontSize:11,color:'#64748b',marginTop:4}}>From {selected.sender_name?selected.sender_name+' · ':''}{selected.sender_email} · {fmtDate(selected.received_at)}</div></div>
           <span style={{fontSize:10,padding:'3px 8px',borderRadius:10,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>{STATUS_LABELS[selected.status]||selected.status}</span>
         </div>
         <div className="card-body">
-          {selected.error_message&&<div style={{padding:10,background:'#fef2f2',color:'#991b1b',borderRadius:7,fontSize:12,marginBottom:12}}>⚠ {selected.error_message}</div>}
+          {selected.error_message&&<div style={{padding:10,background:'#fef2f2',color:'#991b1b',borderRadius:7,fontSize:12,marginBottom:12}}>⚠ {selected.error_message==='Unauthorized'?'AI processing could not authenticate. Check the mailbox connection; an administrator also needs to verify the AI service credentials before retrying.':selected.error_message}</div>}
           {selected.is_rep_command&&<div style={{padding:12,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,marginBottom:14}}>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
               <strong style={{fontSize:12,color:'#1e40af'}}>Rep command</strong>
               <span style={{fontSize:9,padding:'2px 7px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700,textTransform:'uppercase'}}>{selected.command_type||'review'}</span>
               <span style={{fontSize:9,padding:'2px 7px',borderRadius:10,background:selected.command_status==='queued'?'#dcfce7':'#fef3c7',color:selected.command_status==='queued'?'#166534':'#92400e',fontWeight:700}}>{selected.command_status||'proposed'}</span>
             </div>
-            <div style={{fontSize:12,color:'#1e3a5f',whiteSpace:'pre-wrap'}}>{selected.rep_instruction||'(No instruction found above the forwarded message)'}</div>
+            <div style={{fontSize:14,color:'#1e3a5f',whiteSpace:'pre-wrap',maxHeight:160,overflow:'auto'}}>{selected.rep_instruction||'(No instruction found above the forwarded message)'}</div>
             {(selected.original_sender_email||selected.original_subject)&&<div style={{fontSize:10,color:'#64748b',marginTop:7}}>
               Forwarded customer: {selected.original_sender_name||selected.original_sender_email||'Unknown'}
               {selected.original_sender_email&&selected.original_sender_name?' · '+selected.original_sender_email:''}
@@ -150,7 +189,7 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
               <option value="">Select customer…</option>
               {customers.filter(c=>c.is_active!==false).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
             </select></div>
-            <div><label className="form-label">AI intent</label><div style={{padding:'9px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,textTransform:'capitalize'}}>{selected.intent||'Processing'}</div></div>
+            <div><label className="form-label">AI intent</label><div style={{padding:'9px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,textTransform:'capitalize'}}>{selected.intent||(selected.status==='failed'?'Analysis unavailable':'Awaiting analysis')}</div></div>
           </div>
           {selected.analysis?.summary&&<div style={{padding:11,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:7,fontSize:12,color:'#5b21b6',marginBottom:14}}><strong>AI summary:</strong> {selected.analysis.summary}</div>}
           {selected.is_rep_command&&((portalContext.estimates||[]).length>0||(portalContext.orders||[]).length>0)&&<div style={{padding:11,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7,fontSize:11,marginBottom:14}}>
@@ -170,12 +209,12 @@ export default function AiInbox({supabase,customers,onCreateEstimate,notify}){
               {lines.map((line,i)=>{const check=stock[i]||{};return<tr key={i}><td style={{fontWeight:700}}>{line.sku_guess||'Unmatched'}</td><td>{line.name}{line.color?' · '+line.color:''}</td><td>{Object.entries(line.sizes||{}).map(([s,q])=>s+': '+q).join(', ')||line.total_qty||'—'}</td><td>{!line.product_id?<span style={{color:'#b45309'}}>Needs SKU match</span>:check.fully_available?<span style={{color:'#166534'}}>✓ currently available</span>:<span style={{color:'#b91c1c'}}>Short: {(check.shortages||[]).map(x=>x.size+' '+x.available+'/'+x.requested).join(', ')}</span>}</td></tr>})}
             </tbody></table></div>
           </div>}
-          <div style={{marginBottom:12}}><label className="form-label">Proposed Gmail reply</label><textarea className="form-input" rows={10} value={selected.draft_body_text||''} onChange={e=>setRows(prev=>prev.map(row=>row.id===selected.id?{...row,draft_body_text:e.target.value}:row))} onBlur={()=>patch({draft_body_text:selected.draft_body_text})} style={{fontFamily:'inherit',lineHeight:1.5}}/></div>
+          {selected.status!=='failed'&&<div style={{marginBottom:12}}><label className="form-label">Proposed Gmail reply</label><textarea className="form-input" rows={5} value={selected.draft_body_text||''} onChange={e=>{draftEdits.current[selected.id]=e.target.value;setRows(prev=>prev.map(row=>row.id===selected.id?{...row,draft_body_text:e.target.value}:row))}} onBlur={()=>patch({draft_body_text:selected.draft_body_text})} style={{fontFamily:'inherit',lineHeight:1.5}}/></div>}
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',flexWrap:'wrap'}}>
             <button className="btn btn-secondary" disabled={saving} onClick={()=>patch({status:'ignored'})}>Ignore</button>
-            {commandCanCart&&<button className="btn btn-secondary" disabled={!customer||queueingCart||selected.command_status==='queued'||selected.command_task_id} title={!customer?'Match a customer first':selected.command_task_id?'Already queued':'Fills the Adidas CLICK cart and stops before checkout'} onClick={queueCart}><Icon name="cart" size={14}/> {queueingCart?'Queuing…':selected.command_task_id?'Cart queued':'Approve & Queue CLICK Cart'}</button>}
-            {selected.needs_estimate&&<button className="btn btn-primary" disabled={!customer||lines.length===0} title={!customer?'Match a customer first':''} onClick={()=>onCreateEstimate(selected)}>Create Draft Estimate</button>}
-            {!selected.needs_estimate&&<button className="btn btn-primary" disabled={!selected.draft_body_text||drafting} onClick={createResponseDraft}>{drafting?'Creating…':'Create Gmail Draft'}</button>}
+            {selected.status!=='failed'&&commandCanCart&&<button className="btn btn-secondary" disabled={!customer||queueingCart||selected.command_status==='queued'||selected.command_task_id} title={!customer?'Match a customer first':selected.command_task_id?'Already queued':'Fills the Adidas CLICK cart and stops before checkout'} onClick={queueCart}><Icon name="cart" size={14}/> {queueingCart?'Queuing…':selected.command_task_id?'Cart queued':'Approve & Queue CLICK Cart'}</button>}
+            {selected.status!=='failed'&&selected.needs_estimate&&<button className="btn btn-primary" disabled={!customer||lines.length===0} title={!customer?'Match a customer first':''} onClick={()=>onCreateEstimate(selected)}>Create Draft Estimate</button>}
+            {selected.status!=='failed'&&!selected.needs_estimate&&<button className="btn btn-primary" disabled={!selected.draft_body_text||drafting} onClick={createResponseDraft}>{drafting?'Creating…':'Create Gmail Draft'}</button>}
           </div>
         </div>
       </div>}
