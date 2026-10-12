@@ -179,23 +179,22 @@ would have gone the same way as Jered's.
 1. **`localRowIsNewer(localTs, dbTs)`** — parses both sides to epoch ms instead of comparing strings,
    so an ISO DB value and a locale client value order correctly. `toLocaleString` round-trips through
    `Date.parse` in the tab's own timezone — the same tab that produced it — so both land on the right
-   instant. If either side fails to parse, the DB row wins, so `_version` always heals.
-2. **`keepLocalAdoptVersion(local, dbRow)`** — when the local copy legitimately wins on content, it now
-   adopts the DB row's `_version` instead of keeping its own stale one. This is the load-bearing change:
-   it breaks the deadlock even if (1) ever judges recency wrong.
+   instant. If either side fails to parse, the normal DB merge runs.
+2. **`estimatePollRecencyDecision(local, dbRow)`** — a newer local timestamp may keep the local copy
+   only while the DB is still at the version that content was authored against. `_obBaseVersion`
+   remains authoritative after the save precheck observes a newer DB version. If the DB advanced (or
+   version proof is missing), the poll preserves the complete local document in the conflict card and
+   loads the current cloud row. It never changes `_version` without also reconciling content.
 
-`updated_at` deliberately stays the local value in (2). It is the signal (1) reads, so overwriting it
-with the DB's older timestamp would make the next poll judge the local copy stale and drop the rep's
-unsaved lines — trading a save deadlock for visible content loss.
+**Applied to Jered's exact situation:** his rejected seven-item local copy is retained for explicit
+review, while version 4 and its intervening content load into the editor. A subsequent ordinary edit
+is based on v4 and can save as v5. The rep can still explicitly choose **Apply my edit anyway** from
+the conflict card, but the background poll cannot silently authorize that overwrite.
 
-**Applied to Jered's exact situation:** his local copy (13:39:18) *was* genuinely newer than the DB row
-(13:29:46), so the merge keeps his seven items on screen **and** adopts version 4 — his next save
-succeeds. Nothing is lost and nothing snaps back.
-
-Covered by `src/__tests__/pollMergeRecency.test.js` (20 tests) using the real EST-2522 timestamps,
-including a month-by-month table pinning where the old string compare disagreed with the truth (it is
-wrong for ten months of the year — Mar–Sep wrongly favouring the local copy, Oct–Dec wrongly favouring
-the DB).
+Covered by `src/__tests__/pollMergeRecency.test.js` using the real EST-2522 timestamps, including a
+month-by-month table pinning where the old string compare disagreed with the truth, and by
+`src/__tests__/estimatePollConflictLifecycle.test.js`, which exercises v3 → rejected against v4 →
+poll conflict → edit the cloud copy → successful v5 save while retaining a v4-only field.
 
 ### Not done, deliberately
 

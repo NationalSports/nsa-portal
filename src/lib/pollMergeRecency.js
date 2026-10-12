@@ -18,32 +18,29 @@ export const rowTimeMs = v => {
   return isNaN(t) ? NaN : t;
 };
 
-// Strictly-newer, and only when BOTH sides parse. An unparseable value means "don't know" → the DB
-// row wins → _version heals. Failing toward healing is the safe direction: the field-level guards
-// inside the merge already protect local content, but a stranded _version cannot recover without a
-// full page reload.
+// Strictly-newer, and only when BOTH sides parse. An unparseable value means "don't know" and lets
+// the normal DB merge run. We never use timestamp uncertainty as permission to overwrite the DB.
 export const localRowIsNewer = (localTs, dbTs) => {
   const a = rowTimeMs(localTs), b = rowTimeMs(dbTs);
   return !isNaN(a) && !isNaN(b) && a > b;
 };
 
-// Keeping the local copy must NOT also keep its stale _version.
+const finiteVersion = value => value != null && isFinite(Number(value)) ? Number(value) : null;
+
+// Decide only the wholesale-local fast path. `merge-db` deliberately falls through to App's
+// existing field-level merge guards.
 //
-// _version is optimistic-concurrency bookkeeping owned by the DB, not user content. `save_estimate`
-// refuses any write whose base _version is behind, so a merge that returns the local row wholesale
-// strands the tab one version back — and it stays stranded, because the very next poll makes the
-// same decision for the same reason. The rep keeps working into a document that can no longer be
-// saved, with no error. That deadlock silently discarded 6 garments and 11 decorations from EST-2522
-// (18 rejected saves over 9 minutes; base_version still 3 at the last one).
-//
-// Adopt the DB row's _version; keep local content.
-//
-// `updated_at` deliberately stays the local (newer) value: it is the very signal `localRowIsNewer`
-// reads, so overwriting it with the DB's older timestamp would make the NEXT poll judge the local
-// copy stale and drop the rep's unsaved lines — trading a save deadlock for visible content loss.
-// A successful save refreshes both fields from the server anyway.
-export const keepLocalAdoptVersion = (local, dbRow) => {
-  // nothing to adopt — keep object identity so the caller's `changed()` comparison stays cheap
-  if (!dbRow || dbRow._version == null || local._version === dbRow._version) return local;
-  return { ...local, _version: dbRow._version };
+// A newer local timestamp does NOT prove its content was authored against the newest DB version.
+// `_obBaseVersion` is the authoritative pre-auto-heal base: dbEngine sets it before changing
+// `_version` after a version precheck. Adopting the DB version while retaining that stale content
+// would defeat the optimistic lock and allow the next save to overwrite somebody else's changes.
+// In that case the rejected draft must be preserved for explicit review and the cloud row loaded.
+export const estimatePollRecencyDecision = (local, dbRow) => {
+  if (!local || !dbRow || !localRowIsNewer(local.updated_at, dbRow.updated_at)) return 'merge-db';
+
+  const localBase = finiteVersion(local._obBaseVersion ?? local._version);
+  const dbVersion = finiteVersion(dbRow._version);
+  if (localBase == null || dbVersion == null || dbVersion > localBase) return 'conflict';
+
+  return 'keep-local';
 };
