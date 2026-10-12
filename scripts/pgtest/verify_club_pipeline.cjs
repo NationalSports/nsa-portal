@@ -157,11 +157,12 @@ try {
     await db.exec(`
       create function create_all_school_sales_order(uuid)
         returns jsonb language plpgsql as $$
-      declare v_num bigint;
+      declare v_num bigint; v_so_id text;
       begin
+        perform pg_advisory_xact_lock(hashtext('nsa_sales_orders_id_mint'));
         select greatest(coalesce(max((regexp_match(id, '(\\d+)'))[1]::bigint),0),1000)+1
           into v_num from sales_orders;
-        return '{}'::jsonb;
+        v_so_id := 'SO-' || v_num; return jsonb_build_object('so_id',v_so_id);
       end $$;
       create function convert_uniform_order_to_sales_order(uuid)
         returns jsonb language plpgsql as $$
@@ -174,7 +175,12 @@ try {
     `);
     await db.exec(read('supabase/migrations/20261008193918_keep_sales_order_ids_sequential.sql'));
     await db.exec(read('supabase/migrations/20261011063832_at_once_fulfillment_completion.sql'));
-    console.log('PASS real Club dependency chain, exact bundle allocator, sequential SO numbering, physical-pull RPC, auto-pick assignment, and at-once completion migrations apply');
+    await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
+    const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
+    const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
+    assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
+    assert.match(uniformMint, /SO-/); assert.doesNotMatch(uniformMint, /247-/);
+    console.log('PASS real Club chain and isolated 247 numbering migration; Team Shop and uniform retain SO namespace');
 
     await db.exec('begin');
     transactionOpen = true;
@@ -214,7 +220,7 @@ try {
       'select public.create_club_sales_order($1) result', [orderId]
     )).rows[0].result;
     soId = converted.so_id;
-    assert.equal(soId, 'SO-1001');
+    assert.equal(soId, '247-1001');
     assert.equal(converted.items, 1);
     assert.equal(converted.jobs, 1);
     assert.equal(converted.units, 2);
@@ -259,10 +265,17 @@ try {
     const paymentCount = (await db.query('select count(*)::int n from invoice_payments where invoice_id=$1', [invoice.id])).rows[0].n;
     const replay = (await db.query('select public.create_club_sales_order($1) result', [orderId])).rows[0].result;
     assert.equal(replay.replayed, true);
+    assert.equal(replay.so_id, soId);
+    const numberCounts = (await db.query(`select
+      count(*) filter(where id ~ '^247-[0-9]{4,7}$')::int at_once,
+      count(*) filter(where id ~ '^SO-[0-9]{4,7}$')::int main
+      from sales_orders`)).rows[0];
+    assert.equal(numberCounts.at_once, 1, 'new Club conversion occupies the shared 247 namespace exactly once');
+    assert.equal(numberCounts.main, 0, 'native conversion leaves the ordinary SO sequence untouched');
     assert.equal((await db.query('select count(*)::int n from invoices where so_id=$1', [soId])).rows[0].n, invoiceCount);
     assert.equal((await db.query('select count(*)::int n from invoice_payments where invoice_id=$1', [invoice.id])).rows[0].n, paymentCount);
     assert.equal((await db.query('select count(*)::int n from so_jobs where so_id=$1', [soId])).rows[0].n, 1);
-    console.log('PASS fake paid Club checkout auto-converts to one SO/job and paid invoice/payment; replay is duplicate-free');
+    console.log('PASS fake paid Club checkout converts once to 247-1001 SO/job and paid invoice/payment; replay is duplicate-free');
 
     await capture('club_conversion_need_order', 'need_order', 50);
     const soItem = (await db.query('select id from so_items where so_id=$1', [soId])).rows[0];

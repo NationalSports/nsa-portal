@@ -1506,7 +1506,7 @@ const _dbSaveSOInner = async (so) => {
     let _remintedFrom=null;
     if(_idHeldByOtherSO){
       const oldId=so.id;
-      if(!so._version){
+      if(!so._version&&/^SO-\d+$/.test(String(oldId||''))){
         // Never successfully saved (no _version has ever been read back), so this is a brand-new order whose
         // number was taken while the tab sat idle. Claim a free number instead of overwriting the incumbent.
         // Safe to renumber here precisely because it has no children under the old id yet.

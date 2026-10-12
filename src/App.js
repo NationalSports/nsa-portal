@@ -37,6 +37,8 @@ import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
 import AtOnceDashboard from './AtOnceDashboard';
+import { mainSalesOrders } from './lib/orderChannels';
+import useOrderStoreMetadata from './lib/useOrderStoreMetadata';
 import BarcodeScanner from './BarcodeScanner';
 import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta, findOverPromised, ifStockCoverage } from './itemFulfillment';
 import BotStatus from './BotStatus';
@@ -2558,7 +2560,7 @@ export default function App(){
     [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
-    const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
+    const badSOs=soList.filter(s=>!(/^(?:SO|247)-\d+$/).test(s.id));
     if(badSOs.length>0){
       needsMigrate=true;
       const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));
@@ -6323,6 +6325,7 @@ export default function App(){
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
   const[soView,setSOView]=useState('list');
+  const soStoreMetadata=useOrderStoreMetadata(sos,supabase,pg==='orders'&&soView==='list');
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const recoveryEditorRef=React.useRef(null);
@@ -11966,10 +11969,13 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
-    const orderViewSwitch=<div className="ao-view-switch" aria-label="Sales order view"><button type="button" aria-pressed={soView==='list'} onClick={()=>setSOView('list')}>Order list</button><button type="button" aria-pressed={soView==='at_once'} onClick={()=>setSOView('at_once')}>At-Once / 24/7 dashboard</button><button type="button" aria-pressed={soView==='stores'} onClick={()=>setSOView('stores')}>Stores dashboard</button></div>;
+    const orderViewSwitch=<div className="ao-view-switch" aria-label="Sales order view"><button type="button" aria-pressed={soView==='list'} onClick={()=>setSOView('list')}>Sales orders</button><button type="button" aria-pressed={soView==='at_once'} onClick={()=>setSOView('at_once')}>At-Once / 24/7 dashboard</button><button type="button" aria-pressed={soView==='stores'} onClick={()=>setSOView('stores')}>Stores dashboard</button></div>;
     if(['at_once','stores'].includes(soView))return<>{orderViewSwitch}<AtOnceDashboard key={soView} dashboard={soView} orders={sos} customers={cust} supabase={supabase} calcStatus={calcSOStatus} calcValue={so=>calcOrderMargin(so,sos).rev} onOpenOrder={so=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null)}}/></>;
-    // Filter SOs
-    let fSOs=[...sos];
+    if(soStoreMetadata.loading)return<>{orderViewSwitch}<p role="status">Loading sales orders…</p></>;
+    if(soStoreMetadata.error)return<>{orderViewSwitch}<p role="alert">Unable to separate store orders. <button className="btn btn-secondary" onClick={soStoreMetadata.retry}>Retry</button></p></>;
+    // List-only separation; all shared operational pages retain the full sos array.
+    const mainSOs=mainSalesOrders(sos,soStoreMetadata.stores);
+    let fSOs=[...mainSOs];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
     else if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
     const soRepId=soF.rep==='_me_'?cu?.id:soF.rep;
@@ -11981,7 +11987,7 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={booking:sos.filter(s=>calcSOStatus(s)==='booking').length,need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
+    const stCounts={booking:mainSOs.filter(s=>calcSOStatus(s)==='booking').length,need_order:mainSOs.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:mainSOs.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:mainSOs.filter(s=>calcSOStatus(s)==='items_received').length,in_production:mainSOs.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:mainSOs.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:mainSOs.filter(s=>calcSOStatus(s)==='complete').length};
     const activeFilters=(soF.status!=='all'&&soF.status!=='active')||soF.rep!=='all'||soF.search;
 
     return(<>
@@ -11989,7 +11995,7 @@ export default function App(){
       {/* Clickable status stat cards */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='active'||soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'active'}))}>
-          <div className="stat-label">Active</div><div className="stat-value">{sos.length-stCounts.complete}</div></div>
+          <div className="stat-label">Active</div><div className="stat-value">{mainSOs.length-stCounts.complete}</div></div>
         {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'active':'booking'}))}>
           <div className="stat-label">Booking</div><div className="stat-value" style={{color:'#4338ca'}}>{stCounts.booking}</div></div>}
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'active':'need_order'}))}>

@@ -21,3 +21,9 @@ test('keeps four digits through 9999, then moves to 10000', () => {
 test('uses a newer canonical ID found in the database', () => {
   expect(nextSalesOrderId([{ id: 'SO-2872' }], 2875)).toBe('SO-2876');
 });
+
+
+test('24/7 IDs never consume the main sales order sequence', () => {
+  expect(nextSalesOrderId([{ id: 'SO-2872' }, { id: '247-9000000' }])).toBe('SO-2873');
+  expect(salesOrderSequenceNumber('247-9000000')).toBe(0);
+});

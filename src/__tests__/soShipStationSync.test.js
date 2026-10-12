@@ -34,3 +34,15 @@ test('ordinary SO webhook now uses the same bridge and propagates write failures
   importSoShipment.mockRejectedValueOnce(new Error('write failed'));
   await expect(processShipStationPayload({}, { shipments })).rejects.toThrow('write failed');
 });
+
+test('247-series shipment sync and webhook import use the SO shipment bridge', async () => {
+  const atOnceEvent = { httpMethod: 'POST', body: JSON.stringify({ soId: '247-1001' }) };
+  fetchShipmentPages.mockResolvedValue([{ orderNumber: '247-1001', shipmentId: 24 }]);
+  const result = await handler(atOnceEvent);
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ matched: 1, changed: 1 });
+  expect(importSoShipment).toHaveBeenCalledWith({}, { orderNumber: '247-1001', shipmentId: 24 });
+
+  await processShipStationPayload({}, { shipments: [{ orderNumber: '247-1001', shipmentId: 25 }] });
+  expect(importSoShipment).toHaveBeenCalledWith({}, { orderNumber: '247-1001', shipmentId: 25 });
+});
