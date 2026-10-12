@@ -60,7 +60,7 @@ The earlier review also fixed automatic Club/All School conversion compatibility
 
 - **Existing QBO duplicate:** SO-1694 has INV-63982 and INV-64393, both $488.05, representing the same described order. INV-63982 remains open; INV-64393 is paid. Both include $445 of Sales and $43.05 of tax liability. This is pre-existing and was not changed. Portal guards alone cannot certify the absence of QBO-only duplicates.
 - **Legacy webstore billing:** older invoices can contain product revenue only. Example: SO-2030/INV-63598 is $2,023, versus $2,266.86 in linked checkout order totals. Closeout blocks this difference rather than creating another invoice or silently changing previously posted revenue. Refunds/current pricing may also affect comparisons; accounting must determine the correction.
-- **OMG gross-report remainder:** SO-2825 reports $8,079.77 collected while its historical invoice/payment is $7,020. This PR preserves the existing product-invoice basis and caps application at the invoice balance. It does not prove where the remainder (shipping/tax/processing/fundraising) is posted, or create an additional revenue/deposit entry for it. Reconcile that complete gross-to-ledger path before declaring production accounting complete.
+- **OMG gross-report remainder:** SO-2825 reports $8,079.77 collected while its historical invoice/payment is $7,020. The supplied reports now identify this as net processing plus tax (see the October 12 reconciliation below). The existing paid product-only invoice remains unchanged and held; this PR does not create a historical correction or establish the bank-ledger posting. Reconcile that complete gross-to-ledger path before declaring production accounting complete.
 - **Historical commissions:** 35 linked store commission snapshots already exist. Prior payouts and incomplete-cost snapshots require deliberate review; this change neither pays them again nor automatically restates historical statements.
 - **End-to-end staging:** run a migrated staging database through the actual browser, Netlify endpoint and QBO sandbox, including simultaneous requests and a dropped-response retry. The local PGlite tests serialize requests and are not a true multi-connection concurrency load test. Other unrelated production triggers are not all reproduced in the replay.
 
@@ -125,3 +125,21 @@ Verified in hosted Supabase with synthetic fixtures:
 The temporary test user was signed out and removed. Staging retains four clearly labeled synthetic orders/invoices and four payments. Verified zero auth users, zero vault secrets, zero QBO tokens and no cron schema. No live accounting records were changed.
 
 Remaining verification limits: no browser-to-hosted-Netlify deployment test and no QuickBooks sandbox export were performed. Supabase staging is operational for database/API tests; no customer-facing staging site or public login was enabled.
+
+
+### Final browser review (October 12)
+
+Reviewed application revision `595327e7b870fd5856d4d72d1a9485eb5a15b07e`. Chrome ran the actual React app on loopback with its actual Close Store handler, real staging Auth and hosted Supabase PostgREST. Both frontend and backend were explicitly bound to `szlkkkbfnybydualeodv`; the frontend received only its anonymous key. Every other Netlify endpoint was blocked by the local test proxy. No deployment or external accounting connection was used.
+
+- The rep dashboard and SO displayed the assigned closeout check, due October 6 for a September 1 creation. Its text requires all shipments/costs and says five weeks alone never releases commissions.
+- Cancelling the OMG confirmation left the order open. Accepting it created INV-1005 at $8,079.77 and one Store Funds payment; the task disappeared and the SO displayed Store Closed.
+- The invoice detail showed $7,020 products, $490.75 processing, $569.02 tax, $8,079.77 paid and $0 balance. Reload preserved the payment history.
+- A synthetic webstore batch created no invoice before closeout. Browser closeout created INV-1006 at $115 with one payment, $5 tax and $8 shipping. The redesigned editor also displayed Store Closed after reload.
+- The commission statement showed web revenue $110, card cost $3 and GP $107. The earlier fully costed OMG fixture showed revenue $7,510.75, platform/card costs $601.04 and GP $6,909.71. The unclosed fixture was absent from earned commissions.
+- Independent database read-back and actual HTTP retries with stale versions confirmed one invoice/payment per browser-created store and `already_closed: true` on retry. An unfinished-job fixture returned HTTP 409 with no accounting creation.
+
+The browser also refused closeout on an unconfirmed-save fixture. That fixture deliberately had an orphan job and hit the isolated branch's restricted ordinary-save permissions; it was not a successful full sales-order edit/save test. Browser sign-in initially required restoring execute permission for `get_my_profile`. The focused closeout paths above succeeded, but this is not evidence that all unrelated portal editing screens work on the manually restored branch.
+
+All test login sessions were signed out, the temporary Auth user was removed, and temporary authenticated table/profile access was revoked. Staging retains seven synthetic orders, six invoices/payments and no Auth users. The loopback test server was stopped. No production records, migrations, QBO writes, merge or deployment were performed.
+
+Final review found no additional blocker in the Close Store changes. Existing CI at the tested application revision passed test, drift, transactions and real-Postgres concurrency checks. Remaining release checks are hosted Netlify environment configuration and a QBO sandbox export/account-mapping reconciliation; neither is claimed by these browser tests. Do not enable live accounting exports based only on these results. The manually restored Supabase branch must not be merged into production.
