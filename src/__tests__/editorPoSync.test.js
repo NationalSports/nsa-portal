@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { mergeExternalPoItems } from '../lib/editorPoSync';
 import { checkBatchPoReservations } from '../lib/batchPoReservations';
+import { shouldAdoptServerCopy, adoptServerCopy } from '../lib/editorServerAdopt';
 
 const po = (id, extra = {}) => ({ po_id: id, M: 3, received: {}, ...extra });
 const item = (extra = {}) => ({ sku: 'JX4456', color: 'Navy/White', sizes: { M: 10 }, pick_lines: [], po_lines: [], ...extra });
@@ -53,13 +54,17 @@ test('ambiguous legacy garments, mismatched stable IDs, and swapped garments do 
 describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s PO refresh', file => {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
   const start = source.indexOf('React.useEffect(()=>{', source.indexOf('const lastSyncRef='));
-  const end = source.indexOf('},[order.updated_at,order.items]);', start) + '},[order.updated_at,order.items]);'.length;
-  const effect = Function('order', 'o', 'dirty', 'React', 'lastSyncRef', 'safeItems', 'safePicks', 'safeJobs', 'safeArt', 'setO', 'mergeArtGroupFiles', 'mergeExternalPoItems', source.slice(start, end));
-  const refresh = (local, incoming, cache = { current: '' }) => {
+  const DEPS = '},[order.updated_at,order.items,order._version]);';
+  const end = source.indexOf(DEPS, start) + DEPS.length;
+  if (source.indexOf(DEPS, start) < 0) throw new Error(file + ': external-sync effect deps changed — update this harness');
+  const effect = Function('order', 'o', 'dirty', 'React', 'lastSyncRef', 'safeItems', 'safePicks', 'safeJobs', 'safeArt', 'setO', 'mergeArtGroupFiles', 'mergeExternalPoItems',
+    'dirtyRef2', 'sizingDraftRef', '_hasActiveDocumentSave', 'shouldAdoptServerCopy', 'adoptServerCopy', source.slice(start, end));
+  const refresh = (local, incoming, cache = { current: '' }, dirty = true) => {
     let state = local;
-    effect(incoming, local, true, { useEffect: fn => fn() }, cache,
+    effect(incoming, local, dirty, { useEffect: fn => fn() }, cache,
       o => o.items || [], it => it.pick_lines || [], o => o.jobs || [], o => o.art_files || [],
-      fn => { state = fn(state); }, (a, b) => ({ ...b, ...a }), mergeExternalPoItems);
+      fn => { state = fn(state); }, (a, b) => ({ ...b, ...a }), mergeExternalPoItems,
+      { current: dirty }, { current: {} }, () => false, shouldAdoptServerCopy, adoptServerCopy);
     return state;
   };
   const order = items => ({ id: 'SO-2851', updated_at: 'same-second', _version: 4, items, jobs: [], art_files: [] });
@@ -81,6 +86,17 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s PO refresh', file
     expect(merged._version).toBe(4);
     expect(merged.memo).toBe('unsaved memo');
     expect(merged.items[0].po_lines.map(p => p.po_id)).toEqual(['SAVED']);
+  });
+
+  // SO-2444: a clean tab left open while someone else saved must take the newer copy, version
+  // included — otherwise its first edit is rejected as STALE_SO_WRITE.
+  test('a clean editor adopts the newer server copy, version included', () => {
+    const local = { ...order([item({ line_id: 'f4af', sizes: { M: 8 } })]), _hydratedPoIds: ['PO 1'] };
+    const incoming = { ...order([item({ line_id: 'f4af', sizes: { M: 8 }, po_lines: [po('PO 2')] })]), _version: 9, updated_at: 'later' };
+    const merged = refresh(local, incoming, { current: '' }, false);
+    expect(merged._version).toBe(9);
+    expect(merged.items).toBe(incoming.items);
+    expect(merged._hydratedPoIds).toEqual(['PO 1']);
   });
 
   test('the duplicate-purchase guard sees the newly adopted saved PO', async () => {

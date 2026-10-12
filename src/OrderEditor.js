@@ -9,6 +9,7 @@ import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
 import {_hasActiveDocumentSave} from './lib/dbEngine';
+import {shouldAdoptServerCopy,adoptServerCopy} from './lib/editorServerAdopt';
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
 import PriorArtReviewPanel from './PriorArtReviewPanel';
@@ -815,9 +816,21 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
       const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
       const poIdentity=JSON.stringify(safeItems(order).map(it=>[it.line_id||'',it.sku||'',it.color||'',(Array.isArray(it.po_lines)?it.po_lines:[]).map(pl=>pl?.po_id||pl)]));
-      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount+':'+poIdentity;
+      const key=order.id+':'+(order.updated_at||'')+':'+(order._version??'')+':'+pickCount+':'+poCount+':'+poIdentity;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
+      // Stranded-version heal (SO-2444, 2026-10-12). Another session saved this order while this tab sat
+      // open (an artist's seps upload re-saved it 6x overnight). The field merge below pulls in their
+      // art/job/pick/PO changes but never the newer _version, so this tab kept claiming the old base and
+      // save_sales_order_atomic rejected its FIRST edit as STALE_SO_WRITE every time, with no real
+      // conflict (the EST-2522 deadlock from lib/pollMergeRecency.js, in the SO editor). With no unsaved
+      // work here there is nothing to protect: adopt the server copy wholesale, _version included. Only
+      // session tombstones carry over, so an earlier deliberate deletion can't be resurrected. A dirty
+      // editor, a buffered size cell or an in-flight save keeps the field merge + save-path guards.
+      if(shouldAdoptServerCopy(o,order,{dirty:dirty||dirtyRef2.current,pendingSizing:Object.keys(sizingDraftRef.current).length>0,saving:_hasActiveDocumentSave(order.id)})){
+        setO(prev=>shouldAdoptServerCopy(prev,order,{dirty:dirtyRef2.current,pendingSizing:Object.keys(sizingDraftRef.current).length>0,saving:_hasActiveDocumentSave(order.id)})?adoptServerCopy(prev,order):prev);
+        return;
+      }
       const extJobs=safeJobs(order);
       const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.art_reuse_confirmed!==lj.art_reuse_confirmed||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
@@ -852,7 +865,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         const mergedPoIds=[...new Set([...(Array.isArray(prev._hydratedPoIds)?prev._hydratedPoIds:[]),...(Array.isArray(order._hydratedPoIds)?order._hydratedPoIds:[])])];
         const mergedPickIds=[...new Set([...(Array.isArray(prev._hydratedPickIds)?prev._hydratedPickIds:[]),...(Array.isArray(order._hydratedPickIds)?order._hydratedPickIds:[])])];
         return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:mergedArt,updated_at:order.updated_at,_hydratedPoIds:mergedPoIds,_hydratedPickIds:mergedPickIds}})
-    },[order.updated_at,order.items]);
+    },[order.updated_at,order.items,order._version]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);

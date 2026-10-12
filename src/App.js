@@ -5256,10 +5256,13 @@ export default function App(){
   const _eSOSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eSO){
     const fresh=sos.find(s=>s.id===eSO.id);if(!fresh)return;
-    const snapKey=fresh.id+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    const snapKey=fresh.id+':'+(fresh._version??'')+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
     if(snapKey===_eSOSnapRef.current)return;
     _eSOSnapRef.current=snapKey;
-    if(fresh!==eSO&&(JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
+    // A newer server _version alone must reach the editor too (SO-2444): another session's item-only
+    // save changed none of the fields below, so the open editor never learned the order had moved and
+    // its next edit was rejected as stale. The editor decides what to do with it (adopt when clean).
+    if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
   }},[sos]);
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
