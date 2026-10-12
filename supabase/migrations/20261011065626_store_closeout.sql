@@ -358,6 +358,16 @@ begin
       raise exception 'Finish all production jobs before closing the store';
     end if;
   end if;
+  -- Deleted portal invoices can remain open in QBO (SO-1694 audit).
+  -- Do not manufacture a replacement while an exported historical invoice is absent.
+  if exists(select 1 from public.audit_log a where a.table_name='invoices' and a.op='DELETE'
+    and a.old_data->>'so_id'=s.id and nullif(a.old_data->>'qb_invoice_id','') is not null
+    and not exists(select 1 from public.invoices restored where restored.id=a.row_id and restored.deleted_at is null and coalesce(restored.status,'')<>'void'))
+    or exists(select 1 from public.invoices discarded where discarded.so_id=s.id
+      and (discarded.deleted_at is not null or discarded.status='void')
+      and nullif(to_jsonb(discarded)->>'qb_invoice_id','') is not null) then
+    raise exception 'Deleted invoice was exported to QuickBooks. Reconcile its QuickBooks copy before closeout.';
+  end if;
   -- Never pick an arbitrary invoice from duplicate/split history.
   perform 1 from public.invoices where so_id=s.id order by id for update;
   select count(*) into v_count from public.invoices where so_id=s.id and coalesce(status,'')<>'void' and deleted_at is null;
@@ -402,7 +412,7 @@ begin
     select * into v_omg from public.omg_stores where id=s.omg_store_id for update;
     v_funds := greatest(coalesce(v_omg._omg_acct_collected,0),0);
     v_ref := 'OMG ' || coalesce(nullif(v_omg._omg_sale_code,''),replace(s.omg_store_id,'OMG-sale_',''));
-    if coalesce(v_omg._omg_grand_total,0)<=0 or abs(v_funds-v_omg._omg_grand_total)>=1 then
+    if coalesce(v_omg._omg_grand_total,0)<=0 or abs(v_funds-v_omg._omg_grand_total)>0.005 then
       raise exception 'OMG Dollar and Accounting Reports must reconcile before closeout';
     end if;
     if abs(coalesce(s._omg_acct_collected,0)-v_funds)>0.005
@@ -446,7 +456,11 @@ begin
       insert into public.invoice_items(invoice_id,sku,name,qty,unit_price,total,description)
         select i.id,l->>'_sku',l->>'_name',(l->>'qty')::numeric,(l->>'rate')::numeric,(l->>'amount')::numeric,l->>'desc' from jsonb_array_elements(v_lines) l;
     end if;
-    v_funds := least(v_funds,i.total);
+    -- A paid product-only invoice does not account for the rest of gross collections.
+    -- Until tax/processing/fundraising allocation is reconciled, leave the store open.
+    if abs(v_funds-coalesce(i.total,0))>0.005 then
+      raise exception 'OMG gross collections differ from invoice total. Reconcile tax, processing, shipping, fundraising and refunds before closeout.';
+    end if;
   end if;
   if i.id is null or i.so_id is distinct from s.id or i.customer_id is distinct from s.customer_id then raise exception 'Existing accounting needs review before closeout'; end if;
   -- Different SO/store IDs can still refer to the same platform sale code.

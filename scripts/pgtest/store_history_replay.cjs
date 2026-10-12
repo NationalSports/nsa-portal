@@ -10,6 +10,7 @@ const quote=s=>'"'+s.replaceAll('"','""')+'"';
  create function gen_random_bytes(integer) returns bytea language sql as $$select decode(repeat('00',$1),'hex')$$;
  create function auth.role() returns text language sql as $$select 'service_role'::text$$;
  create function public.is_team_member() returns boolean language sql as $$select true$$;
+ create table audit_log(table_name text,op text,row_id text,old_data jsonb);
  create table team_members(id text primary key,is_active boolean);create table customers(id text primary key,primary_rep_id text,payment_terms text);
  create table invoice_payment_unapplications(invoice_id text,payment_ref text);
  create table webstore_order_items(order_id uuid,line_status text);`);
@@ -51,7 +52,7 @@ const quote=s=>'"'+s.replaceAll('"','""')+'"';
   await db.exec('rollback');
  }
  const rehearsals=[];
- for(const id of ['SO-2852','SO-2782','SO-2825']){
+ for(const id of ['SO-2852','SO-2782']){
   const source=h.orders.find(s=>s.id===id);if(!source)continue;
   await db.exec('begin');
   await db.query("update so_jobs set prod_status='shipped' where so_id=$1",[id]);

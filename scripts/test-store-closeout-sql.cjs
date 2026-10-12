@@ -1,6 +1,6 @@
 // PGLITE_MODULE=/path/to/@electric-sql/pglite node scripts/test-store-closeout-sql.cjs
 // Isolated PostgreSQL; no production credentials or writes.
-const {PGlite}=require(process.env.PGLITE_MODULE||'@electric-sql/pglite');
+const {PGlite}=require(process.env.STORE_PG_ADAPTER || process.env.PGLITE_MODULE||'@electric-sql/pglite');
 const fs=require('fs'),assert=require('node:assert/strict');
 (async()=>{
 const db=new PGlite();
@@ -8,6 +8,7 @@ await db.exec(`
 create role anon;create role authenticated;create role service_role bypassrls;
 create schema auth;create function auth.role() returns text language sql as $$select 'service_role'::text$$;
 create function is_team_member() returns boolean language sql as $$select true$$;
+create table audit_log(table_name text,op text,row_id text,old_data jsonb);
 create table team_members(id text primary key,is_active boolean);insert into team_members values('rep',true);
 create table customers(id text primary key,payment_terms text,primary_rep_id text);insert into customers values('C','net30','rep');
 create table sales_orders(id text primary key,customer_id text,source text,webstore_id uuid,omg_store_id text,deleted_at timestamptz,
@@ -145,8 +146,17 @@ assert.equal((await db.query("select count(*)::int n from invoices where so_id='
 await db.exec("update omg_stores set _omg_cc_fees=3 where id='OMG-ADV'");
 r=await close('ADV',null,true,true,valid);assert.equal(Number(r.sales_order.store_closeout_platform_cost),14);
 assert.equal(Number(r.invoice.paid),100,'platform fees must not reduce gross payment application');
+// Real-history failure shapes: exported invoice deleted; gross larger than billed products.
+await db.exec("insert into omg_stores values('OMG-ORPHAN',100,'ORPHAN');insert into sales_orders(id,customer_id,omg_store_id) values('ORPHAN','C','OMG-ORPHAN');insert into audit_log values('invoices','DELETE','OLD-EXPORTED','{\"so_id\":\"ORPHAN\",\"qb_invoice_id\":\"18574\"}')");
+await assert.rejects(close('ORPHAN'),/Deleted invoice was exported/);
+await db.exec("insert into omg_stores(id,_omg_acct_collected,_omg_sale_code,_omg_grand_total) values('OMG-GAP',8079.77,'GAP',8079.77);insert into sales_orders(id,customer_id,omg_store_id,_omg_acct_collected) values('GAP','C','OMG-GAP',8079.77);insert into so_items(so_id,item_index,unit_sell,est_qty) values('GAP',0,7020,1)");
+const beforeGap=(await db.query('select count(*)::int n from invoices')).rows[0].n;
+await assert.rejects(close('GAP',null,true,true,{total:7020,shipping:0,line_items:[{qty:1,rate:7020,amount:7020}]}),/gross collections differ/);
+assert.equal((await db.query('select count(*)::int n from invoices')).rows[0].n,beforeGap);
+assert.equal((await db.query("select store_closed_at from sales_orders where id='GAP'")).rows[0].store_closed_at,null);
 await db.exec('set role authenticated');await assert.rejects(close('D'),/permission denied/);
 await assert.rejects(db.exec("update sales_orders set store_closed_at=now() where id='D'"),/Use Close Store/);
 console.log('Passed: deferred accounting, due date, unfinished jobs, stale version, cost/shipment confirmation, atomic close, repeated close/batch, legacy reuse, duplicate invoices, unapplied receipts, permissions and commission gate.');
+if(db.newConnection)await require('./pgtest/store_closeout_concurrency.cjs')(db);
 await db.close();
 })().catch(e=>{console.error(e);process.exitCode=1});
