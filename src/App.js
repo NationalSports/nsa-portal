@@ -64,7 +64,7 @@ import * as fabric from 'fabric';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates } from './lib/logoDetail';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -8976,8 +8976,10 @@ export default function App(){
       allJobs.forEach(j=>{
         if(j.prod_status==='completed'||j.prod_status==='shipped'){
           // Calculate remaining unshipped units for this job (split-slice aware)
-          const jobTotalShipped=jobShippedUnits(j,allJobs,soShippedSizes);
-          const remainingUnits=j.total_units-jobTotalShipped;
+          // Garments still to pack for this job — the same per-size math the card's rows use.
+          // (j.total_units drifts from the real garments, so total_units - shipped left cards in
+          // the queue with a unit count but nothing to pack or clear — SO-1271.)
+          const remainingUnits=jobUnshippedUnits(j,so,soShippedSizes);
           if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
           else {
             // Check if all sibling jobs (a different decoration sharing any garments) are also done.
@@ -8999,8 +9001,10 @@ export default function App(){
                 deliverDate,deliverDaysOut,holdUntil,_dkey:dkey,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))],
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+              // A 'completed' job whose garments are all already in shipments still shows (0 units)
+              // so the warehouse can close it out with Mark Shipped — its status just never flipped.
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,readyAt:j.completed_at||j.updated_at||so.updated_at,
-                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
+                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:Math.max(0,remainingUnits),
                 shipMethod:j.ship_method||'pending',shipPref,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))]});
             }
           }
@@ -9029,8 +9033,12 @@ export default function App(){
         const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);if(tot===0)return true;
         const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);return pulled>=tot});
       const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
-      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length>0)){
-        const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+      // Units no shipment covers yet. A wait-complete order that already went out (e.g. cleared as
+      // "Shipped via ShipStation") but whose auto-status can't reach 'complete' — a decorated line
+      // with no job, SO-1321 — used to sit here forever at its full order quantity.
+      const wcRemaining=unshippedOrderItems(so).reduce((a,r)=>a+safeNum(r.qty),0);
+      if(wcRemaining>0&&allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length>0)){
+        const totalUnits=wcRemaining;
         // A wait-complete order becomes shippable only once its last piece finishes — newest job completion or pull across the order.
         let wcReadyAt=null;const _bumpWc=(d)=>{if(d&&(!wcReadyAt||new Date(d).getTime()>new Date(wcReadyAt).getTime()))wcReadyAt=d};
         safeJobs(so).forEach(j=>{if(j.prod_status==='completed'||j.prod_status==='shipped')_bumpWc(j.completed_at||j.updated_at)});
@@ -20549,14 +20557,13 @@ export default function App(){
       const shippedSizes=shippedSizesByLine(so._shipments);
       const rows=[];
       if(t.type==='deco_done'&&t.job){
-        const shippedByGi=jobShippedSizes(t.job,safeJobs(so),shippedSizes);
+        // Same helper the queue uses to decide the job shows and its unit count — one rule, so a
+        // card can never claim units it has no rows for.
+        const remByGi=jobUnshippedSizes(t.job,so,shippedSizes);
         (t.job.items||[]).forEach((gi,gidx)=>{
           if(!gi)return;
           const it=items[gi.item_idx]||{};
-          // A split slice carries its own per-size allocation; a whole-line job item takes the line.
-          const base=(gi.sizes&&Object.keys(gi.sizes).length)?gi.sizes:safeSizes(it);
-          const shipped=shippedByGi[gidx]||{};
-          const sizes={};Object.entries(base).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)sizes[sz]=rem});
+          const sizes=remByGi[gidx]||{};
           const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
           // unitKey identifies the physical garments this row covers: slices of one split family
           // partition a line (they add up), while separate jobs on the same line are decoration
@@ -21885,6 +21892,13 @@ export default function App(){
                         onClick={()=>whOpenPackSlip(grp,[sec])}>🖨️ Pack Slip</button>
                     </div>}
                   </div>})}
+                {/* Finished jobs whose garments are all already in shipments — the job's status just never
+                    flipped to shipped (e.g. a later save from another screen reverted it). Say so, so
+                    Mark Shipped reads as "close it out", not "ship something I can't see". */}
+                {(()=>{const done=grpRows.filter(s=>!s.rows.length&&s.task.type==='deco_done');if(!done.length)return null;
+                  return<div style={{marginBottom:8,padding:'6px 8px',background:'#f0fdf4',borderRadius:6,border:'1px dashed #86efac',fontSize:11,color:'#166534'}}>
+                    ✅ Already shipped — nothing left to pack for {done.map(s=>s.task.job.id).join(', ')}. Click <strong>Mark Shipped</strong> to close {done.length===1?'it':'them'} out.
+                  </div>})()}
                 {shownSecs.length>1&&<div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginTop:8}}>All {shownSecs.length} jobs together</div>}
                 <div style={{display:'flex',gap:6,marginTop:shownSecs.length>1?4:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -21900,6 +21914,13 @@ export default function App(){
                     onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>whOpenPackSlip(grp,grpRows)}>🖨️ Pack Slip</button>
+                  {/* Push-through for when this card's data is wrong: the full Ship / Override tool,
+                      already opened on this card's order (or its customer when the card spans orders). */}
+                  <button title="Something wrong with this card? Ship any line on the order, buy a label, and mark jobs shipped by hand"
+                    className="btn btn-sm" style={{fontSize:10,background:'white',color:'#b45309',border:'1px solid #f59e0b',padding:'4px 10px',fontWeight:700,marginLeft:'auto'}}
+                    onClick={()=>{const sids=[...grp.soIds];const so1=grp.soMap[sids[0]];
+                      if(sids.length===1)openManualShipForSO(so1);
+                      else{const c2=cust.find(cc=>cc.id===so1?.customer_id);setManualShipModal({custSearch:'',custFilter:c2||null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}}}>⚡ Override</button>
                 </div>
                 </>}
               </div>
@@ -22112,6 +22133,35 @@ export default function App(){
           <div className="modal-body" style={{padding:16}}>
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
             {(()=>{const soShipCosts=[...shipModal.grp.soIds].map(sid=>{const so2=shipModal.soMap[sid];if(!so2)return null;const c2=cust.find(cc=>cc.id===so2.customer_id);let rev=0;safeItems(so2).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;rev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const dp2=dP(d,q2,safeArt(so2),q2);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);rev+=eq*dp2.sell})});const ship=so2.shipping_type==='pct'?rev*(so2.shipping_value||0)/100:(so2.shipping_value||0);return{id:sid,ship,type:so2.shipping_type,value:so2.shipping_value}}).filter(Boolean);const totalShip=soShipCosts.reduce((a,s)=>a+s.ship,0);return totalShip>0?<div style={{fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:12,padding:'4px 8px',background:'#eff6ff',borderRadius:4}}>Shipping on order: ${totalShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}{soShipCosts.length===1&&soShipCosts[0].type==='pct'?' ('+soShipCosts[0].value+'% of order)':''}</div>:null})()}
+
+            {/* Escape hatch: the card's list comes from job/shipment records. When those are off (a box
+                recorded but voided, a job snapshot that drifted, a line with no job) the warehouse must
+                still be able to pack what is physically on the table — so let them pull in any line on
+                the order. Unshipped lines first; already-recorded lines only on a second, explicit click. */}
+            {(()=>{
+              const have=new Set((shipModal.availableItems||[]).map(ai=>ai.soId+'|'+ai.itemIdx));
+              const soEntries=Object.entries(shipModal.soMap||{});
+              const extraUnshipped=[];const extraAll=[];
+              soEntries.forEach(([sid,so2])=>{
+                const un=unshippedOrderItems(so2);const unIdx=new Set(un.map(r=>r.itemIdx));
+                un.forEach(r=>{if(!have.has(sid+'|'+r.itemIdx))extraUnshipped.push({sku:r.sku,name:r.name,color:r.color||'',sizes:{...r.sizes},soId:sid,itemIdx:r.itemIdx})});
+                safeItems(so2).forEach((it2,ix)=>{
+                  if(have.has(sid+'|'+ix)||unIdx.has(ix))return;
+                  const sz={};Object.entries(safeSizes(it2)).forEach(([k,v])=>{if(safeNum(v)>0)sz[k]=safeNum(v)});
+                  if(Object.keys(sz).length)extraAll.push({sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:sz,soId:sid,itemIdx:ix,_recordedShipped:true});
+                });
+              });
+              if(!extraUnshipped.length&&!extraAll.length)return null;
+              const add=(rows,msg)=>{setShipModal(m=>({...m,availableItems:[...(m.availableItems||[]),...rows],_overrideUsed:true}));nf(msg)};
+              const empty=(shipModal.availableItems||[]).length===0;
+              return<div style={{marginBottom:12,padding:'8px 10px',background:empty?'#fffbeb':'#f8fafc',border:'1px dashed '+(empty?'#f59e0b':'#cbd5e1'),borderRadius:6,fontSize:11,color:'#475569',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span>{empty?'⚠️ Nothing is listed for this card, but you can still ship what you have.':'Packing something that isn\'t listed below?'}</span>
+                {extraUnshipped.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>add(extraUnshipped,'Added '+extraUnshipped.length+' unshipped line'+(extraUnshipped.length!==1?'s':'')+' from the order')}>+ Add other unshipped lines from the order ({extraUnshipped.length})</button>}
+                {extraAll.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'white',color:'#92400e',border:'1px solid #f59e0b',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>{if(window.confirm('These lines are already recorded as shipped on the order. Only add them if the garments are physically here and going out in this box — the rep will see a second shipment for them.\n\nAdd them?'))add(extraAll,'Added '+extraAll.length+' line'+(extraAll.length!==1?'s':'')+' already recorded as shipped')}}>+ Lines already recorded shipped ({extraAll.length})</button>}
+              </div>;
+            })()}
 
             {/* Boxes */}
             {shipModal.boxes.map((box,bi)=>{
@@ -22427,7 +22477,9 @@ export default function App(){
                     shipping_cost:box.shipping_cost||0,
                     weight:box.weight||5,
                     items:(box.items||[]).map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
-                    notes:box.notes||'',
+                    // Flag boxes packed with lines the card didn't list, so the office can see the data was off.
+                    notes:(box.notes||'')+(shipModal._overrideUsed?((box.notes?' · ':'')+'Warehouse override: lines added from the order'):''),
+                    ...(shipModal._overrideUsed?{warehouse_override:true}:{}),
                     created_by:cu?.id||'',
                     created_at:new Date().toLocaleString()
                   }));
@@ -22506,7 +22558,8 @@ export default function App(){
             </div>
             <div className="modal-body" style={{padding:16}}>
               <div style={{fontSize:12,color:'#475569',marginBottom:12,lineHeight:1.5}}>
-                This marks everything left on <strong>{soIds.join(', ')}</strong> as <strong>shipped</strong> and clears it from Ready to Ship — no label or tracking is created. Use it when the order already went out another way.
+                {totUnits>0?<>This marks everything left on <strong>{soIds.join(', ')}</strong> as <strong>shipped</strong> and clears it from Ready to Ship — no label or tracking is created. Use it when the order already went out another way.</>
+                  :<>Everything on <strong>{soIds.join(', ')}</strong> is already covered by shipments — this just closes the job{clearShipModal.grp.items.length!==1?'s':''} out as shipped. No new package is created.</>}
               </div>
               <div style={{display:'flex',gap:10,flexWrap:'wrap',padding:'8px 12px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8,marginBottom:14,fontSize:12}}>
                 <span><strong style={{color:'#0f766e'}}>{soIds.length}</strong> order{soIds.length!==1?'s':''}</span>
