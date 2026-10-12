@@ -8,24 +8,18 @@
   # Published .map files reconstruct the full unminified source (and any client-inlined
   # env) for anyone hitting the .map URL. Keep them off in prod; re-enable locally if
   # you need to debug a minified stack trace.
-  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=false npm run build"
+  # Staging is a separate Netlify site. Refuse any build that points at the
+  # production database or has a credential capable of outbound operations.
+  command = "node scripts/assert-staging-env.cjs && rm -rf node_modules/.cache && GENERATE_SOURCEMAP=false npm run build"
   publish = "build"
   environment = { NODE_VERSION = "22" }
 
-# PUBLIC_URL pins assets to the production domain so the marketing site's /shop/*
-# 200-proxy (which serves the portal's index.html at nationalsportsapparel.com) loads
-# JS/CSS from nsa-portal.netlify.app instead of 404ing on the marketing domain.
-# PRODUCTION ONLY — deploy previews & branch deploys must use relative paths so each
-# preview loads its OWN hashed assets (an absolute production URL points previews at
-# chunks that don't exist there, blanking the page).
+# This branch is deployed only by the isolated staging site. Use relative assets
+# and enable the order ownership flow against the staging database.
 [context.production.environment]
-  PUBLIC_URL = "https://nsa-portal.netlify.app"
-  REACT_APP_SO_EDIT_LEASES = "0"
-
-# Ownership is enabled only on the synthetic order in deploy previews.
-[context.deploy-preview.environment]
+  PUBLIC_URL = "/"
+  STAGING_SITE = "1"
   REACT_APP_SO_EDIT_LEASES = "1"
-  REACT_APP_SO_EDIT_PILOT_ORDER_ID = "SO-TEST-SAVE-20261008"
 
 # Team Shop launch gate — netlify/edge-functions/teamshop-gate.js. Declared here (NOT via
 # inline `export const config`) ON PURPOSE: config-file edge functions run BEFORE inline
@@ -58,6 +52,8 @@
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
+# Scheduled function triggers are removed from staging. Functions remain callable
+# only if manually invoked against this isolated site.
 [functions]
   directory = "netlify/functions"
   # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js),
@@ -75,7 +71,6 @@
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
 [functions."onboarding-reminder"]
-  schedule = "7 16 * * *"
 
 [functions."vectorizer-proxy"]
   timeout = 26
@@ -111,61 +106,51 @@
 
 # S&S Activewear pricing sync — daily at 5:00 AM CT (11:00 UTC)
 [functions."ss-pricing-sync"]
-  schedule = "0 11 * * *"
 
 # System Health alert — every 2 hours, emails Steve if orphan jobs detected
 [functions."so-health-alert"]
-  schedule = "0 */2 * * *"
 
 # UPS pickup auto-check — daily at 13:00 UTC (~5-6 AM PT). Marks shipments as
 # picked up in Supabase once UPS has scanned the package, so Awaiting Pickup
 # clears itself even when nobody has the portal open.
 [functions."ups-pickup-sync"]
-  schedule = "0 13 * * *"
 
 # Catalog back-in-stock alerts — daily at 14:00 UTC (~6-7 AM PT), after the
 # overnight Cowork inventory sync. Emails coaches whose watched sizes landed.
 [functions."catalog-stock-alert-check"]
-  schedule = "0 14 * * *"
 
 # Webstore close sweep — hourly. Closes stores whose close_at has passed and, for each,
 # creates a rep to-do + emails the rep & assigned CSR a breakdown to batch the orders.
 # Fund settlement is prompted separately when the SO's final job finishes (App.js).
 [functions."webstore-close-sweep"]
-  schedule = "0 * * * *"
 
 # "Finish your order" reminder — hourly. One email to shoppers whose card checkout
 # stalled at payment (see the function header for every rule). Stays OFF until
 # WEBSTORE_PAYMENT_REMINDERS=on is set in the Netlify environment.
 [functions."webstore-payment-reminder"]
-  schedule = "17 * * * *"
 
 # Automated follow-up sweep — hourly. Sends the rep's scheduled follow-up emails for
 # estimates, invoices, and art (so_jobs) whose follow_up_at has arrived, then re-arms
 # the next send (repeat cadence) or stops once resolved / capped. See
 # netlify/functions/followup-sweep.js.
 [functions."followup-sweep"]
-  schedule = "0 * * * *"
 
 # Roster reminder sweep — daily at 16:20 UTC. Nudges roster players who were
 # emailed their store link but never opened it after 5 days (and haven't
 # ordered), then stamps reminder_sent_at so it fires once. See
 # netlify/functions/roster-reminder-sweep.js.
 [functions."roster-reminder-sweep"]
-  schedule = "20 16 * * *"
 
 # Monthly commission review reminder — 1st of the month ~7 AM PT (14:00 UTC).
 # Emails steve@ a link straight to the PREVIOUS month's Commissions Admin
 # Dashboard to review payouts before they're paid. A thin reminder, not a
 # computed report (see netlify/functions/commission-report-reminder.js).
 [functions."commission-report-reminder"]
-  schedule = "0 14 1 * *"
 
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.
 [functions."rep-daily-digest"]
-  schedule = "11 9 * * *"
 
 # Rep daily OPS recap — ~2 AM PT (09:21 UTC, after the store digest). Emails each
 # rep the prior PT day across THEIR orders: shipped, estimates approved, IFs picked
@@ -173,13 +158,11 @@
 # invoices, plus deadlines coming up. Links to the in-app "My Day" tab (Sales
 # Tools). Reps with no activity/deadlines get nothing.
 [functions."rep-ops-digest"]
-  schedule = "21 9 * * *"
 
 # Weekly A/R past-due digest — Fridays ~8 AM PT (16:00 UTC). Emails each rep every
 # open, overdue invoice on their accounts, aged, worst-first. Collections companion
 # to the daily digest. Reps with nothing past due get nothing.
 [functions."rep-ar-digest"]
-  schedule = "0 16 * * 5"
 
 # Marketing Command Center sync — daily at 13:00 UTC (~6am PT). The cron fn
 # fires marketing-sync, which pulls each online-presence source (SEO data.json,
@@ -189,54 +172,45 @@
   timeout = 26
 
 [functions."marketing-sync-cron"]
-  schedule = "0 13 * * *"
 
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
 # style from the S&S API into products + adidas_inventory for /adidas.
 [functions."ss-adidas-sync-cron"]
-  schedule = "0 12 * * *"
 
 # S&S Activewear Under Armour catalog sync — daily at 12:30 UTC (after adidas).
 # Fires ss-ua-sync-background → products + ua_inventory for the Team Catalog.
 [functions."ss-ua-sync-cron"]
-  schedule = "30 12 * * *"
 
 # SanMar Nike catalog sync — daily at 13:30 UTC. Fires sanmar-nike-sync-background
 # → products + nike_inventory for the Team Catalog. Seeds styles from existing
 # Nike SanMar products + the SANMAR_NIKE_STYLES env list.
 [functions."sanmar-nike-sync-cron"]
-  schedule = "30 13 * * *"
 
 # Richardson Sports catalog sync — daily at 14:30 UTC. Pulls the full
 # Richardson stock feed → products + richardson_inventory for the Team Catalog.
 [functions."richardson-sync-cron"]
-  schedule = "30 14 * * *"
 
 # Momentec Brands catalog sync — daily at 15:00 UTC. Pulls the full Momentec
 # HCL Commerce catalog → products + momentec_inventory for the Team Catalog.
 [functions."momentec-sync-cron"]
-  schedule = "0 15 * * *"
 
 # S&S Activewear brands catalog sync — daily at 15:30 UTC. Pulls Port Authority,
 # Sport-Tek, District, Bella+Canvas, Boxercraft, Gildan from S&S → products +
 # ss_inventory for the Team Catalog.
 [functions."ss-brands-sync-cron"]
-  schedule = "30 15 * * *"
 
 # Momentec image verifier — daily at 16:00 UTC, after the Momentec catalog sync
 # (15:00) re-derives image URLs from SKUs without checking they exist. Probes
 # each product image and clears the ~40% that return 403/404 on the CDN, so the
 # Featured Styles "no image" count and the LiveLook imageless-hide stay accurate.
 [functions."momentec-image-verify-cron"]
-  schedule = "0 16 * * *"
 
 # SanMar brands catalog sync — daily at 16:00 UTC. Pulls Port Authority,
 # Sport-Tek, District, Bella+Canvas from SanMar → products + sanmar_inventory.
 # Seed SANMAR_BRAND_STYLES env var with style numbers (e.g. "K500,PC61,DT6000")
 # to populate on the first run.
 [functions."sanmar-brands-sync-cron"]
-  schedule = "0 16 * * *"
 
 # SanMar product-only ("form") photo scrape — every 2 hours at :15. Replaces
 # model photography with the garment-only front/back shots from sanmar.com
@@ -245,7 +219,6 @@
 # clobber it). Per-style state in sanmar_flat_state; steady state is a near
 # no-op (60-day recheck).
 [functions."sanmar-flat-images-cron"]
-  schedule = "15 */2 * * *"
 
 # Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
 # safely after the 10:30 EST SI processing cutoff). The cron fires
@@ -254,7 +227,6 @@
 # and emails the daily digest to accounting. Env: SPORTSLINK_API_KEY,
 # SPORTSLINK_SINCE_DATE (default 2026-04-01), SPORTSLINK_DIGEST_EMAIL.
 [functions."sportslink-sync-cron"]
-  schedule = "30 16 * * *"
 
 # S&S Activewear orders sync — daily at 12:30 UTC (~7:30 AM ET / 6:30 AM CT, before the
 # workday). The cron fires ss-orders-sync-background, which pulls S&S orders invoiced on/after
@@ -263,7 +235,6 @@
 # them). Env: SS_ACCOUNT_NUMBER, SS_API_KEY, SS_ORDERS_SINCE_DATE (default 2026-06-01),
 # SS_DIGEST_EMAIL (optional).
 [functions."ss-orders-sync-cron"]
-  schedule = "30 12 * * *"
 
 # Supplier-bill anomaly report — daily at 21:30 UTC (~4:30-5:30 PM ET, after the day's
 # pulls and pushes). Emails accounting + Steve any bill from the last day that looks out
@@ -272,20 +243,17 @@
 # AUTO-pushed. Shared rules: src/lib/billAnomalies.js. Nothing anomalous → no email.
 # Env: BILL_ANOMALY_EMAILS (comma list; defaults to accounting@ + Steve).
 [functions."bill-anomaly-digest"]
-  schedule = "30 21 * * *"
 
 # Weekly financial digest — Mondays 14:00 UTC (~6-7 AM PT). Owner's summary of
 # billed / AR / order intake (computed live from Supabase) plus margin and order
 # book read from the Financials page's newest finance_snapshots row.
 # Env: FINANCE_DIGEST_EMAILS (comma list; defaults to Steve).
 [functions."weekly-financial-digest"]
-  schedule = "0 14 * * 1"
 
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once
 # per session (deadline_reminded_at).
 [functions."roster-deadline-reminders"]
-  schedule = "0 17 * * *"
 
 # Team Shop / Club stuck-order sweep — hourly. Flags paid-but-unconverted, stuck
 # pending_payment, art stuck 5+ business days, and no-PO-but-need_to_order jobs;
@@ -294,7 +262,6 @@
 # bearer session token from the Team Shop queue UI. See
 # netlify/functions/teamshop-stuck-sweep.js.
 [functions."teamshop-stuck-sweep"]
-  schedule = "50 * * * *"
 
 # Team Shop / Club auto-release — every 15 min. Releases hold jobs it can PROVE
 # ready by a server-side recompute (art done + garments fully in hand) through
@@ -304,7 +271,6 @@
 # { action:'run' } with a bearer session token. See
 # netlify/functions/teamshop-auto-release.js.
 [functions."teamshop-auto-release"]
-  schedule = "*/15 * * * *"
 
 # Team Shop DTF print lane (00211) — hourly. A scheduled (no-auth) invocation runs
 # the DTF batch sweep: records pending per-job DTF print needs and batches them into
@@ -314,7 +280,6 @@
 # so this no-ops until staff configure it. Staff can also POST { action:'sweep_dtf' }.
 # See netlify/functions/teamshop-auto-po.js.
 [functions."teamshop-auto-po"]
-  schedule = "25 * * * *"
 
 # Backorder ready sweep (00236) — every 30 min. Over the auto-PO needs ledger
 # (teamshop/club backorders): stamps how many backordered units house stock now
@@ -325,16 +290,13 @@
 # { action:'list' } feeds the Backorders tab; { action:'run' } forces a pass.
 # See netlify/functions/backorder-ready-sweep.js.
 [functions."backorder-ready-sweep"]
-  schedule = "10,40 * * * *"
 
 [functions."gmail-ai-sync"]
-  schedule = "*/5 * * * *"
   timeout = 26
 
 # Durable webstore notification retry queue. Customer replies and shipment
 # emails are persisted before delivery; this sweep retries provider/API failures.
 [functions."webstore-notification-sweep"]
-  schedule = "*/5 * * * *"
   timeout = 26
 
 # Hourly read-only webstore integrity canary. Reconciles durable message,
@@ -342,14 +304,12 @@
 # the sensitive-table/RPC access boundary. Findings are deduplicated in a
 # service-only incident ledger and alerted through a durable email outbox.
 [functions."webstore-integrity-sweep"]
-  schedule = "35 * * * *"
   timeout = 26
 
 # Nightly Stripe settlement catch-up — 09:17 UTC (~1:17 AM PST / 2:17 AM PDT).
 # Replays recent PaymentIntents and payouts so missed webhooks are eventually
 # applied, audits the live webhook event set, and alerts only on actionable gaps.
 [functions."stripe-reconciliation-sweep"]
-  schedule = "17 9 * * *"
   timeout = 26
 
 # Nightly operational OMG refresh — 08:15 UTC (12:15 AM PST / 1:15 AM PDT).
@@ -357,7 +317,6 @@
 # 24/7 store order counts only. Monthly Margin Report imports remain the sole
 # source for profit and commissions.
 [functions."omg-order-sync-cron"]
-  schedule = "15 8 * * *"
 
 # Coach shipping notices — every 15 min. Sends the "your gear is on the way"
 # email for a live sales order once every box the warehouse owes a label for
@@ -371,7 +330,6 @@
 # { action:'run' } (or { dryRun:true }) with a bearer session token. See
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
-  schedule = "*/15 * * * *"
 
 # Shared history checks plus bounded Gmail bounce lookups may take longer than a send.
 [functions."brevo-proxy"]
@@ -385,7 +343,6 @@
 # One automatic Gmail retry after a confirmed permanent district sender block.
 # Dormant until the database migration and EMAIL_AUTO_FIREWALL_RETRY_ENABLED=true.
 [functions."email-firewall-retry"]
-  schedule = "*/5 * * * *"
   timeout = 26
 
 [functions."store-production-packet"]
@@ -409,7 +366,6 @@
     Cache-Control = "no-store"
 
 [functions."production-packet-shipment-sweep"]
-  schedule = "*/5 * * * *"
   timeout = 26
 
 # All School workers only send when explicitly enabled in their per-store settings.
@@ -420,13 +376,10 @@
 # Scheduled functions cannot be called over HTTP. Keep staff queue actions on
 # the authenticated routes above and run the same workers through cron wrappers.
 [functions."all-school-purchasing-scheduled"]
-  schedule = "*/15 * * * *"
   timeout = 26
 [functions."all-school-dtf-scheduled"]
-  schedule = "*/15 * * * *"
   timeout = 26
 
 # Retry rep-only warehouse notices and rep copies independently of coach sends.
 [functions."so-rep-shipment-sweep"]
-  schedule = "*/5 * * * *"
   timeout = 26
