@@ -4,9 +4,9 @@ const { classifyBoxes } = require('../../netlify/functions/so-shipment-notify-sw
 const sh = { orderNumber: 'SO-2173', shipmentId: 17, trackingNumber: 'TRACK1', carrierCode: 'ups', shipDate: '2026-10-05', shipmentItems: [{ sku: 'SHIRT', quantity: 2 }] };
 test('recognizes At-Once / 24/7 SO IDs without broadening the regular sequence format', () => {
   expect(isSoNumber('SO-2173')).toBe(true);
-  expect(isSoNumber('247-1001')).toBe(true);
+  expect(isSoNumber('1010042')).toBe(true);
   expect(isSoNumber('247-abc')).toBe(false);
-  expect(isSoNumber('WS-247-1001')).toBe(false);
+  expect(isSoNumber('WS-1010042')).toBe(false);
 });
 function database(initial, conflict = false) {
   let row = { id: sh.orderNumber, _version: 1, _shipments: [], ...initial };

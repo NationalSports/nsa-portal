@@ -2560,7 +2560,7 @@ export default function App(){
     [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
-    const badSOs=soList.filter(s=>!(/^(?:SO|247)-\d+$/).test(s.id));
+    const badSOs=soList.filter(s=>!(/^(?:(?:SO|247)-\d+|\d+)$/).test(s.id));
     if(badSOs.length>0){
       needsMigrate=true;
       const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));

@@ -24,6 +24,6 @@ test('uses a newer canonical ID found in the database', () => {
 
 
 test('24/7 IDs never consume the main sales order sequence', () => {
-  expect(nextSalesOrderId([{ id: 'SO-2872' }, { id: '247-9000000' }])).toBe('SO-2873');
-  expect(salesOrderSequenceNumber('247-9000000')).toBe(0);
+  expect(nextSalesOrderId([{ id: 'SO-2872' }, { id: '9010042' }])).toBe('SO-2873');
+  expect(salesOrderSequenceNumber('9010042')).toBe(0);
 });

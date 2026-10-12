@@ -176,11 +176,13 @@ try {
     await db.exec(read('supabase/migrations/20261008193918_keep_sales_order_ids_sequential.sql'));
     await db.exec(read('supabase/migrations/20261011063832_at_once_fulfillment_completion.sql'));
     await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
     assert.match(uniformMint, /SO-/); assert.doesNotMatch(uniformMint, /247-/);
-    console.log('PASS real Club chain and isolated 247 numbering migration; Team Shop and uniform retain SO namespace');
+    console.log('PASS real Club chain and checkout-number migration; Team Shop and uniform retain SO namespace');
 
     await db.exec('begin');
     transactionOpen = true;
@@ -211,7 +213,7 @@ try {
              (gen_random_uuid(),$2,'2|8in|White','Digit 2','number',3,0.50)`, [transferId, sid, transferCode]);
     await db.query(`insert into webstore_orders
       (id,store_id,status,order_number,buyer_name,buyer_email,subtotal,fundraise_amt,discount_amt,total)
-      values($1,$2,'paid',910001,'Fake Buyer','fake@example.invalid',50,0,0,50)`, [orderId, sid]);
+      values($1,$2,'paid',1010042,'Fake Buyer','fake@example.invalid',50,0,0,50)`, [orderId, sid]);
     await db.query(`insert into webstore_order_items
       (id,order_id,product_id,sku,name,color,size,qty,unit_price,unit_fundraise,player_number,line_status)
       values($1,$2,$3,'PG-TEE','PGlite Tee','Navy','M',2,25,0,'12','pending')`, [itemId, orderId, productId]);
@@ -220,7 +222,7 @@ try {
       'select public.create_club_sales_order($1) result', [orderId]
     )).rows[0].result;
     soId = converted.so_id;
-    assert.equal(soId, '247-1001');
+    assert.equal(soId, '1010042');
     assert.equal(converted.items, 1);
     assert.equal(converted.jobs, 1);
     assert.equal(converted.units, 2);
@@ -235,7 +237,7 @@ try {
     const payment = (await db.query('select amount,method,ref from invoice_payments where invoice_id=$1', [invoice.id])).rows[0];
     near(payment.amount, 50, 'checkout payment record');
     assert.equal(payment.method, 'store');
-    assert.equal(payment.ref, 'CLUB 910001');
+    assert.equal(payment.ref, 'CLUB 1010042');
     const job = (await db.query(`select id,art_status,item_status,prod_status,total_units
       from so_jobs where so_id=$1`, [soId])).rows[0];
     assert.equal(job.art_status, 'art_complete', 'existing stocked transfer is auto-art complete');
@@ -267,15 +269,15 @@ try {
     assert.equal(replay.replayed, true);
     assert.equal(replay.so_id, soId);
     const numberCounts = (await db.query(`select
-      count(*) filter(where id ~ '^247-[0-9]{4,7}$')::int at_once,
+      count(*) filter(where id ~ '^[0-9]+$')::int at_once,
       count(*) filter(where id ~ '^SO-[0-9]{4,7}$')::int main
       from sales_orders`)).rows[0];
-    assert.equal(numberCounts.at_once, 1, 'new Club conversion occupies the shared 247 namespace exactly once');
+    assert.equal(numberCounts.at_once, 1, 'new Club conversion occupies the store-number namespace exactly once');
     assert.equal(numberCounts.main, 0, 'native conversion leaves the ordinary SO sequence untouched');
     assert.equal((await db.query('select count(*)::int n from invoices where so_id=$1', [soId])).rows[0].n, invoiceCount);
     assert.equal((await db.query('select count(*)::int n from invoice_payments where invoice_id=$1', [invoice.id])).rows[0].n, paymentCount);
     assert.equal((await db.query('select count(*)::int n from so_jobs where so_id=$1', [soId])).rows[0].n, 1);
-    console.log('PASS fake paid Club checkout converts once to 247-1001 SO/job and paid invoice/payment; replay is duplicate-free');
+    console.log('PASS fake paid Club checkout converts once to 1010042 SO/job and paid invoice/payment; replay is duplicate-free');
 
     await capture('club_conversion_need_order', 'need_order', 50);
     const soItem = (await db.query('select id from so_items where so_id=$1', [soId])).rows[0];

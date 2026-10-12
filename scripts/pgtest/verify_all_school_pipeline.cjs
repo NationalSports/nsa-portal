@@ -130,11 +130,13 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/20261011063832_at_once_fulfillment_completion.sql'));
     await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
     await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
     assert.match(uniformMint, /SO-/); assert.doesNotMatch(uniformMint, /247-/);
-    console.log('PASS current All School conversion and fulfillment chain plus isolated 247 numbering migration; Team Shop and uniform retain SO namespace');
+    console.log('PASS current All School conversion and fulfillment chain plus checkout-number migration; Team Shop and uniform retain SO namespace');
 
     // A paid fake web checkout, with two garment units and a DTF transfer that
     // is initially out of stock. Payment and checkout are represented by the
@@ -158,9 +160,9 @@ const near = (actual, expected, label) => assert.ok(
     await db.query(`insert into webstore_transfers(id,store_id,code,label,on_hand,unit_cost)
       values($1,$2,'SCHOOL-CREST','School crest',0,2.50)`, [transferId,sid]);
     await db.query(`insert into webstore_orders
-      (id,store_id,status,order_source,subtotal,fundraise_amt,discount_amt,shipping_fee,
+      (id,store_id,status,order_number,order_source,subtotal,fundraise_amt,discount_amt,shipping_fee,
        processing_fee,tax,total,cc_fee,stripe_pi_id,tax_state,tax_rate,payment_mode,buyer_name)
-      values($1,$2,'paid','all_school',60,0,0,0,0,0,60,1.80,'pi_fake_school_1','CA',0,'paid','Fake Buyer')`,
+      values($1,$2,'paid',1010043,'all_school',60,0,0,0,0,0,60,1.80,'pi_fake_school_1','CA',0,'paid','Fake Buyer')`,
     [oid,sid]);
     await db.query(`insert into webstore_order_items
       (id,order_id,product_id,sku,name,color,size,qty,unit_price,unit_fundraise,
@@ -171,16 +173,16 @@ const near = (actual, expected, label) => assert.ok(
     const conversion = (await db.query(
       'select create_all_school_sales_order($1) result', [oid]
     )).rows[0].result;
-    assert.equal(conversion.so_id, '247-1001');
+    assert.equal(conversion.so_id, '1010043');
     assert.equal(conversion.items, 1);
     const replay = (await db.query('select create_all_school_sales_order($1) result', [oid])).rows[0].result;
     assert.equal(replay.so_id, conversion.so_id);
     assert.equal(replay.replayed, true);
     const numberCounts = (await db.query(`select
-      count(*) filter(where id ~ '^247-[0-9]{4,7}$')::int at_once,
+      count(*) filter(where id ~ '^[0-9]+$')::int at_once,
       count(*) filter(where id ~ '^SO-[0-9]{4,7}$')::int main
       from sales_orders`)).rows[0];
-    assert.equal(numberCounts.at_once, 1, 'new All School conversion occupies the shared 247 namespace exactly once');
+    assert.equal(numberCounts.at_once, 1, 'new All School conversion occupies the store-number namespace exactly once');
     assert.equal(numberCounts.main, 0, 'native conversion leaves the ordinary SO sequence untouched');
     const invoice = (await db.query('select * from invoices where so_id=$1',[conversion.so_id])).rows[0];
     assert.ok(invoice, 'conversion should create the checkout invoice without a separate invoice action');
@@ -189,7 +191,7 @@ const near = (actual, expected, label) => assert.ok(
     near(invoice.paid,60,'automatically applied checkout payment');
     assert.equal((await db.query('select count(*)::int n from invoice_payments where invoice_id=$1',[invoice.id])).rows[0].n,1);
     assert.equal((await db.query('select status from webstore_orders where id=$1',[oid])).rows[0].status,'batched');
-    console.log('PASS fake paid All School checkout converts once to 247-1001 + paid invoice/payment; replay preserves the ID');
+    console.log('PASS fake paid All School checkout converts once to 1010043 + paid invoice/payment; replay preserves the ID');
 
     snapshots.push(await snapshot(db,conversion.so_id,'converted','need_order',60));
     const job = (await db.query('select id,so_id from so_jobs where so_id=$1',[conversion.so_id])).rows[0];
