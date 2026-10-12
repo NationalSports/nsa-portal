@@ -10188,6 +10188,8 @@ export default function App(){
       calcMargin={calcOrderMargin}
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
+      onOpenEstimate={est=>{setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id)||null);setPg('estimates')}}
+      onOpenCustomer={c2=>{setSelC(c2);setPg('customers')}}
     />}
     {uiMode==='new'&&dashView!=='admin'&&_renderWorkspace()}
 
@@ -16043,8 +16045,10 @@ export default function App(){
 .nsa-rpt.num,.nsa-rpt .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 .nsa-rpt-hit{cursor:pointer}.nsa-row{cursor:pointer}.nsa-row:hover{background:#F7F9FC!important}
 .nsa-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.nsa-kpi-link{transition:border-color .15s,box-shadow .15s,transform .15s}.nsa-kpi-link:hover,.nsa-kpi-link:focus-visible{border-color:#C3CBDA!important;box-shadow:0 8px 22px rgba(16,26,64,.09)!important;transform:translateY(-1px);outline:none}
 .nsa-2col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @keyframes nsaRowIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:560px){.nsa-kpis{grid-template-columns:1fr!important}}
 @media(max-width:940px){.nsa-kpis{grid-template-columns:repeat(2,1fr)}.nsa-2col{grid-template-columns:1fr}.nsa-scorecard{grid-template-columns:1fr!important}.nsa-score-right{border-left:none!important;padding-left:0!important;border-top:1px solid rgba(255,255,255,.12);padding-top:16px;margin-top:4px}.nsa-monthly{grid-template-columns:1fr!important}.nsa-monthly-bd{border-left:none!important;padding-left:0!important;border-top:1px solid #EEF1F6;padding-top:14px;margin-top:4px}}`;
       document.head.appendChild(s);
     }
@@ -16361,14 +16365,7 @@ export default function App(){
     const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:(_rptRepLocked?(cu?.name||'My Numbers'):'All Reps'));
     const _scopeSub=rptRep==='all'?'Team total':(_rptRepLocked?'Your view':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view'));
 
-    // KPI set (Sales group) — YTD billed carries the real YoY delta; the rest are live pipeline snapshots
     const _activeSOs=pipeline.filter(s=>s._status!=='complete').length;
-    const _kpis=[
-      {label:'YTD Billed',value:_bill$(_ytdThis),topbar:RED,spark:_histIncomplete?null:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_histIncomplete?null:_ytdDelta,sub:_histPending?'loading invoice history…':(_histFailed?'invoice history unavailable':'vs '+_fmtK1(_ytdLast)+' last year')},
-      {label:'Pipeline Rev',value:_fmtK1(totalRev),topbar:NAVY,sub:_activeSOs+' active sales orders'},
-      {label:'Total Units',value:(totalUnits||0).toLocaleString(),topbar:NAVY,sub:'across the pipeline'},
-      {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:pipeline.length+' orders'},
-    ];
 
     // Overview derivations
     const _stLabel={need_order:'Need Order',waiting_receive:'Waiting Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
@@ -16389,6 +16386,15 @@ export default function App(){
     const _funnelRows=[['Open',fDraft,'Estimates open'],['Sent',fSent,'Out to customer'],['Approved',fApproved,'Customer approved'],['Converted',fConverted,'Became a sales order']];
     const _funnelMax=Math.max(1,fDraft,fSent,fApproved,fConverted);
     const _funnelRate=funnelEsts.length>0?Math.round(fConverted/funnelEsts.length*100):0;
+    // KPI set (Sales group) — what a rep acts on: billed YTD (real YoY), money still open on orders,
+    // money still open in quotes, and how often quotes close. Each tile opens the tab behind it.
+    const _openQuotes=funnelEsts.filter(e=>['draft','open','sent','approved'].includes(e.status));
+    const _kpis=[
+      {label:'YTD Billed',value:_bill$(_ytdThis),topbar:RED,spark:_histIncomplete?null:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_histIncomplete?null:_ytdDelta,sub:_histPending?'loading invoice history…':(_histFailed?'invoice history unavailable':'vs '+_fmtK1(_ytdLast)+' last year'),tab:'reps'},
+      {label:'Open Orders',value:_fmtK1(_openPipeTotal),topbar:NAVY,sub:_activeSOs+' sales order'+(_activeSOs===1?'':'s')+' not yet complete',tab:'pipeline'},
+      {label:'Quote Win Rate',value:_funnelRate+'%',topbar:NAVY,sub:fConverted+' of '+funnelEsts.length+' quotes became orders · '+_openQuotes.length+' still open',tab:'pipeline'},
+      {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:'across '+pipeline.length+' order'+(pipeline.length===1?'':'s'),tab:'products'},
+    ];
     // Promo-only orders (promo dollars applied, or every line a free/promo garment) are
     // giveaways priced at or below cost on purpose — they'd sit at the top of every
     // low-margin list forever and bury the real pricing misses. They still count in the
@@ -16426,7 +16432,7 @@ export default function App(){
       <span style={{flex:1,minWidth:240}}>{_histPending?'Loading NetSuite invoice history — the totals below are portal invoices only until it finishes.':'NetSuite invoice history unavailable — the totals below are portal invoices only.'}</span>
       {_histFailed&&<button className="nsa-rpt-hit" onClick={()=>_retryHistInvoices()} style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:.5,textTransform:'uppercase',padding:'4px 11px',borderRadius:5,border:'1px solid #92400E',background:'transparent',color:'#92400E',cursor:'pointer'}}>Retry</button>}
     </div>:null;
-    const RKpi=(k,i)=><div key={i} className="num" style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
+    const RKpi=(k,i)=><div key={i} className={'num'+(k.tab?' nsa-rpt-hit nsa-kpi-link':'')} role={k.tab?'button':undefined} tabIndex={k.tab?0:undefined} onClick={k.tab?()=>setRptTab(k.tab):undefined} onKeyDown={k.tab?(e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setRptTab(k.tab)}}):undefined} title={k.tab?('Open '+(_tabLabels[k.tab]||k.tab)):undefined} style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
       <span style={{position:'absolute',top:0,left:0,width:'100%',height:3,background:k.topbar}}/>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <span style={{fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:1.3,textTransform:'uppercase',color:'#818BA1'}}>{k.label}</span>

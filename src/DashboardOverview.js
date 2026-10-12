@@ -1,17 +1,25 @@
-import React from 'react';
+import React, { useState } from 'react';
+import './dashboardOverview.css';
 
-const MONEY = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-});
+// New-UI homepage ("Connect" redesign). Sales-first layout:
+//   1. Hero: one headline number (sold this month) + pace vs the same point last month
+//   2. Stat tiles: billed, open quote pipeline, win rate, needs attention
+//   3. Priority to-do (unchanged data from App.js)
+//   4. Sold vs billed — 6 months, one axis, hover + table twin
+//   5. Quote pipeline by stage + quotes going stale (who to call today)
+//   6. Top accounts (12 months) + where work lives now
+// Colors were checked with the dataviz palette validator: sold/billed pair passes CVD separation;
+// the workflow stages are ordered, so they use one ordinal navy ramp instead of five hues.
 
+const MONEY = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const MONTH = new Intl.DateTimeFormat('en-US', { month: 'short' });
-const FULL_DATE = new Intl.DateTimeFormat('en-US', {
-  weekday: 'long',
-  month: 'long',
-  day: 'numeric',
-});
+const FULL_DATE = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+const SOLD = '#2a4a9b';
+const BILLED = '#d1873a';
+const STAGE_RAMP = ['#9db2e3', '#7392d6', '#4f73c2', '#3557a6', '#1f3a7a'];
+const QUOTE_RAMP = ['#9db2e3', '#4f73c2', '#1f3a7a'];
+const DAY = 864e5;
 
 const parsePortalDate = (value) => {
   if (!value) return null;
@@ -35,43 +43,65 @@ const isSameMonth = (date, month) =>
   date && date.getFullYear() === month.getFullYear() && date.getMonth() === month.getMonth();
 
 const pctChange = (current, previous) => {
-  if (!previous) return current ? 100 : 0;
+  if (!previous) return current ? null : 0;
   return Math.round(((current - previous) / previous) * 100);
 };
 
 const formatCompact = (value) => {
   const amount = Number(value) || 0;
-  if (Math.abs(amount) >= 1000000) return `$${(amount / 1000000).toFixed(1)}m`;
-  if (Math.abs(amount) >= 1000) return `$${(amount / 1000).toFixed(amount >= 10000 ? 0 : 1)}k`;
+  const abs = Math.abs(amount);
+  if (abs >= 1000000) return `$${(amount / 1000000).toFixed(abs >= 10000000 ? 1 : 2).replace(/\.?0+$/, '')}M`;
+  if (abs >= 1000) return `$${(amount / 1000).toFixed(abs >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`;
   return MONEY.format(amount);
 };
 
-function TrendBadge({ value }) {
-  const positive = value >= 0;
+const tickStep = (max) => {
+  const raw = max / 4;
+  const mag = 10 ** Math.floor(Math.log10(Math.max(raw, 1)));
+  const n = raw / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
+};
+
+// Quoted value of an estimate: the shared margin calc when it accepts the estimate,
+// otherwise a plain garment sell sum (sizes, or est_qty when sizes aren't broken out).
+const estimateValue = (estimate, calcMargin, orders) => {
+  try {
+    const rev = Number(calcMargin?.(estimate, orders)?.rev);
+    if (Number.isFinite(rev) && rev > 0) return rev;
+  } catch { /* fall through */ }
+  return (estimate.items || []).reduce((sum, item) => {
+    const sized = Object.values(item.sizes || {}).reduce((a, v) => a + (Number(v) || 0), 0);
+    const qty = sized > 0 ? sized : Number(item.est_qty) || 0;
+    return sum + qty * (Number(item.unit_sell) || 0);
+  }, 0);
+};
+
+function Delta({ value, label }) {
+  if (value === null) return <span className="dov2-delta is-new">New <em>{label}</em></span>;
+  const tone = value > 0 ? 'is-up' : value < 0 ? 'is-down' : 'is-flat';
+  const arrow = value > 0 ? '▲' : value < 0 ? '▼' : '–';
   return (
-    <span className={`dash-overview__trend ${positive ? 'is-up' : 'is-down'}`}>
-      <span aria-hidden="true">{positive ? '↗' : '↘'}</span>
-      {Math.abs(value)}%
+    <span className={`dov2-delta ${tone}`}>
+      <span aria-hidden="true">{arrow}</span> {value > 0 ? '+' : ''}{value}% <em>{label}</em>
     </span>
   );
 }
 
-function RingMetric({ label, value, tone }) {
-  const safeValue = Math.max(0, Math.min(100, Number(value) || 0));
+function Sparkline({ values }) {
+  const w = 132, h = 40, pad = 4;
+  const max = Math.max(1, ...values);
+  const pts = values.map((v, i) => [
+    pad + (values.length > 1 ? i / (values.length - 1) : 0) * (w - pad * 2),
+    h - pad - (v / max) * (h - pad * 2),
+  ]);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
   return (
-    <div className="dash-overview__ring-metric">
-      <div
-        className="dash-overview__ring"
-        style={{
-          '--ring-value': `${safeValue * 3.6}deg`,
-          '--ring-color': tone,
-        }}
-        aria-label={`${label}: ${safeValue}%`}
-      >
-        <span>{safeValue}%</span>
-      </div>
-      <span className="dash-overview__ring-label">{label}</span>
-    </div>
+    <svg className="dov2-spark" viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
+      <path d={`${line} L${last[0]} ${h} L${pts[0][0]} ${h} Z`} fill="rgba(255,255,255,.10)" />
+      <path d={line} fill="none" stroke="rgba(255,255,255,.55)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={last[0]} cy={last[1]} r="4.5" fill="#fff" stroke="#192853" strokeWidth="2" />
+    </svg>
   );
 }
 
@@ -91,24 +121,13 @@ export default function DashboardOverview({
   calcMargin,
   onNavigate,
   onOpenPriority,
+  onOpenEstimate,
+  onOpenCustomer,
 }) {
+  const [hoverMonth, setHoverMonth] = useState(null);
   const now = new Date();
-  const titleByView = {
-    admin: 'Business pulse',
-    sales: 'My book of business',
-    warehouse: 'Fulfillment pulse',
-    decorator: 'Artwork pulse',
-    production: 'Production pulse',
-    csr: 'Service pulse',
-  };
-  const kickerByView = {
-    admin: 'Company overview',
-    sales: 'Sales performance',
-    warehouse: 'Warehouse operations',
-    decorator: 'Creative workflow',
-    production: 'Floor operations',
-    csr: 'Customer support',
-  };
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayOfMonth = now.getDate();
 
   const customerById = new Map(customers.map((customer) => [customer.id, customer]));
   const orderById = new Map(orders.map((order) => [order.id, order]));
@@ -119,26 +138,33 @@ export default function DashboardOverview({
     (order) => isLiveRecord(order) && (!scopedToUser || orderRepId(order) === user?.id),
   );
   const scopedEstimates = estimates.filter(
-    (estimate) =>
-      isLiveRecord(estimate) && (!scopedToUser || estimate.created_by === user?.id),
+    (estimate) => isLiveRecord(estimate) && (!scopedToUser || estimate.created_by === user?.id),
   );
   const scopedJobs = jobs.filter((job) => {
     if (!scopedToUser) return true;
     const parent = orderById.get(job.so_id || job._soId);
     return parent ? orderRepId(parent) === user?.id : true;
   });
+  const orderRev = (order) => {
+    try {
+      return Number(calcMargin?.(order, orders)?.rev) || 0;
+    } catch {
+      return 0;
+    }
+  };
 
+  // ── Sold / billed by month (same rules as before: SO created date; invoices deduped, voids out) ──
   const monthRows = Array.from({ length: 6 }, (_, index) => {
     const month = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
-    const sales = scopedOrders.reduce((sum, order) => {
-      if (!isSameMonth(parsePortalDate(order.created_at), month)) return sum;
-      try {
-        return sum + (Number(calcMargin?.(order, orders)?.rev) || 0);
-      } catch {
-        return sum;
-      }
-    }, 0);
-    return { month, label: MONTH.format(month), sales, billed: 0 };
+    return { month, label: MONTH.format(month), sales: 0, billed: 0, salesToDate: 0, billedToDate: 0 };
+  });
+  scopedOrders.forEach((order) => {
+    const date = parsePortalDate(order.created_at);
+    const row = monthRows.find((item) => isSameMonth(date, item.month));
+    if (!row) return;
+    const rev = orderRev(order);
+    row.sales += rev;
+    if (date.getDate() <= dayOfMonth) row.salesToDate += rev;
   });
 
   const countedInvoiceIds = new Set();
@@ -155,249 +181,354 @@ export default function DashboardOverview({
     }
     const date = parsePortalDate(invoice.date || invoice.created_at);
     const row = monthRows.find((item) => isSameMonth(date, item.month));
-    if (row) row.billed += Number(invoice.total) || 0;
+    if (!row) return;
+    const total = Number(invoice.total) || 0;
+    row.billed += total;
+    if (date.getDate() <= dayOfMonth) row.billedToDate += total;
   };
   historicalInvoices.forEach((invoice) => addBilling(invoice, true));
   invoices.forEach((invoice) => addBilling(invoice, false));
 
-  const current = monthRows[monthRows.length - 1] || { sales: 0, billed: 0 };
-  const previous = monthRows[monthRows.length - 2] || { sales: 0, billed: 0 };
-  const maxChartValue = Math.max(
-    1,
-    ...monthRows.flatMap((row) => [row.sales, row.billed]),
-  );
+  const current = monthRows[monthRows.length - 1];
+  const previous = monthRows[monthRows.length - 2];
+  // Pace compares like with like: this month so far vs last month through the same day.
+  const soldPace = pctChange(current.sales, previous.salesToDate);
+  const billedPace = pctChange(current.billed, previous.billedToDate);
+
+  // ── Quote pipeline ──
+  const quoteStages = [
+    { key: 'draft', label: 'Drafting', statuses: ['draft', 'open'], color: QUOTE_RAMP[0] },
+    { key: 'sent', label: 'Sent to coach', statuses: ['sent'], color: QUOTE_RAMP[1] },
+    { key: 'approved', label: 'Approved — convert', statuses: ['approved'], color: QUOTE_RAMP[2] },
+  ].map((stage) => {
+    const rows = scopedEstimates.filter((estimate) => stage.statuses.includes(estimate.status));
+    return { ...stage, count: rows.length, value: rows.reduce((sum, e) => sum + estimateValue(e, calcMargin, orders), 0) };
+  });
+  const pipelineValue = quoteStages.reduce((sum, stage) => sum + stage.value, 0);
+  const pipelineCount = quoteStages.reduce((sum, stage) => sum + stage.count, 0);
+
+  const ninetyAgo = new Date(today.getTime() - 90 * DAY);
+  const recentQuotes = scopedEstimates.filter((estimate) => {
+    const date = parsePortalDate(estimate.created_at);
+    return date && date >= ninetyAgo;
+  });
+  const recentWon = recentQuotes.filter((estimate) => estimate.status === 'converted').length;
+  const winRate = recentQuotes.length ? Math.round((recentWon / recentQuotes.length) * 100) : null;
+
+  const staleQuotes = scopedEstimates
+    .filter((estimate) => estimate.status === 'sent')
+    .map((estimate) => {
+      const date = parsePortalDate(estimate.sent_at || estimate.created_at);
+      return {
+        estimate,
+        age: date ? Math.floor((today - date) / DAY) : 0,
+        value: estimateValue(estimate, calcMargin, orders),
+        customer: customerById.get(estimate.customer_id),
+      };
+    })
+    .filter((row) => row.age >= 14)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+
+  // ── Top accounts, trailing 12 months ──
+  const yearAgo = new Date(today.getTime() - 365 * DAY);
+  const accountTotals = new Map();
+  scopedOrders.forEach((order) => {
+    const date = parsePortalDate(order.created_at);
+    if (!date || date < yearAgo) return;
+    const key = customerById.get(order.customer_id)?.parent_id || order.customer_id;
+    const row = accountTotals.get(key) || { id: key, rev: 0, orders: 0, last: date };
+    row.rev += orderRev(order);
+    row.orders += 1;
+    if (date > row.last) row.last = date;
+    accountTotals.set(key, row);
+  });
+  const topAccounts = [...accountTotals.values()].sort((a, b) => b.rev - a.rev).slice(0, 6)
+    .map((row) => ({ ...row, customer: customerById.get(row.id), days: Math.floor((today - row.last) / DAY) }));
+  const topMax = Math.max(1, ...topAccounts.map((row) => row.rev));
+
+  // ── Where work lives now ──
   const activeOrders = scopedOrders.filter((order) => calcStatus?.(order) !== 'complete');
-  const openEstimates = scopedEstimates.filter((estimate) =>
-    ['draft', 'open', 'sent'].includes(estimate.status),
-  );
-  const activeJobs = scopedJobs.filter(
-    (job) => !['completed', 'shipped'].includes(job.prod_status),
-  );
-  const completedJobs = scopedJobs.filter((job) => job.prod_status === 'completed');
-
+  const activeJobs = scopedJobs.filter((job) => !['completed', 'shipped'].includes(job.prod_status));
   const stages = [
-    {
-      key: 'estimate',
-      label: 'Estimate',
-      detail: 'Quotes in motion',
-      value: openEstimates.length,
-      color: '#d7a442',
-      route: 'estimates',
-    },
-    {
-      key: 'order',
-      label: 'Order',
-      detail: 'Needs ordering',
-      value: activeOrders.filter((order) =>
-        ['booking', 'need_order', 'needs_pull'].includes(calcStatus?.(order)),
-      ).length,
-      color: '#b94349',
-      route: 'orders',
-    },
-    {
-      key: 'sourcing',
-      label: 'Sourcing',
-      detail: 'Waiting on goods',
-      value: activeOrders.filter((order) =>
-        ['waiting_receive', 'items_received'].includes(calcStatus?.(order)),
-      ).length,
-      color: '#5678b8',
-      route: 'orders',
-    },
-    {
-      key: 'production',
-      label: 'Production',
-      detail: 'On the floor',
-      value: activeOrders.filter((order) => calcStatus?.(order) === 'in_production').length,
-      color: '#7b65a8',
-      route: 'production',
-    },
-    {
-      key: 'ready',
-      label: 'Ready',
-      detail: 'Invoice or ship',
-      value: activeOrders.filter((order) => calcStatus?.(order) === 'ready_to_invoice').length,
-      color: '#3d8b69',
-      route: 'invoices',
-    },
-  ];
-  const stageTotal = Math.max(1, stages.reduce((sum, stage) => sum + stage.value, 0));
+    { key: 'order', label: 'Needs ordering', statuses: ['booking', 'need_order', 'needs_pull'], route: 'orders' },
+    { key: 'sourcing', label: 'Waiting on goods', statuses: ['waiting_receive', 'items_received'], route: 'orders' },
+    { key: 'production', label: 'In production', statuses: ['in_production'], route: 'production' },
+    { key: 'ready', label: 'Ready to invoice', statuses: ['ready_to_invoice'], route: 'invoices' },
+  ].map((stage, index) => ({
+    ...stage,
+    color: STAGE_RAMP[index + 1],
+    value: activeOrders.filter((order) => stage.statuses.includes(calcStatus?.(order))).length,
+  }));
+  const stageTotal = stages.reduce((sum, stage) => sum + stage.value, 0);
 
-  const artReady = activeJobs.filter((job) =>
-    ['art_complete', 'production_files', 'production_files_ready'].includes(job.art_status),
-  ).length;
-  const itemsReady = activeJobs.filter((job) => job.item_status === 'items_received').length;
-  const completionRate = scopedJobs.length
-    ? Math.round((completedJobs.length / scopedJobs.length) * 100)
-    : 0;
-  const artReadyRate = activeJobs.length ? Math.round((artReady / activeJobs.length) * 100) : 0;
-  const itemsReadyRate = activeJobs.length
-    ? Math.round((itemsReady / activeJobs.length) * 100)
-    : 0;
+  // ── Chart scale ──
+  const rawMax = Math.max(1, ...monthRows.flatMap((row) => [row.sales, row.billed]));
+  const step = tickStep(rawMax);
+  const chartMax = Math.ceil(rawMax / step) * step;
+  const ticks = Array.from({ length: Math.round(chartMax / step) + 1 }, (_, i) => i * step);
 
   const firstName = (user?.name || 'Team').split(' ')[0];
-  const greeting =
-    now.getHours() < 12 ? 'Good morning' : now.getHours() < 17 ? 'Good afternoon' : 'Good evening';
+  const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 17 ? 'Good afternoon' : 'Good evening';
+  const scopeLabel = scopedToUser ? 'Your book' : 'All of NSA';
+  const openCustomer = (customer) => customer && onOpenCustomer?.(customer);
 
   return (
-    <section className="dash-overview" aria-labelledby="dashboard-overview-title">
-      <div className="dash-overview__hero">
-        <div className="dash-overview__hero-copy">
-          <div className="dash-overview__eyebrow">{kickerByView[view] || 'Operations overview'}</div>
-          <h2 id="dashboard-overview-title">{greeting}, {firstName}.</h2>
-          <p>{FULL_DATE.format(now)} · Here is what is moving across the business.</p>
+    <section className="dov2" aria-labelledby="dov2-title">
+      {/* ═══ Hero ═══ */}
+      <div className="dov2-hero">
+        <div className="dov2-hero__top">
+          <div>
+            <div className="dov2-eyebrow">{FULL_DATE.format(now)} · {scopeLabel}</div>
+            <h2 id="dov2-title">{greeting}, {firstName}.</h2>
+          </div>
+          <div className="dov2-hero__quick">
+            <button type="button" onClick={() => onNavigate?.('estimates')}>Go to quotes</button>
+            <button type="button" onClick={() => onNavigate?.('customers')}>Customers</button>
+          </div>
         </div>
-        <div className="dash-overview__hero-mark" aria-hidden="true">CONNECT</div>
-        <div className="dash-overview__metrics">
-          <button type="button" onClick={() => onNavigate?.('reports')}>
-            <span className="dash-overview__metric-label">Sales this month</span>
-            <strong>{formatCompact(current.sales)}</strong>
-            <span className="dash-overview__metric-foot">
-              <TrendBadge value={pctChange(current.sales, previous.sales)} />
-              vs last month
-            </span>
+        <div className="dov2-hero__body">
+          <button type="button" className="dov2-headline" onClick={() => onNavigate?.('reports')}>
+            <span className="dov2-headline__label">Sold this month</span>
+            <strong>{MONEY.format(current.sales)}</strong>
+            <Delta value={soldPace} label="vs same point last month" />
           </button>
-          <button type="button" onClick={() => onNavigate?.('invoices')}>
-            <span className="dash-overview__metric-label">Billed this month</span>
-            <strong>{formatCompact(current.billed)}</strong>
-            <span className="dash-overview__metric-foot">
-              <TrendBadge value={pctChange(current.billed, previous.billed)} />
-              vs last month
-            </span>
-          </button>
-          <button type="button" onClick={() => onNavigate?.('orders')}>
-            <span className="dash-overview__metric-label">Active orders</span>
-            <strong>{activeOrders.length}</strong>
-            <span className="dash-overview__metric-foot">{activeJobs.length} live production jobs</span>
-          </button>
-          <button type="button" onClick={() => onNavigate?.(unreadCount ? 'messages' : 'dashboard')}>
-            <span className="dash-overview__metric-label">Needs attention</span>
-            <strong>{actionCount}</strong>
-            <span className="dash-overview__metric-foot">{unreadCount} unread messages</span>
-          </button>
+          <div className="dov2-hero__spark">
+            <Sparkline values={monthRows.map((row) => row.sales)} />
+            <span>6-month trend</span>
+          </div>
         </div>
       </div>
 
-      <article className="dash-overview__priority" aria-labelledby="dashboard-priority-title">
-        <header className="dash-overview__priority-header">
+      <div className="dov2-tiles">
+        <button type="button" className="dov2-tile" onClick={() => onNavigate?.('invoices')}>
+          <span className="dov2-tile__label">Billed this month</span>
+          <strong>{formatCompact(current.billed)}</strong>
+          <Delta value={billedPace} label="pace" />
+        </button>
+        <button type="button" className="dov2-tile" onClick={() => onNavigate?.('estimates')}>
+          <span className="dov2-tile__label">Open quote pipeline</span>
+          <strong>{formatCompact(pipelineValue)}</strong>
+          <span className="dov2-tile__foot">{pipelineCount} open quote{pipelineCount === 1 ? '' : 's'}</span>
+        </button>
+        <button type="button" className="dov2-tile" onClick={() => onNavigate?.('reports')}>
+          <span className="dov2-tile__label">Win rate · last 90 days</span>
+          <strong>{winRate === null ? '—' : `${winRate}%`}</strong>
+          <span className="dov2-tile__foot">{recentWon} of {recentQuotes.length} quotes became orders</span>
+        </button>
+        <button type="button" className={`dov2-tile ${actionCount ? 'is-alert' : ''}`} onClick={() => onNavigate?.(unreadCount && !actionCount ? 'messages' : 'dashboard')}>
+          <span className="dov2-tile__label">Needs your attention</span>
+          <strong>{actionCount}</strong>
+          <span className="dov2-tile__foot">{unreadCount} unread message{unreadCount === 1 ? '' : 's'}</span>
+        </button>
+      </div>
+
+      {/* ═══ Priority to-do ═══ */}
+      <article className="dov2-card dov2-priority" aria-labelledby="dov2-priority-title">
+        <header className="dov2-card__head">
           <div>
-            <span className="dash-overview__panel-kicker">Start here</span>
-            <h3 id="dashboard-priority-title">Priority to-do</h3>
+            <span className="dov2-kicker">Start here</span>
+            <h3 id="dov2-priority-title">Priority to-do</h3>
           </div>
-          <div className="dash-overview__priority-count">
-            <strong>{actionCount}</strong>
-            <span>open item{actionCount === 1 ? '' : 's'}</span>
-          </div>
+          <span className="dov2-count">{actionCount} open</span>
         </header>
-        <div className="dash-overview__priority-list">
-          {priorityItems.length === 0 ? (
-            <div className="dash-overview__priority-empty">
-              <span aria-hidden="true">✓</span>
-              <div><strong>You’re caught up</strong><small>No action items need attention.</small></div>
-            </div>
-          ) : priorityItems.map((item, index) => {
-            const priority = item.priority ?? 2;
-            const tone = priority <= 0 ? 'urgent' : priority === 1 ? 'high' : 'normal';
-            const label = priority <= 0 ? 'Urgent' : priority === 1 ? 'High' : 'Next';
-            return (
-              <button
-                type="button"
-                className={`dash-overview__priority-item is-${tone}`}
-                key={item.dismissKey || item.id || `${item.type}-${index}`}
-                onClick={() => onOpenPriority?.(item)}
-              >
-                <span className="dash-overview__priority-rank">{String(index + 1).padStart(2, '0')}</span>
-                <span className="dash-overview__priority-copy">
-                  <span><b>{label}</b>{item.msg}</span>
-                  <small>{item.detail || 'Open this item to continue.'}</small>
-                </span>
-                <span className="dash-overview__priority-action">{item.action || 'Open'} <i aria-hidden="true">→</i></span>
-              </button>
-            );
-          })}
-        </div>
+        {priorityItems.length === 0 ? (
+          <div className="dov2-empty"><span aria-hidden="true">✓</span>You’re caught up — no action items need attention.</div>
+        ) : (
+          <div className="dov2-priority__list">
+            {priorityItems.map((item, index) => {
+              const priority = item.priority ?? 2;
+              const tone = priority <= 0 ? 'urgent' : priority === 1 ? 'high' : 'normal';
+              const label = priority <= 0 ? 'Urgent' : priority === 1 ? 'High' : 'Next';
+              return (
+                <button
+                  type="button"
+                  className={`dov2-priority__item is-${tone}`}
+                  key={item.dismissKey || item.id || `${item.type}-${index}`}
+                  onClick={() => onOpenPriority?.(item)}
+                >
+                  <span className="dov2-pill">{label}</span>
+                  <span className="dov2-priority__copy">
+                    <span>{item.msg}</span>
+                    <small>{item.detail || 'Open this item to continue.'}</small>
+                  </span>
+                  <span className="dov2-priority__action">{item.action || 'Open'} →</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         {actionCount > priorityItems.length && (
-          <button type="button" className="dash-overview__priority-all" onClick={() => onNavigate?.('dashboard')}>
-            {actionCount - priorityItems.length} more in the full queue below <span aria-hidden="true">↓</span>
-          </button>
+          <div className="dov2-card__foot">{actionCount - priorityItems.length} more in the full queue below ↓</div>
         )}
       </article>
 
-      <div className="dash-overview__grid">
-        <article className="dash-overview__panel dash-overview__chart-panel">
-          <header className="dash-overview__panel-header">
+      {/* ═══ Sold vs billed ═══ */}
+      <div className="dov2-grid">
+        <article className="dov2-card dov2-chart-card">
+          <header className="dov2-card__head">
             <div>
-              <span className="dash-overview__panel-kicker">6 month trend</span>
-              <h3>{titleByView[view] || 'Business pulse'}</h3>
+              <span className="dov2-kicker">Last 6 months</span>
+              <h3>Sold vs billed</h3>
             </div>
-            <div className="dash-overview__legend" aria-label="Chart legend">
-              <span><i className="is-sales" />Sold</span>
-              <span><i className="is-billed" />Billed</span>
+            <div className="dov2-legend" aria-label="Legend">
+              <span><i style={{ background: SOLD }} />Sold</span>
+              <span><i style={{ background: BILLED }} />Billed</span>
             </div>
           </header>
-          <div className="dash-overview__chart" role="img" aria-label="Sales and billings for the last six months">
-            <div className="dash-overview__chart-grid" aria-hidden="true">
-              <span /><span /><span /><span />
+          <div className="dov2-chart" onMouseLeave={() => setHoverMonth(null)}>
+            <div className="dov2-chart__axis" aria-hidden="true">
+              {ticks.slice().reverse().map((tick) => <span key={tick}>{tick ? formatCompact(tick) : '0'}</span>)}
             </div>
-            {monthRows.map((row) => (
-              <div className="dash-overview__month" key={`${row.month.getFullYear()}-${row.month.getMonth()}`}>
-                <div className="dash-overview__bars">
-                  <div
-                    className="dash-overview__bar is-sales"
-                    style={{ height: `${Math.max(row.sales ? 4 : 0, (row.sales / maxChartValue) * 100)}%` }}
-                    title={`${row.label} sold: ${MONEY.format(row.sales)}`}
-                  />
-                  <div
-                    className="dash-overview__bar is-billed"
-                    style={{ height: `${Math.max(row.billed ? 4 : 0, (row.billed / maxChartValue) * 100)}%` }}
-                    title={`${row.label} billed: ${MONEY.format(row.billed)}`}
-                  />
-                </div>
-                <span>{row.label}</span>
+            <div className="dov2-chart__plot">
+              <div className="dov2-chart__grid" aria-hidden="true">
+                {ticks.map((tick) => <span key={tick} style={{ bottom: `${(tick / chartMax) * 100}%` }} />)}
               </div>
-            ))}
+              {monthRows.map((row, index) => {
+                const isCurrent = index === monthRows.length - 1;
+                const active = hoverMonth === index;
+                return (
+                  <div
+                    key={`${row.month.getFullYear()}-${row.month.getMonth()}`}
+                    className={`dov2-chart__month ${active ? 'is-active' : ''}`}
+                    tabIndex={0}
+                    aria-label={`${row.label}: sold ${MONEY.format(row.sales)}, billed ${MONEY.format(row.billed)}`}
+                    onMouseEnter={() => setHoverMonth(index)}
+                    onFocus={() => setHoverMonth(index)}
+                    onBlur={() => setHoverMonth(null)}
+                  >
+                    <div className="dov2-chart__bars">
+                      <div className="dov2-chart__bar" style={{ height: `${(row.sales / chartMax) * 100}%`, background: SOLD }}>
+                        {isCurrent && row.sales > 0 && <b>{formatCompact(row.sales)}</b>}
+                      </div>
+                      <div className="dov2-chart__bar" style={{ height: `${(row.billed / chartMax) * 100}%`, background: BILLED }} />
+                    </div>
+                    <span className="dov2-chart__label">{row.label}{isCurrent ? ' (MTD)' : ''}</span>
+                    {active && (
+                      <div className={`dov2-tip ${index >= monthRows.length - 2 ? 'is-left' : ''}`} role="presentation">
+                        <strong>{row.label} {row.month.getFullYear()}</strong>
+                        <span><i style={{ background: SOLD }} />Sold <b>{MONEY.format(row.sales)}</b></span>
+                        <span><i style={{ background: BILLED }} />Billed <b>{MONEY.format(row.billed)}</b></span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div className="dash-overview__chart-summary">
-            <span>Current sold <strong>{formatCompact(current.sales)}</strong></span>
-            <span>Current billed <strong>{formatCompact(current.billed)}</strong></span>
-            <button type="button" onClick={() => onNavigate?.('reports')}>Open reports <span aria-hidden="true">→</span></button>
+          <table className="dov2-sr">
+            <caption>Sold and billed by month</caption>
+            <thead><tr><th>Month</th><th>Sold</th><th>Billed</th></tr></thead>
+            <tbody>{monthRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{MONEY.format(row.sales)}</td><td>{MONEY.format(row.billed)}</td></tr>)}</tbody>
+          </table>
+          <div className="dov2-card__foot">
+            <span>Sold = sales orders by created date · Billed = invoices by invoice date</span>
+            <button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Full report →</button>
           </div>
         </article>
 
-        <article className="dash-overview__panel dash-overview__flow-panel">
-          <header className="dash-overview__panel-header">
+        {/* ═══ Quote pipeline ═══ */}
+        <article className="dov2-card">
+          <header className="dov2-card__head">
             <div>
-              <span className="dash-overview__panel-kicker">Live workflow</span>
-              <h3>Where work lives now</h3>
+              <span className="dov2-kicker">Money in motion</span>
+              <h3>Quote pipeline</h3>
             </div>
-            <span className="dash-overview__live"><i />Live</span>
+            <strong className="dov2-head-num">{formatCompact(pipelineValue)}</strong>
           </header>
-          <div className="dash-overview__flow-bar" aria-label="Current work distribution">
-            {stages.map((stage) => (
-              <span
-                key={stage.key}
-                style={{ width: `${Math.max(stage.value ? 7 : 0, (stage.value / stageTotal) * 100)}%`, background: stage.color }}
-                title={`${stage.label}: ${stage.value}`}
-              />
+          <div className="dov2-stack" aria-hidden="true">
+            {quoteStages.filter((stage) => stage.value > 0).map((stage) => (
+              <span key={stage.key} style={{ flexGrow: stage.value, background: stage.color }} title={`${stage.label}: ${MONEY.format(stage.value)}`} />
             ))}
+            {pipelineValue === 0 && <span className="is-empty" />}
           </div>
-          <div className="dash-overview__stage-list">
-            {stages.map((stage) => (
-              <button type="button" key={stage.key} onClick={() => onNavigate?.(stage.route)}>
+          <div className="dov2-rows">
+            {quoteStages.map((stage) => (
+              <button type="button" className="dov2-row" key={stage.key} onClick={() => onNavigate?.('estimates')}>
                 <i style={{ background: stage.color }} />
-                <span>
-                  <strong>{stage.label}</strong>
-                  <small>{stage.detail}</small>
-                </span>
-                <b>{stage.value}</b>
-                <span className="dash-overview__stage-arrow" aria-hidden="true">↗</span>
+                <span className="dov2-row__name">{stage.label}</span>
+                <span className="dov2-row__meta">{stage.count}</span>
+                <b>{formatCompact(stage.value)}</b>
               </button>
             ))}
           </div>
-          <div className="dash-overview__rings">
-            <RingMetric label="Jobs complete" value={completionRate} tone="#3d8b69" />
-            <RingMetric label="Art ready" value={artReadyRate} tone="#b94349" />
-            <RingMetric label="Items in" value={itemsReadyRate} tone="#5678b8" />
+          <div className="dov2-subhead">
+            <span>Follow up today</span>
+            <small>Sent 14+ days, not yet won</small>
+          </div>
+          {staleQuotes.length === 0 ? (
+            <div className="dov2-empty is-small">No quotes waiting on a coach for 2+ weeks.</div>
+          ) : (
+            <div className="dov2-rows">
+              {staleQuotes.map(({ estimate, age, value, customer }) => (
+                <button type="button" className="dov2-row" key={estimate.id} onClick={() => (onOpenEstimate ? onOpenEstimate(estimate) : onNavigate?.('estimates'))}>
+                  <span className={`dov2-age ${age >= 30 ? 'is-old' : ''}`}>{age}d</span>
+                  <span className="dov2-row__name">
+                    {customer?.name || estimate.memo || estimate.id}
+                    <small>{estimate.memo || estimate.id}</small>
+                  </span>
+                  <b>{formatCompact(value)}</b>
+                </button>
+              ))}
+            </div>
+          )}
+        </article>
+
+        {/* ═══ Top accounts ═══ */}
+        <article className="dov2-card">
+          <header className="dov2-card__head">
+            <div>
+              <span className="dov2-kicker">Last 12 months</span>
+              <h3>Top accounts</h3>
+            </div>
+            <button type="button" className="dov2-link" onClick={() => onNavigate?.('customers')}>All customers →</button>
+          </header>
+          {topAccounts.length === 0 ? (
+            <div className="dov2-empty is-small">No orders in the last 12 months yet.</div>
+          ) : (
+            <div className="dov2-bars">
+              {topAccounts.map((row) => (
+                <button type="button" className="dov2-hbar" key={row.id} onClick={() => openCustomer(row.customer)}>
+                  <span className="dov2-hbar__name">
+                    {row.customer?.name || 'Unknown customer'}
+                    <small>{row.orders} order{row.orders === 1 ? '' : 's'} · last {row.days === 0 ? 'today' : `${row.days}d ago`}</small>
+                  </span>
+                  <span className="dov2-hbar__track">
+                    <span style={{ width: `${Math.max(2, (row.rev / topMax) * 100)}%` }} />
+                  </span>
+                  <b>{formatCompact(row.rev)}</b>
+                </button>
+              ))}
+            </div>
+          )}
+        </article>
+
+        {/* ═══ Work in flight ═══ */}
+        <article className="dov2-card">
+          <header className="dov2-card__head">
+            <div>
+              <span className="dov2-kicker">Live</span>
+              <h3>Orders in flight</h3>
+            </div>
+            <strong className="dov2-head-num">{activeOrders.length}</strong>
+          </header>
+          <div className="dov2-stack" aria-hidden="true">
+            {stages.filter((stage) => stage.value > 0).map((stage) => (
+              <span key={stage.key} style={{ flexGrow: stage.value, background: stage.color }} title={`${stage.label}: ${stage.value}`} />
+            ))}
+            {stageTotal === 0 && <span className="is-empty" />}
+          </div>
+          <div className="dov2-rows">
+            {stages.map((stage) => (
+              <button type="button" className="dov2-row" key={stage.key} onClick={() => onNavigate?.(stage.route)}>
+                <i style={{ background: stage.color }} />
+                <span className="dov2-row__name">{stage.label}</span>
+                <b>{stage.value}</b>
+              </button>
+            ))}
+          </div>
+          <div className="dov2-card__foot">
+            <span>{activeJobs.length} decoration job{activeJobs.length === 1 ? '' : 's'} not yet complete</span>
           </div>
         </article>
       </div>
