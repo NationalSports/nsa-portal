@@ -2,6 +2,7 @@ import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
+import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -50,7 +51,7 @@ import { _sbAuthLock } from './lib/supabase';
 import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
-import { startDeployReloadWatcher } from './deployReload';
+import { startDeployReloadWatcher, startStaleTabReload } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as fabric from 'fabric';
@@ -3402,6 +3403,14 @@ export default function App(){
       hasFailedSaves:()=>_dbSaveFailedIds.size>0,
       isUserIdle:()=>document.hidden||Date.now()-_lastTabInput.t>120000,
       onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
+      onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
+    });
+    // A tab returned to after hours away (or after the computer slept) reloads before the user acts,
+    // so it never edits on an overnight copy of an order (SO-2444). Same safety hooks as above.
+    startStaleTabReload({
+      isBlocked:()=>qbSyncBusyRef.current,
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasUnsavedWork:_autoReloadHasUnsavedWork,
       onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
     });
     return()=>{['pointerdown','keydown','scroll'].forEach(ev=>window.removeEventListener(ev,_mark))};
@@ -11763,6 +11772,10 @@ export default function App(){
       }
       return null;
     }
+    // Orphan guard (SO-2444): an entry whose garment line never reached its order would buy goods
+    // for nothing. Refuse before anything is ordered. A vendor-ACCEPTED order (apiResult) can't be
+    // undone, so it still records — the line-id backstop below reports anything it can't place.
+    if(!apiResult){const _orph=orphanedBatchEntries(pos,_sosNow);if(_orph.length){nf('Not ordered — '+_orph.length+' batch entr'+(_orph.length===1?'y is':'ies are')+' not on '+(_orph.length===1?'its sales order':'their sales orders')+' ('+_orph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+'). Remove '+(_orph.length===1?'it':'them')+' from the queue first.','error');return null}}
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
@@ -11833,6 +11846,7 @@ export default function App(){
       if(skipSoId&&soId===skipSoId)continue;
       const so=_sosNow.find(x=>x.id===soId);if(!so)throw new Error('Sales order was not found in the live order list');
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+      const _unplaced=[];
       bps.forEach(bp=>{
         let promoted=false;
         updatedItems.forEach(it=>{it.po_lines=it.po_lines.map(pl=>{
@@ -11845,7 +11859,9 @@ export default function App(){
         // the batch number by users or the billing matcher.
         if(!promoted){
           bp.items.forEach(bpIt=>{
-            const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+            // By line_id, never by position alone: a line that moved or never reached the order
+            // must not pin this PO onto a different garment (SO-2444). Legacy entries keep item_idx.
+            const idx=resolveBatchItemIndex(updatedItems,bpIt);if(idx<0){_unplaced.push(bpIt.sku+(bpIt.color?' '+bpIt.color:''));return}
             const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
             Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
@@ -11855,6 +11871,7 @@ export default function App(){
       });
       const saved=await savSONow({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
       if(!saved)throw new Error('database save returned false');
+      if(_unplaced.length)throw new Error('line(s) no longer on the order: '+_unplaced.join(', '));
     }catch(_promoErr){
       promotionFailed=true;
       // The vendor already accepted this order (or the rep already placed it) — never mask that
@@ -15076,6 +15093,29 @@ export default function App(){
       if(!window.confirm(itemIndex==null?'Remove this PO from the queue? Its sales-order items will remain.':'Remove '+bp.items[itemIndex].sku+' from this batch? Its sales-order item will remain.'))return;
       return saveQueueChange(bp,(current,so)=>planQueuedBatchRemoval(current,so,itemIndex),itemIndex==null?'PO removed from queue':'Item removed from batch');
     };
+    // Orphan removal (SO-2444). The order never received this entry's garment line, so there is no
+    // queued PO line to undo and the normal planner refuses ("linked queued PO could not be found").
+    // Confirm in the database that nothing links to this entry — this tab's order list could be stale —
+    // then drop only the queue entry.
+    const removeOrphanFromQueue=async(bp)=>{
+      if(bp.all_school_allocation_id)return;
+      if(!bp.po_id){nf('This entry has no PO number to verify against. Reload and try again.','error');return}
+      if(!window.confirm('Remove '+bp.po_id+' from the queue?\n\nIts garment line is not on '+bp.so_id+', so nothing on the order changes.'))return;
+      const groupKey=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');
+      if(_batchOrderingRef.current.has(groupKey)){nf('This batch is being saved or ordered. Please wait.','warn');return}
+      _batchOrderingRef.current.add(groupKey);setRemovingBatchId(bp.id);
+      try{
+        if(!supabase)throw new Error('A live database connection is required.');
+        const{data,error}=await supabase.from('so_item_po_lines').select('sizes').eq('po_id',bp.po_id);
+        if(error)throw new Error('Could not check the order: '+error.message+'.');
+        if(dbRowsLinkEntry(data,bp.id))throw new Error(bp.so_id+' does hold this PO line now — reload the page.');
+        const next=(_visFlushRefs.current.batchPOs||batchPOs).filter(b=>b.id!==bp.id);
+        _visFlushRefs.current={..._visFlushRefs.current,batchPOs:next};
+        setBatchPOs(next);setEditingBatchId(null);
+        nf(bp.po_id+' removed from the queue');
+      }catch(err){console.error('[removeOrphanFromQueue]',err);nf(err.message+' The queue entry was kept.','error')}
+      finally{_batchOrderingRef.current.delete(groupKey);setRemovingBatchId(null)}
+    };
     // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
     // (write-in address > decorator > drop-ship program address > NSA warehouse).
     // A batch whose lines belong at different addresses can't be one API order — an
@@ -15441,17 +15481,19 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header" onClick={()=>setExpandedVendors(p=>({[gk]:!p[gk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
-              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div>{_grpOrph.length>0&&<div style={{fontSize:11,fontWeight:700,color:'#b91c1c',marginTop:3}}>⚠ {_grpOrph.length} not on {_grpOrph.length===1?'its order':'their orders'} — open to fix</div>}</div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
-                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
+                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();if(_blockOrph())return;
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
@@ -15478,6 +15520,8 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -15486,7 +15530,8 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[gk]:false}))}>Collapse ▲</button>
           </div>
           <div className="card-body" style={{padding:0}}>
-            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
+            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;const _orphan=batchEntryLinkState(bp,sos.find(s=>s.id===bp.so_id))==='missing_line';return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':_orphan?'#fef2f2':'transparent'}}>
+              {_orphan&&<div role="alert" style={{marginBottom:8,padding:'7px 10px',borderRadius:6,border:'1px solid #fecaca',background:'white',fontSize:12,color:'#991b1b',fontWeight:600}}>⚠ Not on {bp.so_id}. This garment line never saved to the order, so ordering it would buy goods for nothing. Remove it from the queue (nothing on the order changes), then add it again from the order if it's still needed.</div>}
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
                 <div style={{minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -15498,13 +15543,13 @@ export default function App(){
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId||_orphan} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>_orphan?removeOrphanFromQueue(bp):removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  {!_orphan&&<button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>}
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -15567,6 +15612,7 @@ export default function App(){
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={async()=>{
+                if(_blockOrph())return;
                 if(!window.confirm('Create '+nextPO+' as a MANUAL order for '+vg.name+'?\n\nThis only records the PO in NSA. It does NOT send anything to the vendor. You must place the order manually with the company.'))return;
                 const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
@@ -15575,11 +15621,12 @@ export default function App(){
                 setPg('batch_pos');
               }}>Manual Order · {nextPO}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>{
+                if(_blockOrph())return;
                 // Decorator-bound group (vendor:decoId): the S&S order must ship to the
                 // DECORATOR with the DPO on the attention line — not the NSA warehouse. Resolve
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
@@ -15590,7 +15637,7 @@ export default function App(){
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>

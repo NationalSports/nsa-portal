@@ -145,3 +145,88 @@ export function startDeployReloadWatcher(opts = {}) {
 
 // Test-only: reset module state so each test starts a fresh watcher.
 export function _resetDeployReloadForTests() { _started = false; _baseline = null; _committed = false; }
+
+// ─── Stale-tab refresh (SO-2444, 2026-10-12) ───
+//
+// The deploy watcher above only fires when a NEW BUILD lands. A tab left open overnight with no
+// deploy kept its overnight copy of every order, and the first edit in it was rejected as stale
+// (another session had saved the order meanwhile). Returning to a tab after a long absence should
+// look like opening it fresh: reload it — latest data and latest build — before the user acts.
+//
+// Rules, all of which must hold:
+//   - the tab was hidden for STALE_TAB_MS, or the machine slept (a wall-clock gap of SLEEP_GAP_MS
+//     between timer ticks — a laptop lid closed on a foreground tab never fires visibilitychange);
+//   - the tab is visible again (never reload behind the user's back);
+//   - it happens within RETURN_WINDOW_MS of coming back AND before any click/keypress/scroll —
+//     once the user has started working, the tab is theirs (the July "boots me mid-work" lesson);
+//   - no unsaved work, nothing blocking, and the save pipeline is quiet (same hooks as above).
+export const STALE_TAB_MS = 3 * 60 * 60 * 1000;
+export const SLEEP_GAP_MS = 30 * 60 * 1000;
+export const RETURN_WINDOW_MS = 20 * 1000;
+
+// Pure decision for the visibility/tick events: why this return counts as stale, or null.
+export function staleTabReason({ now, hiddenAt = null, lastTickAt = null }) {
+  if (hiddenAt != null && now - hiddenAt >= STALE_TAB_MS) return 'stale-hidden';
+  if (lastTickAt != null && now - lastTickAt >= SLEEP_GAP_MS) return 'stale-wake';
+  return null;
+}
+
+// Pure decision for each attempt while a stale return is pending.
+export function staleReloadDecision({ now, returnedAt, lastInputAt = 0, visible, safe, blocked, unsaved }) {
+  if (!visible) return 'wait';                                  // stays pending until the user is back
+  if (returnedAt != null && lastInputAt > returnedAt) return 'cancel'; // user already started working
+  if (returnedAt != null && now - returnedAt > RETURN_WINDOW_MS) return 'cancel';
+  if (blocked || unsaved || !safe) return 'wait';
+  return 'reload';
+}
+
+let _staleStarted = false;
+export function startStaleTabReload(opts = {}) {
+  if (_staleStarted || typeof window === 'undefined' || typeof document === 'undefined') return;
+  _staleStarted = true;
+  const isSafe = typeof opts.isSafe === 'function' ? opts.isSafe : () => true;
+  const isBlocked = typeof opts.isBlocked === 'function' ? opts.isBlocked : () => false;
+  const hasUnsavedWork = typeof opts.hasUnsavedWork === 'function' ? opts.hasUnsavedWork : () => false;
+  let hiddenAt = document.hidden ? Date.now() : null;
+  let lastTickAt = Date.now();
+  let lastInputAt = 0;
+  let pending = null;      // reason string while a stale return awaits a safe moment
+  let returnedAt = null;   // when the tab became visible with `pending` set
+  let retry = null;
+
+  const attempt = () => {
+    if (retry) { clearTimeout(retry); retry = null; }
+    if (!pending) return;
+    const visible = !document.hidden;
+    if (visible && returnedAt == null) returnedAt = Date.now();
+    const d = staleReloadDecision({ now: Date.now(), returnedAt, lastInputAt, visible,
+      safe: isSafe(), blocked: isBlocked(), unsaved: hasUnsavedWork() });
+    if (d === 'reload') {
+      const reason = pending; pending = null;
+      try { if (typeof opts.onReload === 'function') opts.onReload(reason); } catch (_) { /* telemetry never blocks */ }
+      try { window.location.reload(); } catch (_) { /* noop */ }
+      return;
+    }
+    if (d === 'cancel') { pending = null; returnedAt = null; return; }
+    if (visible) retry = setTimeout(attempt, 1000);             // re-check within the return window
+  };
+
+  ['pointerdown', 'keydown', 'scroll'].forEach(ev => window.addEventListener(ev, () => { lastInputAt = Date.now(); }, { passive: true, capture: true }));
+  document.addEventListener('visibilitychange', () => {
+    const now = Date.now();
+    if (document.hidden) { if (hiddenAt == null) hiddenAt = now; return; }
+    const reason = staleTabReason({ now, hiddenAt });
+    hiddenAt = null;
+    if (reason && !pending) { pending = reason; returnedAt = now; }
+    else if (pending && returnedAt == null) returnedAt = now;
+    attempt();
+  });
+  setInterval(() => {
+    const now = Date.now();
+    const reason = staleTabReason({ now, lastTickAt });
+    lastTickAt = now;
+    if (reason && !pending) { pending = reason; returnedAt = document.hidden ? null : now; attempt(); }
+  }, 60 * 1000);
+}
+
+export function _resetStaleTabReloadForTests() { _staleStarted = false; }
