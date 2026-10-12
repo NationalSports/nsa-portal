@@ -647,14 +647,9 @@ export const szRank=(s)=>{
   return 999;
 };
 const _szCompare=(a,b)=>szRank(a)-szRank(b);
-// Adidas represents half shoe sizes with a trailing dash ("10-"), while catalog/order data may
-// already contain the normal decimal spelling ("10.5"). Keep one internal display spelling so a
-// mixed feed cannot render duplicate columns. The fraction form is accepted for the same reason.
-export const normalizeFootwearSize=(size)=>{
-  const s=String(size??'').trim();
-  const m=/^(\d{1,2})(-|½)$/.exec(s);
-  return m?String(Number(m[1])+0.5):s;
-};
+// Footwear half-size spelling ("10-" / "10½" → "10.5") and the spelling-tolerant size-map
+// readers live in the shared module so businessLogic (CJS) uses the same rule as the editors.
+export const { normalizeFootwearSize, sizeQtyIn, sizeKeyIn } = SIZE_NAMES;
 export const normalizeFootwearSizeList=(sizes)=>[...new Set((Array.isArray(sizes)?sizes:[]).map(normalizeFootwearSize).filter(Boolean))].sort(_szCompare);
 
 // Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
