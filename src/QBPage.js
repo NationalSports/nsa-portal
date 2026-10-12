@@ -2,6 +2,7 @@ import StripePaymentVerification from './StripePaymentVerification';
 import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
 import QBServerReviewCard from './QBServerReviewCard';
 import QBBackgroundSalesCard from './QBBackgroundSalesCard';
+import StripePayoutAutomation from './StripePayoutAutomation';
 import QBPayableServerReviewCard from './QBPayableServerReviewCard';
 import QBAuditExportCard from './QBAuditExportCard';
 import {supabase} from './lib/dbEngine';
@@ -220,7 +221,7 @@ export default function QBPage(){
   };
   const exportStripePayoutCsv=()=>{
     const detail=stripePayoutDetail;if(!detail?.payout)return;
-    const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Posting Account Key','Tax State','Amount Cents','QBO Ready'];
+    const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Account Mapping','Tax State','Amount Cents','Component Mapping Check'];
     const rows=(detail.qbo_entries||[]).map(e=>[detail.payout.stripe_payout_id,e.stripe_balance_transaction_id,e.webstore_order_id||'',e.entry_type,e.posting_account_key,e.tax_state||'',e.amount_cents,e.qbo_ready?'Yes':'No']);
     const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
     const csv=[head,...rows].map(row=>row.map(esc).join(',')).join('\r\n');
@@ -919,6 +920,15 @@ export default function QBPage(){
       nf('🔄 QB Sync: '+log.details.length+' items processed');
     };
 
+    const stripePayoutAccountChoiceMap=new Map();
+    Object.entries(qbConfig.preflight?.accounts||{}).forEach(([key,account])=>{
+      const types=QB_ACCOUNT_SPECS[key]?.types||[];
+      if(!account?.id||!types.some(type=>type==='Bank'||type==='Expense'))return;
+      const id=String(account.id),existing=stripePayoutAccountChoiceMap.get(id);
+      stripePayoutAccountChoiceMap.set(id,{...account,id,types:[...new Set([...(existing?.types||[]),...types])]});
+    });
+    const stripePayoutAccountChoices=[...stripePayoutAccountChoiceMap.values()];
+
     return(<>
       {/* Deployment marker: forces a fresh lazy-loaded QBO chunk after the
           account-reference payload hardening shipped. */}
@@ -1442,13 +1452,14 @@ export default function QBPage(){
       {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
       {qbTab==='stripe'&&<>
         <StripePaymentVerification />
+        <StripePayoutAutomation accountChoices={stripePayoutAccountChoices}/>
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
             <h2>Stripe Payout Reconciliation</h2>
             <button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={loadStripePayouts}>{stripePayoutLoading?'Loading...':'Refresh'}</button>
           </div>
           <div className="card-body">
-            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payout activity can be reviewed and exported here. Eligible payouts can also be posted as QuickBooks bank deposits through the optional automation above; unmatched payments, refunds, disputes, and mixed payouts stay in review.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:10,marginBottom:10,background:stripeWebhookStatus?.healthy?'#f0fdf4':'#fffbeb',border:'1px solid '+(stripeWebhookStatus?.healthy?'#bbf7d0':'#fde68a'),borderRadius:7,fontSize:11}}>
               <div><strong>Live webhook:</strong> {stripeWebhookStatus?.healthy?'all payment, refund, dispute, and payout events covered':stripeWebhookStatus?.error?'could not verify — '+stripeWebhookStatus.error:stripeWebhookStatus?'missing '+(stripeWebhookStatus.missing_events||[]).join(', '):'checking Stripe configuration...'}</div>
               <div style={{display:'flex',gap:6}}>{stripeWebhookStatus&&!stripeWebhookStatus.healthy&&!stripeWebhookStatus.error&&<button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={repairStripeWebhookEvents}>Add missing events</button>}<button className="btn btn-primary btn-sm" disabled={stripePayoutLoading} onClick={runStripeHistoricalBackfill}>{stripePayoutLoading&&stripeBackfill?.phase&&stripeBackfill.phase!=='done'?'Backfill running...':'Run full historical backfill'}</button></div>
@@ -1480,10 +1491,10 @@ export default function QBPage(){
           </div>
         </div>
         {stripePayoutDetail&&<div className="card" style={{marginBottom:16}}>
-          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>QBO-ready entries — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
-          <div style={{padding:'9px 14px',fontSize:11,background:stripePayoutDetail.qbo_ready?'#f0fdf4':'#fffbeb',color:stripePayoutDetail.qbo_ready?'#166534':'#92400e',borderBottom:'1px solid #e2e8f0'}}>{stripePayoutDetail.qbo_ready?'All entries have deterministic semantic account routing. Resolve live QBO account IDs before posting.':'Contains review_required activity (such as an unlinked charge, refund, dispute, or amount mismatch). Resolve it before creating a QBO deposit.'}</div>
-          <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account key</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
-            {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{e.posting_account_key}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>Stripe payout reconciliation detail — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
+          <div style={{padding:'9px 14px',fontSize:11,background:'#eff6ff',color:'#1e3a8a',borderBottom:'1px solid #e2e8f0'}}>This detail and CSV help reconcile Stripe activity. They are not instructions to post settlement for invoices already synced to QuickBooks. Deposit eligibility is reported in the automation above.</div>
+          <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account mapping</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
+            {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{String(e.posting_account_key||'').replaceAll('_',' ')}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
           </tbody></table></div>
         </div>}
       </>}

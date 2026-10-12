@@ -1,3 +1,4 @@
+import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
@@ -38,6 +39,9 @@ import {stageDocumentBaseline,reconcileOutboxNotices} from './lib/documentSaveBa
 import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
+import AtOnceDashboard from './AtOnceDashboard';
+import { mainSalesOrders } from './lib/orderChannels';
+import useOrderStoreMetadata from './lib/useOrderStoreMetadata';
 import BarcodeScanner from './BarcodeScanner';
 import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta, findOverPromised, ifStockCoverage } from './itemFulfillment';
 import BotStatus from './BotStatus';
@@ -102,6 +106,7 @@ import { canReceivePayments } from './lib/receivePaymentsAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
+import { shouldAutoCloseInvoicedSO } from './lib/prepaidStoreFulfillment';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
@@ -2558,7 +2563,7 @@ export default function App(){
     [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
-    const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
+    const badSOs=soList.filter(s=>!(/^(?:(?:SO|247)-\d+|\d+)$/).test(s.id));
     if(badSOs.length>0){
       needsMigrate=true;
       const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));
@@ -6333,6 +6338,8 @@ export default function App(){
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
+  const[soView,setSOView]=useState('list');
+  const soStoreMetadata=useOrderStoreMetadata(sos,supabase,true);
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const recoveryEditorRef=React.useRef(null);
@@ -7553,10 +7560,11 @@ export default function App(){
   // billing. When the order is ALREADY fully billed (every line's qty covered by non-void
   // invoices — the same buildInvoicedQtyMap test that gates OrderEditor's "Close Sales
   // Order" button), leaving it there is a stale prompt that invites double-invoicing
-  // (SO-1149 / SO-1288, Aug 2026). So the moment production finishes or the last job
-  // ships on a fully-invoiced order, persist status='complete'. Deliberately never fires
-  // on under-invoiced orders — those must stay visible in the invoicing funnel, and
-  // orders whose invoices are later deleted are reverted by the delete handler, not here.
+  // (SO-1149 / SO-1288, Aug 2026). Native webstore invoices are paid at checkout, so
+  // invoice coverage cannot close those orders: they stay in the fulfillment workflow
+  // until calcSOStatus observes shipment/delivery. Deliberately never fires on
+  // under-invoiced orders — those must stay visible in the invoicing funnel, and orders
+  // whose invoices are later deleted are reverted by the delete handler, not here.
   const _autoClosedSOs=React.useRef(new Set());
   React.useEffect(()=>{
     if(dbLoading)return;
@@ -7572,7 +7580,7 @@ export default function App(){
         const qty=_szTot>0?_szTot:safeNum(it.est_qty);
         return qty-(invMap.get(soLineKey(it,idx))||0)>0;
       });
-      if(hasRemaining)return;
+      if(!shouldAutoCloseInvoicedSO(so,{status:st,hasInvoices:soInvs.length>0,hasRemainingQty:hasRemaining}))return;
       _autoClosedSOs.current.add(so.id);
       savSO({...so,status:'complete',updated_at:new Date().toLocaleString()});
       logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');
@@ -8920,8 +8928,9 @@ export default function App(){
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
             const openFrom=pk.created_at||so.created_at;
-            const openDays=openFrom?Math.max(0,Math.floor((new Date()-new Date(openFrom))/(1000*60*60*24))):null;
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,
+            const openAgeDays=openFrom?Math.max(0,(Date.now()-new Date(openFrom).getTime())/864e5):null;
+            const openDays=Number.isFinite(openAgeDays)?Math.floor(openAgeDays):null;
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,openAgeDays,quickPull:isQuickPull(so,soStoreMetadata.stores),
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
@@ -9065,6 +9074,7 @@ export default function App(){
         m._subTasks.push(sub);
         if(!m._skus.includes(t.sku))m._skus.push(t.sku);
         if(t.urgent)m.urgent=true;
+        m.openAgeDays=Math.max(m.openAgeDays||0,t.openAgeDays||0);m.openDays=Math.floor(m.openAgeDays);
         if(t.noDeco===false)m.noDeco=false;// any deco item makes the whole IF non-no-deco
       } else {
         const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
@@ -9073,7 +9083,7 @@ export default function App(){
       }
     });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    dedupPull.sort(compareWarehousePulls);shipTasks.sort(sortU);decoTasks.sort(sortU);
     return{pullTasks:dedupPull,shipTasks,decoTasks,deliverTasks};
   };
 
@@ -11991,8 +12001,13 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
-    // Filter SOs
-    let fSOs=[...sos];
+    const orderViewSwitch=<div className="ao-view-switch" aria-label="Sales order view"><button type="button" aria-pressed={soView==='list'} onClick={()=>setSOView('list')}>Sales orders</button><button type="button" aria-pressed={soView==='at_once'} onClick={()=>setSOView('at_once')}>At-Once / 24/7 dashboard</button><button type="button" aria-pressed={soView==='stores'} onClick={()=>setSOView('stores')}>Stores dashboard</button></div>;
+    if(['at_once','stores'].includes(soView))return<>{orderViewSwitch}<AtOnceDashboard key={soView} dashboard={soView} orders={sos} customers={cust} supabase={supabase} calcStatus={calcSOStatus} calcValue={so=>calcOrderMargin(so,sos).rev} onOpenOrder={so=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null)}}/></>;
+    if(soStoreMetadata.loading)return<>{orderViewSwitch}<p role="status">Loading sales orders…</p></>;
+    if(soStoreMetadata.error)return<>{orderViewSwitch}<p role="alert">Unable to separate store orders. <button className="btn btn-secondary" onClick={soStoreMetadata.retry}>Retry</button></p></>;
+    // List-only separation; all shared operational pages retain the full sos array.
+    const mainSOs=mainSalesOrders(sos,soStoreMetadata.stores);
+    let fSOs=[...mainSOs];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
     else if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
     const soRepId=soF.rep==='_me_'?cu?.id:soF.rep;
@@ -12004,14 +12019,15 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={booking:sos.filter(s=>calcSOStatus(s)==='booking').length,need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
+    const stCounts={booking:mainSOs.filter(s=>calcSOStatus(s)==='booking').length,need_order:mainSOs.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:mainSOs.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:mainSOs.filter(s=>calcSOStatus(s)==='items_received').length,in_production:mainSOs.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:mainSOs.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:mainSOs.filter(s=>calcSOStatus(s)==='complete').length};
     const activeFilters=(soF.status!=='all'&&soF.status!=='active')||soF.rep!=='all'||soF.search;
 
     return(<>
+      {orderViewSwitch}
       {/* Clickable status stat cards */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='active'||soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'active'}))}>
-          <div className="stat-label">Active</div><div className="stat-value">{sos.length-stCounts.complete}</div></div>
+          <div className="stat-label">Active</div><div className="stat-value">{mainSOs.length-stCounts.complete}</div></div>
         {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'active':'booking'}))}>
           <div className="stat-label">Booking</div><div className="stat-value" style={{color:'#4338ca'}}>{stCounts.booking}</div></div>}
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'active':'need_order'}))}>
@@ -20524,8 +20540,8 @@ export default function App(){
           seen[key]=g;out.push(g);
         }
       });
-      // Sort: urgent (due-soon) pinned on top, then oldest-first by days open.
-      out.sort((a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(b.openDays||0)-(a.openDays||0)});
+      // Aging protection first, then 24/7 Quick Pulls in the same queue.
+      out.sort(compareWarehousePulls);
       return out;
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
@@ -21692,6 +21708,7 @@ export default function App(){
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
+        <div style={{fontSize:12,color:'#475569',marginBottom:10}}>Pulls waiting more than 5 days come first, then 24/7 Quick Pulls. Confirm each physical pull before production.</div>
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         (()=>{
         // Bulk reject. Selection is intersected with the VISIBLE rows, so changing the search
@@ -21728,7 +21745,7 @@ export default function App(){
             onClick={t.pickId?_rowNav({pg:'item_fulfillment',if:t.pickId},()=>openIF(t.pickId)):()=>setWhViewIF(t)}>
             <td style={{textAlign:'center'}} onClick={e=>e.stopPropagation()}>{t.pickId?<input type="checkbox" checked={whSelIFs.has(t.pickId)} onChange={e=>toggle(t.pickId,e.target.checked)}/>:null}</td>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
-            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}{t.quickPull&&<div style={{fontSize:10,color:'#0f766e',fontWeight:800}}>24/7 · Quick Pull</div>}{t.openAgeDays>5&&<div style={{fontSize:10,color:'#b45309'}}>Waiting over 5 days</div>}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>

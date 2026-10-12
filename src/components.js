@@ -600,7 +600,10 @@ function calcSOStatus(ord,opts){
   if(allJobsShipped){
     const totalJobUnits=boardJobs.reduce((a,j)=>a+safeNum(j.total_units),0);
     const shippedUnits=(ord._shipments||[]).reduce((a,shp)=>a+(shp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
-    if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
+    const prepaidStore=!!ord.webstore_id&&!ord.omg_store_id;
+    // Store job flags alone cannot replace source-line shipment reconciliation.
+    // The server closes prepaid orders after their confirmed source quantities ship.
+    if((totalJobUnits>0&&shippedUnits>=totalJobUnits)||(!prepaidStore&&!ord._shipments))return'complete';
     // Partial shipment — jobs marked shipped but units remain
     return isPromo?'complete':'ready_to_invoice';
   }

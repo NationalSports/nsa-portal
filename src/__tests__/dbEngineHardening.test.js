@@ -1164,6 +1164,27 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
 });
 
 // ── Header-decision guard: a version-conflicted SO save keeps po_number and completed status ──
+describe('_dbSaveSOInner — store-number collisions never enter the main SO sequence', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  test('an unsaved store-number collision is refused instead of being reminted as SO-N', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [{ data: { id: '1010042', created_at: 'other-order', updated_at: 'x' }, error: null }],
+    };
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const order = { id: '1010042', created_at: 'this-order', items: [], jobs: [], art_files: [], firm_dates: [] };
+
+    expect(await _dbSaveSO(order)).toBe(false);
+    expect(order.id).toBe('1010042');
+    expect(__mockState.calls.some(call => call.table === 'sales_orders' && call.method === 'upsert')).toBe(false);
+    expect(__mockState.calls.some(call => call.table === 'RPC' && call.method === 'save_sales_order_atomic')).toBe(false);
+  });
+});
+
+// ── Header-decision guard: a version-conflicted SO save keeps po_number and completed status ──
 describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number / complete)', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });

@@ -4,6 +4,10 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './tra
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
   expect(b.purchasing.enabled).toBe(false); expect(b.purchasing.minimum_cents).toBe(20000); expect(b.target_ship_days).toBe(14);
+  expect(b.production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: true } }).production.auto_release_enabled).toBe(true);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 'true' } }).production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 1 } }).production.auto_release_enabled).toBe(false);
   expect(normalizeAllSchoolSettings({ dtf: { supplier_id: 'Astra' } }).dtf).toEqual({ supplier_id: 'Astra', auto_send: false });
   expect(normalizeAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch' } }).first_logo_by_style).toEqual({ hoodie: 'arch' });
   expect(validateAllSchoolSettings(b)).toBe('');

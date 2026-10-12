@@ -24,9 +24,13 @@ jest.mock('../../netlify/functions/_webstoreEmail', () => ({
   sendOrderConfirmation: jest.fn().mockResolvedValue(undefined),
   bumpCouponUse: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock('../../netlify/functions/teamshop-auto-po', () => ({
+  generateForSoSafe: jest.fn().mockResolvedValue({ ok: true }),
+}));
 
 const checkout = require('../../netlify/functions/webstore-checkout');
 const stripeMock = require('stripe');
+const autoPoMock = require('../../netlify/functions/teamshop-auto-po');
 
 // Scripted fake supabase — identical shape to webstoreCheckoutIdempotency.test.js's
 // fakeSb: results consumed in order per "table.op" (or "rpc.<fn>") key, every call
@@ -181,6 +185,7 @@ describe('finalize — post-payment club conversion trigger', () => {
   beforeEach(() => {
     stripeMock.__pi.retrieve.mockReset();
     stripeMock.__pi.create.mockReset();
+    autoPoMock.generateForSoSafe.mockClear();
   });
 
   test('paid club order (unconverted) calls create_club_sales_order with the order id', async () => {
@@ -247,6 +252,97 @@ describe('finalize — post-payment club conversion trigger', () => {
     const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
     expect(res.statusCode).toBe(200);
     expect(sb.calls.some((c) => c.op === 'rpc' && c.table === 'create_club_sales_order')).toBe(false);
+  });
+});
+
+describe('finalize — All School checkout conversion', () => {
+  const PI_ID = 'pi_school_123';
+  const schoolOrder = (over={}) => ({
+    id: 'ord-school-1', store_id: 'st-school', stripe_pi_id: PI_ID,
+    order_source: 'all_school', so_id: null, status: 'pending_payment',
+    total: 60, buyer_email: null, ...over,
+  });
+
+  beforeEach(() => {
+    stripeMock.__pi.retrieve.mockReset();
+    stripeMock.__pi.create.mockReset();
+    autoPoMock.generateForSoSafe.mockClear();
+  });
+
+  test('verified successful capture converts the paid order and queues the SO purchasing helper', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 6000, metadata: { webstore_order_id: 'ord-school-1' } });
+    const order = schoolOrder();
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [order], error: null }],
+      'webstore_orders.update': [
+        { data: null, error: null },
+        { data: [{ id: order.id }], error: null },
+      ],
+      'rpc.create_all_school_sales_order': [{ data: { so_id: 'SO-1001', replayed: false }, error: null }],
+    });
+    const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(200);
+    expect(stripeMock.__pi.retrieve).toHaveBeenCalledWith(PI_ID);
+    expect(sb.calls.find(call => call.op === 'rpc' && call.table === 'create_all_school_sales_order')?.payload)
+      .toEqual({ p_order_id: order.id });
+    expect(autoPoMock.generateForSoSafe).toHaveBeenCalledWith(sb, 'SO-1001', 'webstore-checkout', 'webstore-checkout');
+    expect(sb.calls.find(call => call.table === 'webstore_orders' && call.op === 'update' && call.payload?.status === 'paid'))
+      .toBeDefined();
+  });
+
+  test('amount mismatch leaves the order unconverted', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 5999, metadata: {} });
+    const order = schoolOrder();
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [order], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(409);
+    expect(sb.calls.some(call => call.op === 'rpc' && call.table === 'create_all_school_sales_order')).toBe(false);
+    expect(sb.calls.some(call => call.op === 'update')).toBe(false);
+    expect(autoPoMock.generateForSoSafe).not.toHaveBeenCalled();
+  });
+
+  test('already-converted order replay does not duplicate conversion or auto-PO generation', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 6000, metadata: {} });
+    const order = schoolOrder({ status: 'batched', so_id: 'SO-1001' });
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [order], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(200);
+    expect(sb.calls.some(call => call.op === 'rpc' && call.table === 'create_all_school_sales_order')).toBe(false);
+    expect(autoPoMock.generateForSoSafe).not.toHaveBeenCalled();
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
+  test('conversion failure keeps the captured order paid and a finalize retry can convert it', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 6000, metadata: {} });
+    const first = schoolOrder();
+    const retry = schoolOrder({ status: 'paid' });
+    const sb = fakeSb({
+      'webstore_orders.select': [
+        { data: [first], error: null },
+        { data: [retry], error: null },
+      ],
+      'webstore_orders.update': [
+        { data: null, error: null }, { data: [], error: null },
+        { data: null, error: null }, { data: [{ id: retry.id }], error: null },
+      ],
+      'rpc.create_all_school_sales_order': [
+        { data: null, error: { message: 'temporary conversion failure' } },
+        { data: { so_id: 'SO-1001', replayed: false }, error: null },
+      ],
+    });
+    const firstRes = await checkout.finalize(sb, { orderId: first.id, stripePiId: PI_ID });
+    expect(firstRes.statusCode).toBe(200);
+    expect(JSON.parse(firstRes.body).ok).toBe(true);
+    expect(sb.calls.find(call => call.table === 'webstore_orders' && call.op === 'update' && call.payload?.status === 'paid'))
+      .toBeDefined();
+    expect(autoPoMock.generateForSoSafe).not.toHaveBeenCalled();
+
+    const retryRes = await checkout.finalize(sb, { orderId: retry.id, stripePiId: PI_ID });
+    expect(retryRes.statusCode).toBe(200);
+    expect(sb.calls.filter(call => call.op === 'rpc' && call.table === 'create_all_school_sales_order')).toHaveLength(2);
+    expect(autoPoMock.generateForSoSafe).toHaveBeenCalledTimes(1);
+    expect(stripeMock.__pi.retrieve).toHaveBeenCalledTimes(2);
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
   });
 });
 

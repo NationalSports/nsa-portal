@@ -17,6 +17,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 const rel = require('../../netlify/functions/teamshop-auto-release');
 const {
   artRecordProdReady, jobArtReady, jobFulfillment, jobReleasable, jobArtIds, hasDst, runRelease, jobDtfReady,
+  jobTransferCodes, clubTransferPullReady,
 } = rel;
 
 // ── Pure: art readiness ─────────────────────────────────────────────────────
@@ -101,6 +102,41 @@ test('jobReleasable requires BOTH gates', () => {
   expect(jobReleasable(job, () => ({ status: 'approved' }), ctxFull).ready).toBe(false); // art not prod-ready
 });
 
+describe('Club transfer-code pull readiness', () => {
+  const transferJob = {
+    deco_type: 'heat_press',
+    items: [{ item_idx: 0, deco_idxs: [4], sizes: { S: 2 } }],
+  };
+  const itemForIndex = () => ({ id: 11 });
+  const decorations = { 11: [
+    { deco_index: 3, type: 'heat_press', transfer_code: 'OTHER' },
+    { deco_index: 4, type: 'heat_press', transfer_code: 'CLUB-TRANSFER' },
+  ] };
+
+  test('reads only transfer codes attached to this job’s decoration indexes', () => {
+    expect(jobTransferCodes(transferJob, itemForIndex, decorations)).toEqual(['CLUB-TRANSFER']);
+  });
+
+  test('requires verified physical pull and matching code; legacy boolean alone is insufficient', () => {
+    const code = ['CLUB-TRANSFER'];
+    expect(clubTransferPullReady(transferJob, code, [{ transfers_pulled: false }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{ transfers_pulled: true }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{
+      transfers_pulled: true, transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: ['OTHER'],
+    }]).ready).toBe(false);
+    expect(clubTransferPullReady(transferJob, code, [{
+      transfers_pulled: true, transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: code,
+    }]).ready).toBe(true);
+  });
+
+  test('fails closed when transfer decoration readiness could not be loaded', () => {
+    expect(clubTransferPullReady(transferJob, [], [], false)).toMatchObject({ ready: false, reason: 'transfer_readiness_unavailable' });
+    expect(clubTransferPullReady(transferJob, [], [], true)).toMatchObject({ required: false, ready: true });
+  });
+});
+
 // ── DTF prints gate (00212) ──────────────────────────────────────────────────
 describe('jobDtfReady / DTF prints release gate', () => {
   test('non-DTF jobs never block; only received frees a tracked need', () => {
@@ -153,13 +189,20 @@ function makeAdmin(tables) {
       };
       return chain;
     },
-    rpc(fn, args) { const call = { fn, args }; rpcs.push(call); return Promise.resolve({ data: { ok: true }, error: null }); },
+    rpc(fn, args) {
+      const call = { fn, args }; rpcs.push(call);
+      const data = fn === 'all_school_materials_ready' ? { ready: true } : { ok: true };
+      return Promise.resolve({ data, error: null });
+    },
   };
   return admin;
 }
 
 const CUSTOMER = { id: 'CUST-1', art_files: [{ id: 'art-1', status: 'approved', prod_files_attached: true }] };
-const SO_ITEM = { id: 11, so_id: 'SO-1', item_index: 0, sizes: { S: 2 } };
+const SO_ITEM = { id: 11, so_id: 'SO-1', item_index: 0, sizes: { S: 2 }, recipe_snapshot: { art_files: [
+  { id: 'art-1', status: 'approved', prod_files_attached: true },
+  { id: 'art-2', status: 'approved', prod_files_attached: true },
+] } };
 const AUTO_JOB = { so_id: 'SO-1', id: 'JOB-1', art_status: 'art_complete', item_status: 'need_to_order', prod_status: 'hold', art_file_id: 'art-1', _art_ids: ['art-1'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
 const STAFF_JOB = { so_id: 'SO-1', id: 'JOB-2', art_status: 'art_complete', item_status: 'need_to_order', prod_status: 'hold', art_file_id: 'art-2', _art_ids: ['art-2'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
 
@@ -172,7 +215,8 @@ const CREATED_EVENTS = [
 function baseTables(overrides = {}) {
   return {
     teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
-    webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null },
+    webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'teamshop', store_id: 'STORE-1' }], error: null },
+    webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: {} }], error: null },
     sales_orders: { data: [{ id: 'SO-1', customer_id: 'CUST-1' }], error: null },
     so_jobs: { data: [AUTO_JOB, STAFF_JOB], error: null },
     job_stage_events: { data: CREATED_EVENTS, error: null },
@@ -193,6 +237,44 @@ describe('runRelease', () => {
     expect(admin.rpcs.length).toBe(0);
     expect(admin.updates.length).toBe(0);
     expect(s.note).toMatch(/false/);
+  });
+
+  test.each(['all_school','club'])('%s store opt-in releases ready jobs independently of global Team Shop setting and scope', async (source) => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'auto_art_only' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: source, store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:source, all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.enabled).toBe(true);
+    expect(s.all_school_stores).toBe(1);
+    // Includes staff-finished art although the legacy global scope is auto_art_only.
+    expect(s.released.map((r) => r.job_id).sort()).toEqual(['JOB-1', 'JOB-2']);
+    expect(admin.rpcs.filter((r) => r.fn === 'advance_job_stage')).toHaveLength(2);
+  });
+
+  test('All School fails closed unless its store has a boolean production opt-in', async () => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'all' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: { production: { auto_release_enabled: 'true' } } }], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.enabled).toBe(false);
+    expect(s.released).toEqual([]);
+    expect(admin.rpcs).toEqual([]);
+  });
+
+  test('All School opt-in still runs when global auto-art event lookup fails', async () => {
+    const admin = makeAdmin(baseTables({
+      teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+      job_stage_events: { data: null, error: { message: 'temporary read failure' } },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.released.map((r) => r.job_id).sort()).toEqual(['JOB-1', 'JOB-2']);
+    expect(admin.rpcs.filter((r) => r.fn === 'advance_job_stage')).toHaveLength(2);
   });
 
   test('auto_art_only: releases the born-art_complete job THROUGH advance_job_stage after setting item_status truth; excludes the staff job', async () => {
@@ -230,6 +312,33 @@ describe('runRelease', () => {
     expect(s.released).toEqual([]);
     expect(s.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'dtf_prints' }]);
     expect(admin.rpcs.length).toBe(0);
+  });
+
+  test('Club heat_press transfer job is held until its order has a verified matching stock pull', async () => {
+    const clubJob = { ...AUTO_JOB, deco_type: 'heat_press', items: [{ item_idx: 0, deco_idx: 4, sizes: { S: 2 } }] };
+    const baseClubTables = (orderPatch = {}) => baseTables({
+      webstore_orders: { data: [{
+        so_id: 'SO-1', order_source: 'club', store_id: 'STORE-1', transfers_pulled: false,
+        ...orderPatch,
+      }], error: null },
+      so_jobs: { data: [clubJob], error: null },
+      so_item_decorations: { data: [{ so_item_id: 11, deco_index: 4, type: 'heat_press', transfer_code: 'CLUB-TRANSFER' }], error: null },
+    });
+
+    const unpulled = makeAdmin(baseClubTables());
+    const held = await runRelease(unpulled, 'schedule');
+    expect(held.released).toEqual([]);
+    expect(held.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'transfer_pull_unverified' }]);
+    expect(unpulled.rpcs).toEqual([]);
+
+    const verified = makeAdmin(baseClubTables({
+      transfers_pulled: true,
+      transfers_pull_verified_at: '2026-10-11T00:00:00Z',
+      transfers_pull_verified_codes: ['CLUB-TRANSFER'],
+    }));
+    const released = await runRelease(verified, 'schedule');
+    expect(released.released.map((row) => row.job_id)).toEqual(['JOB-1']);
+    expect(verified.rpcs.filter((call) => call.fn === 'advance_job_stage')).toHaveLength(1);
   });
 
   test('the same DTF job releases once its prints are received', async () => {
