@@ -14571,7 +14571,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                     {labelMsg[o.id] && <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: /BOUGHT/.test(labelMsg[o.id]) ? 700 : 400, color: /^(Label created|Creating)/.test(labelMsg[o.id]) ? '#166534' : '#b91c1c' }}>{labelMsg[o.id]}</div>}
                     {/* Customer message thread — emails the buyer a link to read & reply. */}
                     <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
-                      <div style={{ padding: '8px 12px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#334155' }}>💬 Messages with {o.buyer_name || 'the customer'}</div>
+                      <div style={{ padding: '8px 12px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><span style={{ fontWeight: 700, fontSize: 12, color: '#334155' }}>💬 Messages with {o.buyer_name || 'the customer'}</span><BuyerContact order={o} /></div>
                       <div style={{ maxHeight: 200, overflowY: 'auto', padding: '8px 12px' }}>
                         {(msgsByOrder[o.id] || []).length === 0
                           ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No messages yet. Send one below — the customer gets an email with a link to read &amp; reply.</div>
@@ -14604,6 +14604,31 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
 }
 
 // Edit an order's line items (size/qty/remove) and issue refunds.
+// Buyer email/phone with a mailto link and a Copy button, so staff (e.g. accounting)
+// can contact a webstore buyer directly instead of only through the portal thread.
+function BuyerContact({ order, style }) {
+  const [copied, setCopied] = React.useState(false);
+  const email = order?.buyer_email || '';
+  const phone = order?.buyer_phone || '';
+  if (!email && !phone) return null;
+  const copy = (e) => {
+    e.stopPropagation();
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    try { navigator.clipboard.writeText(email).then(done).catch(() => window.prompt('Copy this email:', email)); }
+    catch { window.prompt('Copy this email:', email); }
+  };
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.5, color: '#334155', ...style }}>
+      {email && <>
+        <span aria-hidden="true">✉️</span>
+        <a href={`mailto:${email}`} style={{ color: '#1d4ed8', fontWeight: 600, wordBreak: 'break-all' }}>{email}</a>
+        <button type="button" onClick={copy} aria-label={`Copy ${email}`} style={{ padding: '2px 8px', fontSize: 11, borderRadius: 6, border: '1px solid #cbd5e1', background: copied ? '#dcfce7' : '#fff', color: copied ? '#166534' : '#334155', cursor: 'pointer' }}>{copied ? 'Copied' : 'Copy'}</button>
+      </>}
+      {phone && <span style={{ color: '#475569' }}>📞 <a href={`tel:${phone}`} style={{ color: '#475569' }}>{phone}</a></span>}
+    </div>
+  );
+}
+
 export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
   const initRows = editable.map((i) => {
@@ -14761,6 +14786,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
             {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
+            <BuyerContact order={order} style={{ marginTop: 4 }} />
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
               {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(billedTotal)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(billedTotal)}</span>}
               {Math.abs(billedTotal - (Number(order.total) || 0)) > 0.005 && <span style={{ color: '#64748b' }}> · current items {money(order.total)}</span>}
