@@ -216,7 +216,7 @@ function baseTables(overrides = {}) {
   return {
     teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
     webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'teamshop', store_id: 'STORE-1' }], error: null },
-    webstores: { data: [{ id: 'STORE-1', all_school_settings: {} }], error: null },
+    webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: {} }], error: null },
     sales_orders: { data: [{ id: 'SO-1', customer_id: 'CUST-1' }], error: null },
     so_jobs: { data: [AUTO_JOB, STAFF_JOB], error: null },
     job_stage_events: { data: CREATED_EVENTS, error: null },
@@ -239,11 +239,11 @@ describe('runRelease', () => {
     expect(s.note).toMatch(/false/);
   });
 
-  test('All School store opt-in releases ready jobs independently of global Team Shop setting and scope', async () => {
+  test.each(['all_school','club'])('%s store opt-in releases ready jobs independently of global Team Shop setting and scope', async (source) => {
     const admin = makeAdmin(baseTables({
       teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'auto_art_only' }], error: null },
-      webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
-      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+      webstore_orders: { data: [{ so_id: 'SO-1', order_source: source, store_id: 'STORE-1' }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:source, all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
     }));
     const s = await runRelease(admin, 'schedule');
     expect(s.enabled).toBe(true);
@@ -257,7 +257,7 @@ describe('runRelease', () => {
     const admin = makeAdmin(baseTables({
       teamshop_settings: { data: [{ auto_release_enabled: false, auto_release_scope: 'all' }], error: null },
       webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
-      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: 'true' } } }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: { production: { auto_release_enabled: 'true' } } }], error: null },
     }));
     const s = await runRelease(admin, 'schedule');
     expect(s.enabled).toBe(false);
@@ -269,7 +269,7 @@ describe('runRelease', () => {
     const admin = makeAdmin(baseTables({
       teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'auto_art_only' }], error: null },
       webstore_orders: { data: [{ so_id: 'SO-1', order_source: 'all_school', store_id: 'STORE-1' }], error: null },
-      webstores: { data: [{ id: 'STORE-1', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
+      webstores: { data: [{ id: 'STORE-1', org_type:'all_school', all_school_settings: { production: { auto_release_enabled: true } } }], error: null },
       job_stage_events: { data: null, error: { message: 'temporary read failure' } },
     }));
     const s = await runRelease(admin, 'schedule');

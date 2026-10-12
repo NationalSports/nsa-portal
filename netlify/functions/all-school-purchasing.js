@@ -21,8 +21,8 @@ function warehouseDestination() {
 }
 async function dispatchDedicated(admin, po, adapter) {
   if (!po || po.submission_state !== 'pending' || po.status !== 'draft') return { submitted: false, reason: 'not_pending' };
-  const vendorSetting = await admin.from('teamshop_auto_po_settings').select('auto_submit_enabled').eq('vendor', po.vendor).maybeSingle();
-  if (vendorSetting.error || vendorSetting.data?.auto_submit_enabled !== true) return { submitted: false, reason: 'vendor_disabled' };
+  const vendorSetting = await admin.from('teamshop_auto_po_settings').select('all_school_auto_submit_enabled').eq('vendor', po.vendor).maybeSingle();
+  if (vendorSetting.error || vendorSetting.data?.all_school_auto_submit_enabled !== true) return { submitted: false, reason: 'vendor_disabled' };
   const linesResult = await admin.from('purchase_order_lines').select('*').eq('po_id', po.id).order('id');
   if (linesResult.error) throw new Error('Could not read purchase allocations: ' + linesResult.error.message);
   const resolved = await adapter.resolveVendorPurchaseOrder({ purchaseOrder: po, lines: linesResult.data || [], shipTo: po.ship_to });

@@ -258,14 +258,14 @@ async function runRelease(admin, actor) {
   const sourceBySo = sources.sourceBySo || {};
   const storeBySo = sources.storeBySo || {};
   const allSchoolStoreIds = [...new Set(Object.entries(sourceBySo)
-    .filter(([, source]) => source === 'all_school')
+    .filter(([, source]) => ['club','all_school'].includes(source))
     .map(([soId]) => storeBySo[soId]).filter(Boolean))];
   const schoolStores = allSchoolStoreIds.length ? await safe('all_school_settings', async () => {
-    const r = await admin.from('webstores').select('id,all_school_settings').in('id', allSchoolStoreIds);
+    const r = await admin.from('webstores').select('id,org_type,source,all_school_settings').in('id', allSchoolStoreIds);
     if (r.error) throw r.error;
     return r.data || [];
   }, []) : [];
-  const enabledSchoolStoreIds = new Set(schoolStores.filter(allSchoolAutoReleaseEnabled).map((s) => s.id));
+  const enabledSchoolStoreIds = new Set(schoolStores.filter(s => s.source !== 'omg' && ['club','all_school'].includes(s.org_type) && allSchoolAutoReleaseEnabled(s)).map((s) => s.id));
   const allSchoolEnabled = enabledSchoolStoreIds.size > 0;
   const globalEnabled = globalSettingsAvailable && settings.autoReleaseEnabled;
   summary.enabled = globalEnabled || allSchoolEnabled;
@@ -279,9 +279,8 @@ async function runRelease(admin, actor) {
   // run independently of teamshop_settings.auto_release_enabled.
   const soIdMap = {};
   Object.entries(sourceBySo).forEach(([soId, source]) => {
-    if (source === 'all_school') {
-      if (enabledSchoolStoreIds.has(storeBySo[soId])) soIdMap[soId] = source;
-    } else if (globalEnabled) soIdMap[soId] = source;
+    if (['club','all_school'].includes(source) && enabledSchoolStoreIds.has(storeBySo[soId])) soIdMap[soId] = source;
+    else if (source !== 'all_school' && globalEnabled) soIdMap[soId] = source;
   });
   const soIds = Object.keys(soIdMap);
   if (!soIds.length) return summary;
@@ -302,7 +301,7 @@ async function runRelease(admin, actor) {
     if (r.error) throw r.error; return r.data || [];
   }, []);
   let jobs = jobsRes;
-  const optedInAllSchoolJobs = jobs.filter((j) => soIdMap[j.so_id] === 'all_school');
+  const optedInAllSchoolJobs = jobs.filter((j) => enabledSchoolStoreIds.has(storeBySo[j.so_id]));
 
   // Scope: auto_art_only -> keep only jobs BORN art_complete (trio #1 auto-art),
   // identified by their 'created' job_stage_event to_state.art_status.
@@ -320,9 +319,9 @@ async function runRelease(admin, actor) {
       return set;
     }, null);
     // If we could not read the events, do NOT release anything in this scope (conservative).
-    jobs = bornAutoArt ? jobs.filter((j) => soIdMap[j.so_id] === 'all_school' || bornAutoArt.has(j.so_id + '\u0000' + j.id)) : [];
+    jobs = bornAutoArt ? jobs.filter((j) => enabledSchoolStoreIds.has(storeBySo[j.so_id]) || bornAutoArt.has(j.so_id + '\u0000' + j.id)) : [];
     // The per-store All School opt-in covers staff-approved art jobs too; only
-    // legacy Team Shop / Club jobs use the global auto_art_only event filter.
+    // legacy jobs without a per-store opt-in use the global auto_art_only event filter.
     const included = new Set(jobs.map((j) => j.so_id + '\u0000' + j.id));
     optedInAllSchoolJobs.forEach((j) => {
       const key = j.so_id + '\u0000' + j.id;

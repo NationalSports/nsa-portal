@@ -52,10 +52,8 @@ begin
 end $$;
 revoke all on function public.complete_at_once_fulfillment() from public,anon,authenticated;
 
-drop trigger if exists at_once_shipment_completion on public.webstore_orders;
 create trigger at_once_shipment_completion after update of shipped_at on public.webstore_orders
 for each row execute function public.complete_at_once_fulfillment();
-drop trigger if exists at_once_production_completion on public.so_jobs;
 create trigger at_once_production_completion after update of prod_status on public.so_jobs
 for each row
 execute function public.complete_at_once_fulfillment();

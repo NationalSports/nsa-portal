@@ -30,8 +30,10 @@ r=await plan('SO-5','own-house','evaluate');assert.equal(r.reason,'covered');awa
 await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
+await db.exec(read('supabase/migrations/20261012153826_isolate_24_7_automation_controls.sql'));
+await db.exec(`update teamshop_auto_po_settings set auto_submit_enabled=false,all_school_auto_submit_enabled=true where vendor in ('SanMar','S&S Activewear','Momentec');`);
 const sid2='10000000-0000-0000-0000-000000000002', club='10000000-0000-0000-0000-000000000003';
-await db.exec(`insert into webstores(id,slug,name,org_type,all_school_settings) values('${sid2}','school2','School 2','all_school','{"purchasing":{"enabled":true}}'),('${club}','club','Club','club','{"purchasing":{"enabled":true}}');update product_inventory set quantity=0;update teamshop_auto_po_settings set auto_submit_enabled=true where vendor='Momentec';`);
+await db.exec(`insert into webstores(id,slug,name,org_type,all_school_settings) values('${sid2}','school2','School 2','all_school','{"purchasing":{"enabled":true}}'),('${club}','club','Club','club','{"purchasing":{"enabled":true}}');update product_inventory set quantity=0;update teamshop_auto_po_settings set all_school_auto_submit_enabled=true where vendor='Momentec';`);
 for(const [so,store,vendor] of [['GLOBAL-A',sid,'SanMar'],['GLOBAL-B',sid2,'SanMar'],['GLOBAL-CLUB',club,'SanMar'],['GLOBAL-M',sid2,'Momentec']]) {
  await db.query("insert into sales_orders(id,status) values($1,'need_order')",[so]);
  await db.query(`insert into so_items(so_id,item_index,product_id,sku,name,color,sizes) values($1,0,'P','PC61','Tee','Navy','{"M":20}')`,[so]);
