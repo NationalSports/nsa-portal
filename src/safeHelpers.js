@@ -496,30 +496,78 @@ export const soHasOpenShipWork = (so) =>
 // Resolved per size and per job-item (keyed by the job's items[] index) so the warehouse's
 // per-job Ready-to-Ship rows can subtract exactly what shipped for THAT job's garments.
 // jobShippedUnits is the sum of this map — one apportioning rule, no second copy to sync.
+// Root of a job's split family (a parent job plus the backorder / per-size slices peeled off it
+// via split_from). Guarded against cycles and missing parents.
+const splitFamilyRoot = (job, byId) => {
+  let cur = job, guard = 0; const seen = {};
+  while (cur && cur.split_from && byId[cur.split_from] && !seen[cur.id] && guard++ < 64) { seen[cur.id] = 1; cur = byId[cur.split_from]; }
+  return (cur && cur.id) || job?.id;
+};
 export const jobShippedSizes = (job, allJobs, shippedSizes) => {
   const jobs = safeArr(allJobs);
   const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
   const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
+  // Backorder / per-size split slices (split_from) partition one line just like art-split slices
+  // do, but carry no split_group. Without this, a 1-unit backorder slice was credited with the
+  // parent's whole shipped box (SO-1450 / SO-1588): Ready to Ship listed the order with no rows
+  // to pack, and Mark Shipped would have flipped a garment that never left the building.
+  // Family members claim shipped units root-first, then in job order.
+  const byId = {}; jobs.forEach(j2 => { if (j2 && j2.id) byId[j2.id] = j2; });
+  const root = job ? splitFamilyRoot(job, byId) : null;
+  const family = root ? jobs.filter(j2 => j2 && splitFamilyRoot(j2, byId) === root) : [];
+  const inFamily = family.length > 1;
+  const famOrdered = inFamily ? [...family.filter(j2 => j2.id === root), ...family.filter(j2 => j2.id !== root)] : [];
+  const famPos = famOrdered.findIndex(j2 => j2.id === job?.id);
+  const famBefore = famPos > 0 ? famOrdered.slice(0, famPos) : [];
   const out = {};
   safeArr(job?.items).forEach((gi, gidx) => {
     if (!gi) return;
     const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
     if (!shipped) return;
     const row = out[gidx] || (out[gidx] = {});
-    const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
+    const hasOwnSizes = gi.sizes && Object.keys(gi.sizes).length > 0;
+    const share = hasOwnSizes && (gi.split_group || inFamily) ? gi.sizes : null;
     if (!share) { Object.entries(shipped).forEach(([sz, v]) => { row[sz] = (row[sz] || 0) + safeNum(v); }); return; }
     Object.entries(share).forEach(([sz, want]) => {
       const w = safeNum(want);
       if (w <= 0) return;
       let avail = safeNum(shipped[sz]);
-      before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
-        if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
-      }));
+      if (gi.split_group) {
+        before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+          if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+        }));
+      } else {
+        famBefore.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+          if (g2 && g2.item_idx === gi.item_idx && !g2.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+        }));
+      }
       row[sz] = (row[sz] || 0) + Math.max(0, Math.min(w, avail));
     });
   });
   return out;
 };
+// What of THIS job is still physically left to pack, per job item (keyed by items[] index):
+// the job's own garments (a slice's own sizes, else the live SO line) minus what shipped for it.
+// The single source for both the Ready to Ship queue (whether a job shows, and its unit count)
+// and the card's rows — they used to disagree (queue used job.total_units, which drifts from
+// the real garments), leaving cards with a unit count but nothing to pack or clear (SO-1271).
+export const jobUnshippedSizes = (job, so, shippedSizes) => {
+  const items = safeItems(so);
+  const shippedByGi = jobShippedSizes(job, safeJobs(so), shippedSizes || shippedSizesByLine(so?._shipments));
+  const out = {};
+  safeArr(job?.items).forEach((gi, gidx) => {
+    if (!gi) return;
+    const base = (gi.sizes && Object.keys(gi.sizes).length) ? gi.sizes : safeSizes(items[gi.item_idx]);
+    const shipped = shippedByGi[gidx] || {};
+    const sizes = {};
+    Object.entries(base || {}).forEach(([sz, v]) => { const rem = safeNum(v) - safeNum(shipped[sz]); if (rem > 0) sizes[sz] = rem; });
+    if (Object.keys(sizes).length) out[gidx] = sizes;
+  });
+  return out;
+};
+export const jobUnshippedUnits = (job, so, shippedSizes) =>
+  Object.values(jobUnshippedSizes(job, so, shippedSizes))
+    .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
 export const jobShippedUnits = (job, allJobs, shippedSizes) =>
   Object.values(jobShippedSizes(job, allJobs, shippedSizes))
     .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);

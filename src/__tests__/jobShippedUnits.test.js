@@ -137,3 +137,59 @@ describe('jobShippedSizes', () => {
     expect(jobShippedUnits(a, [a], shippedSM)).toBe(sum);
   });
 });
+
+// Backorder / per-size split slices (split_from, no split_group) — Oct 2026 Ready to Ship cards
+// that listed a unit count with nothing to pack and couldn't be cleared.
+describe('backorder slices and jobUnshippedSizes', () => {
+  const { jobUnshippedSizes, jobUnshippedUnits } = require('../safeHelpers');
+
+  // SO-1450: line ordered XS:6; parent job owns XS:5 (shipped), backorder slice owns XS:1 (not shipped).
+  const so1450 = () => {
+    const parent = { id: 'JOB-1450-01', prod_status: 'shipped', total_units: 116,
+      items: [{ item_idx: 0, sku: 'PC850H', color: 'Forest Green', sizes: { L: 11, M: 22, S: 10, XL: 9, XS: 5 } }] };
+    const slice = { id: 'JOB-1450-01-S', split_from: 'JOB-1450-01', prod_status: 'completed', total_units: 1,
+      items: [{ item_idx: 0, sku: 'PC850H', color: 'Forest Green', sizes: { XS: 1 } }] };
+    return { parent, slice, so: {
+      items: [{ sku: 'PC850H', color: 'Forest Green', sizes: { L: 11, M: 22, S: 10, XL: 9, XS: 6 } }],
+      jobs: [parent, slice],
+      _shipments: [ship([{ sku: 'PC850H', color: 'Forest Green', sizes: { L: 11, M: 22, S: 10, XL: 9, XS: 5 } }])],
+    } };
+  };
+
+  test("a backorder slice is not credited with the parent's shipped box", () => {
+    const { slice, so } = so1450();
+    expect(jobUnshippedSizes(slice, so)).toEqual({ 0: { XS: 1 } });
+    expect(jobUnshippedUnits(slice, so)).toBe(1);
+  });
+
+  test('the parent still reads fully shipped', () => {
+    const { parent, so } = so1450();
+    expect(jobUnshippedUnits(parent, so)).toBe(0);
+  });
+
+  test('family claims root-first even when the slice is listed first', () => {
+    const { parent, slice, so } = so1450();
+    const flipped = { ...so, jobs: [slice, parent] };
+    expect(jobUnshippedUnits(slice, flipped)).toBe(1);
+    expect(jobUnshippedUnits(parent, flipped)).toBe(0);
+  });
+
+  test('once the backorder piece ships, the slice is covered', () => {
+    const { slice, so } = so1450();
+    so._shipments.push(ship([{ sku: 'PC850H', color: 'Forest Green', sizes: { XS: 1 } }]));
+    expect(jobUnshippedUnits(slice, so)).toBe(0);
+  });
+
+  test('remaining comes from real garments, not a drifted total_units (SO-1271)', () => {
+    const j = { id: 'JOB-1271-04', prod_status: 'shipped', total_units: 76, items: [{ item_idx: 0, sku: '212000', color: 'Default' }] };
+    const so = { items: [{ sku: '212000', color: 'Default', sizes: { L: 18, M: 8, XL: 12 } }], jobs: [j],
+      _shipments: [ship([{ sku: '212000', color: 'Default', sizes: { L: 18, M: 8, XL: 12 } }])] };
+    expect(jobUnshippedUnits(j, so)).toBe(0); // was 76 - 38 = 38 "units" with no rows
+  });
+
+  test('whole-line jobs without a family keep pre-existing behavior', () => {
+    const j = { id: 'J', items: [{ item_idx: 0, sku: 'A', color: 'B' }] };
+    const so = { items: [{ sku: 'A', color: 'B', sizes: { S: 3, M: 2 } }], jobs: [j], _shipments: [ship([{ sku: 'A', color: 'B', sizes: { S: 3 } }])] };
+    expect(jobUnshippedSizes(j, so)).toEqual({ 0: { M: 2 } });
+  });
+});
