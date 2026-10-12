@@ -1,3 +1,4 @@
+import { decoPoCost } from './lib/decoPoCost';
 import { inventoryPickCosts } from './lib/inventoryCosts';
 import InventoryCostDetails from './allSchool/InventoryCostDetails';
 import BatchPoReservationsNotice from './BatchPoReservationsNotice';
@@ -8,6 +9,7 @@ import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
 import {_hasActiveDocumentSave} from './lib/dbEngine';
+import {shouldAdoptServerCopy,adoptServerCopy} from './lib/editorServerAdopt';
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import { skusMissingRevColorWays, missingRevColorWaysMsg } from './safeHelpers';
 import JobGarmentMocks from './JobGarmentMocks';
@@ -52,7 +54,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeQtyIn, sizeKeyIn, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
@@ -176,7 +178,7 @@ function OeGarmentPoLines({item,szMeta,onOpenPo}){
             const c=OE_PO_SC[szSt];
             const tBl=d.blld[sz]||0,tPart=szSt==='in_transit'&&tBl<(v-cn),tPct=tPart?Math.round(tBl/(v-cn)*100):0;
             return<div key={sz} style={{minWidth:42,textAlign:'center',borderRadius:4,overflow:'hidden',border:'1px solid '+c.bd}}>
-              <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{sz}</div>
+              <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{item.is_footwear?normalizeFootwearSize(sz):sz}</div>
               <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:tPart?`linear-gradient(90deg,${c.bg} ${tPct}%,${OE_PO_SC.waiting.bg} ${tPct}%)`:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):(v-cn)}</div>
             </div>})}
         </div>
@@ -829,9 +831,21 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
       const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
       const poIdentity=JSON.stringify(safeItems(order).map(it=>[it.line_id||'',it.sku||'',it.color||'',(Array.isArray(it.po_lines)?it.po_lines:[]).map(pl=>pl?.po_id||pl)]));
-      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount+':'+poIdentity;
+      const key=order.id+':'+(order.updated_at||'')+':'+(order._version??'')+':'+pickCount+':'+poCount+':'+poIdentity;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
+      // Stranded-version heal (SO-2444, 2026-10-12). Another session saved this order while this tab sat
+      // open (an artist's seps upload re-saved it 6x overnight). The field merge below pulls in their
+      // art/job/pick/PO changes but never the newer _version, so this tab kept claiming the old base and
+      // save_sales_order_atomic rejected its FIRST edit as STALE_SO_WRITE every time, with no real
+      // conflict (the EST-2522 deadlock from lib/pollMergeRecency.js, in the SO editor). With no unsaved
+      // work here there is nothing to protect: adopt the server copy wholesale, _version included. Only
+      // session tombstones carry over, so an earlier deliberate deletion can't be resurrected. A dirty
+      // editor, a buffered size cell or an in-flight save keeps the field merge + save-path guards.
+      if(shouldAdoptServerCopy(o,order,{dirty:dirty||dirtyRef2.current,pendingSizing:Object.keys(sizingDraftRef.current).length>0,saving:_hasActiveDocumentSave(order.id)})){
+        setO(prev=>shouldAdoptServerCopy(prev,order,{dirty:dirtyRef2.current,pendingSizing:Object.keys(sizingDraftRef.current).length>0,saving:_hasActiveDocumentSave(order.id)})?adoptServerCopy(prev,order):prev);
+        return;
+      }
       const extJobs=safeJobs(order);
       const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
@@ -866,7 +880,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         const mergedPoIds=[...new Set([...(Array.isArray(prev._hydratedPoIds)?prev._hydratedPoIds:[]),...(Array.isArray(order._hydratedPoIds)?order._hydratedPoIds:[])])];
         const mergedPickIds=[...new Set([...(Array.isArray(prev._hydratedPickIds)?prev._hydratedPickIds:[]),...(Array.isArray(order._hydratedPickIds)?order._hydratedPickIds:[])])];
         return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:mergedArt,updated_at:order.updated_at,_hydratedPoIds:mergedPoIds,_hydratedPickIds:mergedPickIds}})
-    },[order.updated_at,order.items]);
+    },[order.updated_at,order.items,order._version]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
@@ -2194,8 +2208,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     }
     setEditPick({pickId:pickId||picks[0].pick.pick_id||'',picks});
   };
-  // Helper: effective PO committed qty for a size (ordered minus cancelled)
-  const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
+  // Helper: effective PO committed qty for a size (ordered minus cancelled). Matched by size, not
+  // spelling — a footwear PO line holding "10-" covers the line's "10.5" (see sizeQtyIn).
+  const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=sizeQtyIn(pk,sz);const cancelled=sizeQtyIn(pk.cancelled,sz);return a+(ordered-cancelled)},0);
   // First-come-first-serve inventory reservations. An OPEN (un-pulled) IF reserves the stock it claims
   // so no other IF — on this order or any other — can pull the same units. Pulled IFs are excluded
   // because pulling already drew down _inv; counting them here would double-subtract. Keyed by `${product_id}|${size}`.
@@ -3397,8 +3412,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // Per-line adjustability for this size: open (not received/billed) units on normal blanks
     // lines. Batch-queued and outside-deco lines stay locked — they're managed elsewhere.
     const _lineInfo=(pl)=>{
-      const ord=(pl[sz]||0)-((pl.cancelled||{})[sz]||0);
-      const locked=Math.max((pl.received||{})[sz]||0,(pl.billed||{})[sz]||0);
+      const ord=sizeQtyIn(pl,sz)-sizeQtyIn(pl.cancelled,sz);
+      const locked=Math.max(sizeQtyIn(pl.received,sz),sizeQtyIn(pl.billed,sz));
       const frozen=pl.status==='queued'||pl.po_type==='outside_deco';
       return{ord,locked,adj:frozen?0:Math.max(0,ord-locked),frozen};
     };
@@ -3428,7 +3443,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // rebalance (e.g. S 30→24, M 30→36) flows straight through to the vendor order.
       const lines=item.po_lines||[];
       let target=-1;
-      for(let pi=lines.length-1;pi>=0;pi--){const pl=lines[pi];if(_lineInfo(pl).frozen)continue;if((pl[sz]||0)>0||pl.status==='waiting'||pl.status==='ordered'||!pl.status){target=pi;break}}
+      for(let pi=lines.length-1;pi>=0;pi--){const pl=lines[pi];if(_lineInfo(pl).frozen)continue;if(sizeQtyIn(pl,sz)>0||pl.status==='waiting'||pl.status==='ordered'||!pl.status){target=pi;break}}
       const add=n-cur;
       if(target>=0){
         // Already-ordered size growing past its PO coverage: ask whether to push the extra units onto
@@ -3437,7 +3452,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         // a native confirm() whose OK/Cancel labels didn't map to them. Either button commits the new
         // quantity; dismissing the modal abandons the edit (the size input reverts to its old value).
         const poId=lines[target].po_id||'the PO';
-        const newPls=lines.map((pl,pi)=>{if(pi!==target)return pl;return _recalcLineStatus({...pl,[sz]:(pl[sz]||0)+add})});
+        // Grow the bucket the PO line already uses for this size ("10-" on a legacy footwear line).
+        const newPls=lines.map((pl,pi)=>{if(pi!==target)return pl;const k=sizeKeyIn(pl,sz);return _recalcLineStatus({...pl,[k]:(pl[k]||0)+add})});
         setPoAddModal({sz,n,add,poId,
           onAdd:()=>{_applySizes(newPls,sz+' increased to '+n+' — added '+add+' to '+poId);setPoAddModal(null);},
           onLeave:()=>{_applySizes(null);setPoAddModal(null);}});
@@ -4123,7 +4139,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem)});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
-    (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    (o.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
     // OMG team-store money model (set when an SO is pulled from an OMG store):
     //  • _omg_processing = the online-processing fee CHARGED TO PARENTS — it's
     //    revenue collected to cover fees, so it adds to rev (not cost).
@@ -6188,7 +6204,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             // run (szs): qty_only "Custom — no size breakdown" items use 'QTY', one-size items use
             // 'OSFA'. Walking szs alone then renders that bucket (and so the PO total) as blank dashes,
             // so fall back to the PO line's own size keys whenever they fall outside the run.
-            const poSzKeys=szKeysAll.every(k=>szs.includes(k))?szs:[...szKeysAll].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+            // Footwear: the size run (szs) is in the "10.5" spelling, but a PO line written from raw
+            // Adidas sizes holds "10-" — match those by size so the PO row stays under its columns
+            // (SO-1829 "PO 45000 FPUBBW" drew 6-/7-/12 under 4/4.5/5.5). Other lines read exact keys.
+            const _fw=!!item.is_footwear;const _q=(m,sz)=>_fw?sizeQtyIn(m,sz):((m||{})[sz]||0);
+            const poSzKeys=szKeysAll.every(k=>szs.includes(_fw?normalizeFootwearSize(k):k))?szs:[...new Set(_fw?szKeysAll.map(normalizeFootwearSize):szKeysAll)].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
             const totalOrd=szKeysAll.reduce((a,sz)=>a+(po[sz]||0),0);
             const totalRcvd=szKeysAll.reduce((a,sz)=>a+(rcvd[sz]||0),0);
             const totalBlld=szKeysAll.reduce((a,sz)=>a+((blld[sz]||0)),0);
@@ -6206,11 +6226,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 setEditPO({lineIdx:idx,poIdx:pi,po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:pi}]});
               }} title="Click to edit">{po.po_id||'PO'}:</span>
               <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
-              {poSzKeys.map(sz=>{const v=po[sz]||0;const r=isDS?(blld[sz]||0):(rcvd[sz]||0);const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
-                const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&(blld[sz]||0)>0)?'in_transit':'waiting';
+              {poSzKeys.map(sz=>{const v=_q(po,sz);const r=isDS?_q(blld,sz):_q(rcvd,sz);const cn=_q(cncl,sz);if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+                const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&_q(blld,sz)>0)?'in_transit':'waiting';
                 // Partly billed (some units shipped, rest still at the vendor): split the cell blue/yellow
                 // in proportion so a 1-of-4 shipment doesn't read as the whole size being in transit.
-                const tBl=blld[sz]||0;const tPart=szSt==='in_transit'&&tBl<(v-cn);const tPct=tPart?Math.round(tBl/(v-cn)*100):0;
+                const tBl=_q(blld,sz);const tPart=szSt==='in_transit'&&tBl<(v-cn);const tPct=tPart?Math.round(tBl/(v-cn)*100):0;
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
                   background:tPart?`linear-gradient(90deg,#dbeafe ${tPct}%,#fef3c7 ${tPct}%)`:szSt==='cancelled'?'#fef2f2':szSt==='received'||szSt==='shipped'?'#dcfce7':szSt==='in_transit'?'#dbeafe':szSt==='partial'?'#fef3c7':'#fef3c7',
                   color:szSt==='cancelled'?'#dc2626':szSt==='received'||szSt==='shipped'?'#166534':szSt==='in_transit'?'#1e40af':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):v-cn}</div>})}
@@ -7284,7 +7304,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
-                      <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
+                      <span style={{fontSize:9,color:'#94a3b8'}}>Internal — a transparent PNG here can be selected as Logo Detail in the job</span>
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
@@ -15056,7 +15076,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               // POs (and this PO's batch-queued lines) already cover. The lines being edited here are left
               // out, so their draft quantities can be measured against it.
               const _editIdx=new Set(draft.lines.filter(l=>!l.queued).map(l=>l.lineIdx+':'+l.poIdx));
-              const _ordOf=(i2,sz)=>{const it2=o.items[i2]||{};const szs=safeSizes(it2);return sz==='QTY'&&!Object.keys(szs).some(k=>safeNum(szs[k])>0)?safeNum(it2.est_qty):safeNum(szs[sz])};
+              const _ordOf=(i2,sz)=>{const it2=o.items[i2]||{};const szs=safeSizes(it2);return sz==='QTY'&&!Object.keys(szs).some(k=>safeNum(szs[k])>0)?safeNum(it2.est_qty):safeNum(sizeQtyIn(szs,sz))};
               const _needOf=(i2,sz)=>{const it2=o.items[i2]||{};const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const other=poCommitted((it2.po_lines||[]).filter((pl,pi)=>!_editIdx.has(i2+':'+pi)),sz);return Math.max(0,_ordOf(i2,sz)-picked-other)};
               // What this PO had for the size before the edit — an over-order that was already there isn't re-flagged.
               const _origOf=(i2,sz)=>poCommitted((o.items[i2]?.po_lines||[]).filter((pl,pi)=>_editIdx.has(i2+':'+pi)),sz);

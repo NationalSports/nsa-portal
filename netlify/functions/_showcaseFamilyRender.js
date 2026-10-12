@@ -23,7 +23,7 @@ function rect(value) {
   if (x < 0 || y < 0 || w < .01 || h < .01 || w > .3 || h > .3 || x + w > 1 || y + h > 1) throw new Error('Fabric sampling rectangle is outside its supplier photo');
   return value;
 }
-async function sampleFabric(bytes, patches, texture = 'solid') {
+async function sampleFabric(bytes, patches, texture = 'solid', colorway = '') {
   if (!Array.isArray(patches) || patches.length < 2 || patches.length > 8) throw new Error('At least two clean fabric samples are required');
   const { data, info: { width, height } } = await pixels(bytes);
   const samples = [];
@@ -41,10 +41,18 @@ async function sampleFabric(bytes, patches, texture = 'solid') {
   // color-name lookup or average the whole photo (which includes the backdrop).
   samples.sort((a, b) => a.reduce((v, c) => v + c, 0) - b.reduce((v, c) => v + c, 0));
   const mid = samples.slice(Math.floor(samples.length * .2), Math.ceil(samples.length * .8));
-  const result = { rgb: [0, 1, 2].map((c) => median(mid.map((p) => p[c]))), pixels: samples.length, patches };
+  // A heather color name is supporting evidence, never a replacement RGB value.
+  if (/\bheather(?:ed)?\b|\bmarled\b/i.test(colorway)) texture = 'heather';
+  const result = { texture, colorway, rgb: [0, 1, 2].map((c) => median(mid.map((p) => p[c]))), pixels: samples.length, patches };
   if (texture === 'heather') {
+    // Average the retained yarn tones rather than choosing the dark median.
+    // Keep the same outlier trim so stray background pixels cannot wash it out.
+    result.rgb = [0,1,2].map(c => Math.round(mid.reduce((sum,p) => sum+p[c],0)/mid.length));
     const [x,y,w,h] = rect(patches[0]);
-    const tile = await sharp(bytes).rotate().extract({left:Math.floor(x*width),top:Math.floor(y*height),width:Math.floor(w*width),height:Math.floor(h*height)}).resize(64,64).greyscale().raw().toBuffer();
+    const tw = Math.min(64,Math.floor(w*width)), th = Math.min(64,Math.floor(h*height));
+    // Crop at native resolution: shrinking an entire patch averages the light
+    // and dark yarn together and turns black heather into nearly solid black.
+    const tile = await sharp(bytes).rotate().extract({left:Math.floor(x*width),top:Math.floor(y*height),width:tw,height:th}).resize(64,64).greyscale().raw().toBuffer();
     const smooth = await sharp(tile,{raw:{width:64,height:64,channels:1}}).blur(2).greyscale().raw().toBuffer();
     // Sharp expands a one-channel raw input to RGB unless explicitly converted
     // back to greyscale. Subtracting RGB bytes by pixel index creates false bands.

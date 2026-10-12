@@ -35,6 +35,21 @@ export const logoColorWayOptions = art => safeArr(art?.color_ways).filter(c => c
   id: c.id, label: c.garment_color || c.name || ('Color way ' + (i + 1)), colors: safeArr(c.inks).join(', '), url: logoDetailUrl(art, c.id),
 }));
 
+// Production PNGs are only candidates: a user must choose the right file for this artwork
+// version, and the UI verifies transparency before making it customer-visible.
+export const productionLogoCandidates = art => {
+  const seen = new Set();
+  return safeArr(art?.prod_files).map(f => {
+    const url = safeStr(typeof f === 'string' ? f : f?.url);
+    const name = safeStr(typeof f === 'string' ? '' : f?.name) || url.split('/').pop().split('?')[0] || 'Production PNG';
+    return { url, name };
+  }).filter(f => {
+    if (!f.url || (!/\.png(?:[?#]|$)/i.test(f.name) && !/\.png(?:[?#]|$)/i.test(f.url)) || seen.has(f.url)) return false;
+    seen.add(f.url);
+    return true;
+  });
+};
+
 // Persist the artist's explicit choice on the actual decorations, not just the PNG.
 // All-garments is opt-in and never silently replaces a different assigned version.
 export function assignLogoArtwork(order, { artId, colorWayId, garmentKey, side, allGarments = false, newVersion }) {

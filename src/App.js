@@ -1,7 +1,9 @@
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
+import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
+import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -53,7 +55,7 @@ import { _sbAuthLock } from './lib/supabase';
 import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
-import { startDeployReloadWatcher } from './deployReload';
+import { startDeployReloadWatcher, startStaleTabReload } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as fabric from 'fabric';
@@ -65,7 +67,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds } from './lib/logoDetail';
+import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -1572,7 +1574,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_bcHtml||'')+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_bcHtml||'')+(_jobBcHtml||'')+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // ── Production Work Order sheet options (National Team Shop layout) ──
@@ -3406,6 +3408,14 @@ export default function App(){
       hasFailedSaves:()=>_dbSaveFailedIds.size>0,
       isUserIdle:()=>document.hidden||Date.now()-_lastTabInput.t>120000,
       onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
+      onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
+    });
+    // A tab returned to after hours away (or after the computer slept) reloads before the user acts,
+    // so it never edits on an overnight copy of an order (SO-2444). Same safety hooks as above.
+    startStaleTabReload({
+      isBlocked:()=>qbSyncBusyRef.current,
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasUnsavedWork:_autoReloadHasUnsavedWork,
       onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
     });
     return()=>{['pointerdown','keydown','scroll'].forEach(ev=>window.removeEventListener(ev,_mark))};
@@ -5260,10 +5270,13 @@ export default function App(){
   const _eSOSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eSO){
     const fresh=sos.find(s=>s.id===eSO.id);if(!fresh)return;
-    const snapKey=fresh.id+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    const snapKey=fresh.id+':'+(fresh._version??'')+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
     if(snapKey===_eSOSnapRef.current)return;
     _eSOSnapRef.current=snapKey;
-    if(fresh!==eSO&&(JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
+    // A newer server _version alone must reach the editor too (SO-2444): another session's item-only
+    // save changed none of the fields below, so the open editor never learned the order had moved and
+    // its next edit was rejected as stale. The editor decides what to do with it (adopt when clean).
+    if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
   }},[sos]);
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
@@ -7464,15 +7477,15 @@ export default function App(){
   // dialogs: upload files[0], or remove removeUrl, then an art-only save. Returns false on failure.
   const logoOrdersRef=useRef(sos);logoOrdersRef.current=sos;
   const logoSaveLocks=useRef(new Set());
-  const saveLogoDetailFor=async(so,slot,{files,removeUrl}={})=>{
+  const saveLogoDetailFor=async(so,slot,{files,reuseFile,removeUrl}={})=>{
     if(logoSaveLocks.current.has(so.id)){nf('A logo is still saving on this order. Wait for it to finish, then retry.','error');return false}
     logoSaveLocks.current.add(so.id);
     try{
       if(slot.cwId===undefined)throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
-      const url=files?await fileUpload(files[0],'nsa-web-logos'):null;
+      const url=files?await fileUpload(files[0],'nsa-web-logos'):reuseFile?.url||null;
       const liveSO=logoOrdersRef.current.find(s=>s.id===so.id)||so;
       if(!safeArt(liveSO).some(a=>a.id===slot.artId))throw new Error('this artwork was removed');
-      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files[0].name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl,slot.cwId);
+      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files?.[0]?.name||reuseFile?.name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl,slot.cwId);
       const ok=await savArtFiles({...liveSO,art_files:updArt});
       if(ok===false)return false;
       // Mirror onto the customer's Art Library copy (webstores and the reuse picker read that one).
@@ -7489,14 +7502,14 @@ export default function App(){
   const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;
     // No decoration on the SO line: nothing to assign or attach a logo to until the rep adds it.
     if(slot.missingDeco){const b=logoDetailBackground(garment?.color,'',slot.side);return{url:'',needsColorWay:true,colorWays:[],bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
-      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),productionPngs:productionLogoCandidates(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
     onAssign:async choice=>{
       if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
       logoSaveLocks.current.add(so.id);
       try{const live=logoOrdersRef.current.find(s=>s.id===so.id)||so;const {order:updated}=assignLogoArtwork(live,{...choice,artId:slot.artId,garmentKey:garmentMockKey(garment),side:slot.side});const ok=await savSONow(updated);if(ok){logoOrdersRef.current=logoOrdersRef.current.map(s=>s.id===so.id?updated:s);nf('Artwork version assignment saved')}return ok;}
       finally{logoSaveLocks.current.delete(so.id)}
     },
-    onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
+    onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onUseProductionPng:(file,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{reuseFile:file}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
   // of the fire-and-forget onSave that silently claims "saved". Runs savSO's local-state update + all its
@@ -11769,6 +11782,10 @@ export default function App(){
       }
       return null;
     }
+    // Orphan guard (SO-2444): an entry whose garment line never reached its order would buy goods
+    // for nothing. Refuse before anything is ordered. A vendor-ACCEPTED order (apiResult) can't be
+    // undone, so it still records — the line-id backstop below reports anything it can't place.
+    if(!apiResult){const _orph=orphanedBatchEntries(pos,_sosNow);if(_orph.length){nf('Not ordered — '+_orph.length+' batch entr'+(_orph.length===1?'y is':'ies are')+' not on '+(_orph.length===1?'its sales order':'their sales orders')+' ('+_orph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+'). Remove '+(_orph.length===1?'it':'them')+' from the queue first.','error');return null}}
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
@@ -11839,6 +11856,7 @@ export default function App(){
       if(skipSoId&&soId===skipSoId)continue;
       const so=_sosNow.find(x=>x.id===soId);if(!so)throw new Error('Sales order was not found in the live order list');
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+      const _unplaced=[];
       bps.forEach(bp=>{
         let promoted=false;
         updatedItems.forEach(it=>{it.po_lines=it.po_lines.map(pl=>{
@@ -11851,7 +11869,9 @@ export default function App(){
         // the batch number by users or the billing matcher.
         if(!promoted){
           bp.items.forEach(bpIt=>{
-            const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+            // By line_id, never by position alone: a line that moved or never reached the order
+            // must not pin this PO onto a different garment (SO-2444). Legacy entries keep item_idx.
+            const idx=resolveBatchItemIndex(updatedItems,bpIt);if(idx<0){_unplaced.push(bpIt.sku+(bpIt.color?' '+bpIt.color:''));return}
             const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
             Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
@@ -11861,6 +11881,7 @@ export default function App(){
       });
       const saved=await savSONow({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
       if(!saved)throw new Error('database save returned false');
+      if(_unplaced.length)throw new Error('line(s) no longer on the order: '+_unplaced.join(', '));
     }catch(_promoErr){
       promotionFailed=true;
       // The vendor already accepted this order (or the rep already placed it) — never mask that
@@ -15088,6 +15109,29 @@ export default function App(){
       if(!window.confirm(itemIndex==null?'Remove this PO from the queue? Its sales-order items will remain.':'Remove '+bp.items[itemIndex].sku+' from this batch? Its sales-order item will remain.'))return;
       return saveQueueChange(bp,(current,so)=>planQueuedBatchRemoval(current,so,itemIndex),itemIndex==null?'PO removed from queue':'Item removed from batch');
     };
+    // Orphan removal (SO-2444). The order never received this entry's garment line, so there is no
+    // queued PO line to undo and the normal planner refuses ("linked queued PO could not be found").
+    // Confirm in the database that nothing links to this entry — this tab's order list could be stale —
+    // then drop only the queue entry.
+    const removeOrphanFromQueue=async(bp)=>{
+      if(bp.all_school_allocation_id)return;
+      if(!bp.po_id){nf('This entry has no PO number to verify against. Reload and try again.','error');return}
+      if(!window.confirm('Remove '+bp.po_id+' from the queue?\n\nIts garment line is not on '+bp.so_id+', so nothing on the order changes.'))return;
+      const groupKey=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');
+      if(_batchOrderingRef.current.has(groupKey)){nf('This batch is being saved or ordered. Please wait.','warn');return}
+      _batchOrderingRef.current.add(groupKey);setRemovingBatchId(bp.id);
+      try{
+        if(!supabase)throw new Error('A live database connection is required.');
+        const{data,error}=await supabase.from('so_item_po_lines').select('sizes').eq('po_id',bp.po_id);
+        if(error)throw new Error('Could not check the order: '+error.message+'.');
+        if(dbRowsLinkEntry(data,bp.id))throw new Error(bp.so_id+' does hold this PO line now — reload the page.');
+        const next=(_visFlushRefs.current.batchPOs||batchPOs).filter(b=>b.id!==bp.id);
+        _visFlushRefs.current={..._visFlushRefs.current,batchPOs:next};
+        setBatchPOs(next);setEditingBatchId(null);
+        nf(bp.po_id+' removed from the queue');
+      }catch(err){console.error('[removeOrphanFromQueue]',err);nf(err.message+' The queue entry was kept.','error')}
+      finally{_batchOrderingRef.current.delete(groupKey);setRemovingBatchId(null)}
+    };
     // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
     // (write-in address > decorator > drop-ship program address > NSA warehouse).
     // A batch whose lines belong at different addresses can't be one API order — an
@@ -15453,17 +15497,19 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header" onClick={()=>setExpandedVendors(p=>({[gk]:!p[gk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
-              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div>{_grpOrph.length>0&&<div style={{fontSize:11,fontWeight:700,color:'#b91c1c',marginTop:3}}>⚠ {_grpOrph.length} not on {_grpOrph.length===1?'its order':'their orders'} — open to fix</div>}</div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
-                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
+                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();if(_blockOrph())return;
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
@@ -15490,6 +15536,8 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -15498,7 +15546,8 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[gk]:false}))}>Collapse ▲</button>
           </div>
           <div className="card-body" style={{padding:0}}>
-            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
+            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;const _orphan=batchEntryLinkState(bp,sos.find(s=>s.id===bp.so_id))==='missing_line';return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':_orphan?'#fef2f2':'transparent'}}>
+              {_orphan&&<div role="alert" style={{marginBottom:8,padding:'7px 10px',borderRadius:6,border:'1px solid #fecaca',background:'white',fontSize:12,color:'#991b1b',fontWeight:600}}>⚠ Not on {bp.so_id}. This garment line never saved to the order, so ordering it would buy goods for nothing. Remove it from the queue (nothing on the order changes), then add it again from the order if it's still needed.</div>}
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
                 <div style={{minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -15510,13 +15559,13 @@ export default function App(){
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId||_orphan} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>_orphan?removeOrphanFromQueue(bp):removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  {!_orphan&&<button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>}
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -15579,6 +15628,7 @@ export default function App(){
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={async()=>{
+                if(_blockOrph())return;
                 if(!window.confirm('Create '+nextPO+' as a MANUAL order for '+vg.name+'?\n\nThis only records the PO in NSA. It does NOT send anything to the vendor. You must place the order manually with the company.'))return;
                 const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
@@ -15587,11 +15637,12 @@ export default function App(){
                 setPg('batch_pos');
               }}>Manual Order · {nextPO}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>{
+                if(_blockOrph())return;
                 // Decorator-bound group (vendor:decoId): the S&S order must ship to the
                 // DECORATOR with the DPO on the attention line — not the NSA warehouse. Resolve
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
@@ -15602,7 +15653,7 @@ export default function App(){
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -16077,7 +16128,7 @@ export default function App(){
     if(!it.is_free_promo){if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}}
     cost+=garmentCost(it).cost;
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,q,af,cq,_comb)})});
-    (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    (so.deco_pos||[]).forEach(dp=>{cost+=decoPoCost(dp)});
     // Shipping is a revenue and a cost (mirrors calcGP / calcOrderMargin): actual spend rolls
     // into cost, the charge to the customer offsets it, so margin only moves on an over/under-
     // quote or unbilled freight. `rev` stays product+deco — reports sum it as sales — so the

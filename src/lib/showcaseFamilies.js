@@ -1,5 +1,5 @@
 // Shared catalog identity: a supplier style, not a logo or color row.
-const FAMILY_VERSION = 'showcase-family-v1';
+const FAMILY_VERSION = 'showcase-color-design-v2';
 const compact = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 function baseStyle(item) {
   const sku = String(item.supplier_sku || item.sku || '').trim();
@@ -32,14 +32,14 @@ function groupShowcaseItems(items = []) {
     colors: [...new Set(group.items.map((item) => item.color).filter(Boolean))],
     designs: [...new Set(group.items.map((item) => item.variant_group_id || JSON.stringify((item.decorations || []).map((d) => d.art_id || d.art_url))))].length,
     working: group.items.some(({ asset }) => ['queued', 'generating'].includes(asset?.status)),
-    eligible: group.items.every((item) => item.kind !== 'bundle' && item.supplier_image_url),
+    eligible: group.items.some((item) => item.kind !== 'bundle' && item.supplier_image_url),
   }));
 }
 function needsFamilyGeneration(group) {
   return group.eligible && !group.working && group.items.some(({ asset, decorations }) => !asset
     || asset.family_version !== FAMILY_VERSION || asset.needs_regeneration
-    || ((decorations || []).some(d => d.side !== 'back' && d.placement !== 'full_back') && !['original-srgb-v1','source-hue-relief-v2'].includes(asset.qa_result?.artwork_color_policy))
-    || (decorations || []).filter(d => d.side !== 'back' && d.placement !== 'full_back').length > (asset.qa_result?.detail_images || []).length
+    || (asset.qa_result?.renderer_version !== 'color-design-v1' && ((decorations || []).some(d => d.side !== 'back' && d.placement !== 'full_back') && !['original-srgb-v1','source-hue-relief-v2'].includes(asset.qa_result?.artwork_color_policy)))
+    || (asset.qa_result?.renderer_version !== 'color-design-v1' && (decorations || []).filter(d => d.side !== 'back' && d.placement !== 'full_back').length > (asset.qa_result?.detail_images || []).length)
     || !['approved', 'review'].includes(asset.status) || asset.approval_status === 'rejected');
 }
 module.exports = { FAMILY_VERSION, baseStyle, familyKey, groupShowcaseItems, needsFamilyGeneration };

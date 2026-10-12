@@ -112,6 +112,7 @@ async function fetchRemoteImage(rawUrl, redirects = 0) {
   const url = await assertPublicImageUrl(rawUrl);
   const res = await fetch(url, {
     method: 'GET',
+    signal: AbortSignal.timeout(20000),
     redirect: 'manual',
     headers: { Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8' },
   });
@@ -268,7 +269,7 @@ function parseJsonObject(text) {
   throw new Error('Kimi returned an invalid analysis response');
 }
 
-async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt }) {
+async function analyzeWithKimi({ product, decorations, images, settings, storeArt, analysisPrompt, beforeAttempt }) {
   const config = getKimiConfig();
   if (!config.key) throw new Error('Kimi/Moonshot is not configured');
   const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
@@ -318,7 +319,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
     },
     ...images.map((image) => ({ type: 'image_url', image_url: { url: dataUrl(image) } })),
   ];
-  const res = await fetch(KIMI_URL, {
+  const payload = await require('./_showcaseAnalysisRequest').analysisRequest(KIMI_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.key}`,
@@ -336,9 +337,7 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
       response_format: { type: 'json_object' },
       thinking: { type: 'disabled' },
     }),
-  });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Kimi analysis failed (${res.status}): ${payload?.error?.message || 'unknown provider error'}`);
+  }, { beforeAttempt });
   const text = payload?.choices?.[0]?.message?.content;
   return {
     analysis: parseJsonObject(text),
@@ -419,7 +418,7 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
   ].filter(Boolean).join('\n');
 }
 
-async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt, editPrompt }) {
+async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt, editPrompt, quality = 'high' }) {
   const config = getOpenAiConfig();
   if (!config.key) throw new Error('OpenAI image generation is not configured');
   const prompt = editPrompt || buildEditPrompt(product, decorations, analysis, settings, storeArt);
@@ -430,7 +429,8 @@ async function generateWithOpenAI({ product, decorations, images, analysis, sett
   form.append('model', config.model);
   form.append('prompt', prompt);
   form.append('size', '1024x1024');
-  form.append('quality', 'high');
+  if (!['high','medium'].includes(quality)) throw new Error('Unsupported Showcase image quality');
+  form.append('quality', quality);
   form.append('output_format', 'png');
   form.append('n', '1');
   const res = await fetch(OPENAI_IMAGE_URL, {
@@ -447,6 +447,8 @@ async function generateWithOpenAI({ product, decorations, images, analysis, sett
     contentType: 'image/png',
     model: config.model,
     providerJobId: payload.id || null,
+    quality,
+    usage: payload.usage || null,
     prompt,
   };
 }

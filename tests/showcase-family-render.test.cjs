@@ -137,3 +137,15 @@ test('drawstring normalization accepts equivalent numbers without relaxing width
  assert.deepEqual(result[0].points[1],[.4,.3,.01]);
  assert.throws(()=>validateStrands([{points:[[.4,.2,.1],[.4,.3,.1],[.4,.4,.1]]}]),/point 1: width 0.1/);
 });
+
+test('large heather patches retain light yarn instead of averaging into solid black',async()=>{
+  const data=Buffer.alloc(512*512*3);
+  for(let y=0;y<512;y++)for(let x=0;x<512;x++)for(let c=0;c<3;c++)data[(y*512+x)*3+c]=((x*13+y*7)%11)<3?110:30;
+  const bytes=await sharp(data,{raw:{width:512,height:512,channels:3}}).png().toBuffer();
+  const sample=await sampleFabric(bytes,[[.1,.1,.25,.25],[.5,.5,.25,.25]],'solid','Black Heather');
+  assert.equal(sample.texture,'heather');
+  assert.ok(sample.rgb[0]>=39,'lighter yarn must contribute to the perceived base color');
+  assert.ok(sample.grain.filter(v=>v>20).length>400,'fine bright yarn survives large supplier patches');
+  const solid=await sampleFabric(bytes,[[.1,.1,.25,.25],[.5,.5,.25,.25]],'solid','Team Black');
+  assert.equal(solid.grain,undefined,'black alone must not invent heather');
+});
