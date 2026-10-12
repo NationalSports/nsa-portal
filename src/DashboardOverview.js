@@ -410,7 +410,7 @@ export default function DashboardOverview({
           <header className="dov2-card__head dov2-chart-head">
             <div>
               <span className="dov2-kicker">{chartMode === 'yoy' ? `${thisYear} vs ${thisYear - 1}` : 'Last 6 months'}</span>
-              <h3>{chartMode === 'yoy' ? 'Billed sales vs last year' : 'Sold vs billed'}</h3>
+              <h3>{chartMode === 'yoy' ? 'Sales vs last year' : 'Sold vs billed'}</h3>
             </div>
             <div className="dov2-seg" role="group" aria-label="Chart view">
               <button type="button" className={chartMode === 'yoy' ? 'is-on' : ''} aria-pressed={chartMode === 'yoy'} onClick={() => { setChartMode('yoy'); setHoverMonth(null); }}>vs last year</button>
@@ -420,7 +420,7 @@ export default function DashboardOverview({
           {chartMode === 'yoy' ? (
             <>
               <div className="dov2-chart-sub">
-                <span><b>{formatCompact(ytdThis)}</b> billed YTD</span>
+                <span><b>{formatCompact(ytdThis)}</b> sales YTD</span>
                 <Delta value={ytdPace} label={`vs ${formatCompact(ytdLast)} same point last year`} />
                 <div className="dov2-legend" aria-label="Legend">
                   <span><i style={{ background: SOLD }} />{thisYear}</span>
@@ -491,12 +491,12 @@ export default function DashboardOverview({
                 </div>
               </div>
               <table className="dov2-sr">
-                <caption>Billed sales by month, {thisYear} vs {thisYear - 1}</caption>
+                <caption>Sales by month, {thisYear} vs {thisYear - 1}</caption>
                 <thead><tr><th>Month</th><th>{thisYear}</th><th>{thisYear - 1}</th></tr></thead>
                 <tbody>{yoyRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{row.current === null ? '—' : MONEY.format(row.current)}</td><td>{MONEY.format(row.last)}</td></tr>)}</tbody>
               </table>
               <div className="dov2-card__foot">
-                <span>Billed = invoices by invoice date{historicalInvoices.length === 0 ? ' · NetSuite history still loading or unavailable' : ''}</span>
+                <span>Sales = invoiced, by invoice date{historicalInvoices.length === 0 ? ' · NetSuite history still loading or unavailable' : ''}</span>
                 <button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Full report →</button>
               </div>
             </>
