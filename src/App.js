@@ -10012,6 +10012,8 @@ export default function App(){
     ];
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
     const _dashActionSource=(isAdmin?adminTodos:myTodos).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+    // Art to-dos live in the homepage's Art tab (new UI) instead of the priority list, so nothing shows twice.
+    const _DASH_ART_TYPES=['art','coach_followup','art_rejected','items_received_needs_art','prod_files','order_dtf'];
     const _dashPriorityItems=[
       ..._dashActionSource.map(t=>({...t,_priorityKind:'generated'})),
       ...myAssignedTodos.map(t=>({
@@ -10183,7 +10185,11 @@ export default function App(){
       jobs={sos.flatMap(so=>safeJobs(so).filter(job=>!isOutsideArtJob(job)).map(job=>({...job,_soId:so.id})))}
       actionCount={_dashPriorityItems.length}
       unreadCount={unreadMsgs.length}
-      priorityItems={_dashPriorityItems.slice(0,5)}
+      priorityItems={_dashPriorityItems.filter(t=>!_DASH_ART_TYPES.includes(t.type)).slice(0,5)}
+      priorityTotal={_dashPriorityItems.filter(t=>!_DASH_ART_TYPES.includes(t.type)).length}
+      artItems={_dashPriorityItems.filter(t=>_DASH_ART_TYPES.includes(t.type))}
+      onOpenOrder={so=>{setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id)||null);setPg('orders')}}
+      onOpenInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}}
       calcStatus={calcSOStatus}
       calcMargin={calcOrderMargin}
       onNavigate={setPg}

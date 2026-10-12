@@ -124,9 +124,14 @@ export default function DashboardOverview({
   onOpenPriority,
   onOpenEstimate,
   onOpenCustomer,
+  onOpenOrder,
+  onOpenInvoice,
+  artItems = [],
+  priorityTotal,
   defaultChartMode = 'yoy',
 }) {
   const [hoverMonth, setHoverMonth] = useState(null);
+  const [sideTab, setSideTab] = useState('invoice'); // right of the to-do: 'invoice' | 'pastdue' | 'art'
   const [chartMode, setChartMode] = useState(defaultChartMode); // 'yoy' = billed this year vs last (default) | 'sold' = sold vs billed
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -272,6 +277,41 @@ export default function DashboardOverview({
   }));
   const stageTotal = stages.reduce((sum, stage) => sum + stage.value, 0);
 
+  // ── Ready to invoice: orders whose status says invoice-ready, minus what's already invoiced ──
+  const invoicedBySo = new Map();
+  invoices.forEach((invoice) => {
+    if (!invoice || invoice.status === 'void' || invoice.deleted_at || !invoice.so_id) return;
+    invoicedBySo.set(invoice.so_id, (invoicedBySo.get(invoice.so_id) || 0) + (Number(invoice.total) || 0));
+  });
+  const readyToInvoice = activeOrders
+    .filter((order) => calcStatus?.(order) === 'ready_to_invoice')
+    .map((order) => ({ order, customer: customerById.get(order.customer_id), value: Math.max(0, orderRev(order) - (invoicedBySo.get(order.id) || 0)) }))
+    .filter((row) => row.value > 0.005) // already fully invoiced → nothing left to bill, don't list it
+    .sort((a, b) => b.value - a.value);
+  const readyTotal = readyToInvoice.reduce((sum, row) => sum + row.value, 0);
+
+  // ── Past-due invoices: open balance past the due date (due_date, else invoice date + terms) ──
+  const pastDue = invoices
+    .filter((invoice) => invoice && invoice.status !== 'void' && invoice.status !== 'paid' && !invoice.deleted_at)
+    .filter((invoice) => {
+      if (!scopedToUser) return true;
+      const parent = orderById.get(invoice.so_id);
+      const repId = invoice.rep_id || (parent ? orderRepId(parent) : customerById.get(invoice.customer_id)?.primary_rep_id);
+      return repId === user?.id;
+    })
+    .map((invoice) => {
+      const customer = customerById.get(invoice.customer_id);
+      const balance = (Number(invoice.total) || 0) - (Number(invoice.paid) || 0);
+      const invDate = parsePortalDate(invoice.date || invoice.created_at);
+      const terms = String(customer?.payment_terms || 'net30');
+      const termDays = /prepay|due/i.test(terms) ? 0 : parseInt((terms.match(/\d+/) || ['30'])[0], 10) || 30;
+      const due = parsePortalDate(invoice.due_date) || (invDate ? new Date(invDate.getTime() + termDays * DAY) : null);
+      return { invoice, customer, balance, daysLate: due ? Math.floor((today - due) / DAY) : 0 };
+    })
+    .filter((row) => row.balance > 0.005 && row.daysLate > 0)
+    .sort((a, b) => b.balance - a.balance);
+  const pastDueTotal = pastDue.reduce((sum, row) => sum + row.balance, 0);
+
   // ── Chart scale ──
   const curMonth = now.getMonth();
   const yoyRows = Array.from({ length: 12 }, (_, m) => ({
@@ -364,45 +404,121 @@ export default function DashboardOverview({
         </button>
       </div>
 
-      {/* ═══ Priority to-do ═══ */}
-      <article className="dov2-card dov2-priority" aria-labelledby="dov2-priority-title">
-        <header className="dov2-card__head">
-          <div>
-            <span className="dov2-kicker">Start here</span>
-            <h3 id="dov2-priority-title">Priority to-do</h3>
+      {/* ═══ Priority to-do (left) + money & art tabs (right) ═══ */}
+      <div className="dov2-split">
+        <article className="dov2-card dov2-priority" aria-labelledby="dov2-priority-title">
+          <header className="dov2-card__head">
+            <div>
+              <span className="dov2-kicker">Start here</span>
+              <h3 id="dov2-priority-title">Priority to-do</h3>
+            </div>
+            <span className="dov2-count">{priorityTotal ?? actionCount} open</span>
+          </header>
+          {priorityItems.length === 0 ? (
+            <div className="dov2-empty"><span aria-hidden="true">✓</span>You’re caught up — no action items need attention.</div>
+          ) : (
+            <div className="dov2-priority__list">
+              {priorityItems.map((item, index) => {
+                const priority = item.priority ?? 2;
+                const tone = priority <= 0 ? 'urgent' : priority === 1 ? 'high' : 'normal';
+                const label = priority <= 0 ? 'Urgent' : priority === 1 ? 'High' : 'Next';
+                return (
+                  <button
+                    type="button"
+                    className={`dov2-priority__item is-${tone}`}
+                    key={item.dismissKey || item.id || `${item.type}-${index}`}
+                    onClick={() => onOpenPriority?.(item)}
+                  >
+                    <span className="dov2-pill">{label}</span>
+                    <span className="dov2-priority__copy">
+                      <span>{item.msg}</span>
+                      <small>{item.detail || 'Open this item to continue.'}</small>
+                    </span>
+                    <span className="dov2-priority__action">{item.action || 'Open'} →</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(priorityTotal ?? actionCount) > priorityItems.length && (
+            <div className="dov2-card__foot">{(priorityTotal ?? actionCount) - priorityItems.length} more in the full queue below ↓</div>
+          )}
+        </article>
+
+        <article className="dov2-card dov2-side">
+          <div className="dov2-tabs" role="tablist" aria-label="Money and art">
+            {[
+              ['invoice', 'Ready to invoice', readyToInvoice.length],
+              ['pastdue', 'Past due', pastDue.length],
+              ['art', 'Art', artItems.length],
+            ].map(([key, label, n]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                id={`dov2-tab-${key}`}
+                aria-selected={sideTab === key}
+                aria-controls="dov2-side-panel"
+                className={sideTab === key ? 'is-on' : ''}
+                onClick={() => setSideTab(key)}
+              >
+                {label}<span className="dov2-tabs__n">{n}</span>
+              </button>
+            ))}
           </div>
-          <span className="dov2-count">{actionCount} open</span>
-        </header>
-        {priorityItems.length === 0 ? (
-          <div className="dov2-empty"><span aria-hidden="true">✓</span>You’re caught up — no action items need attention.</div>
-        ) : (
-          <div className="dov2-priority__list">
-            {priorityItems.map((item, index) => {
-              const priority = item.priority ?? 2;
-              const tone = priority <= 0 ? 'urgent' : priority === 1 ? 'high' : 'normal';
-              const label = priority <= 0 ? 'Urgent' : priority === 1 ? 'High' : 'Next';
-              return (
-                <button
-                  type="button"
-                  className={`dov2-priority__item is-${tone}`}
-                  key={item.dismissKey || item.id || `${item.type}-${index}`}
-                  onClick={() => onOpenPriority?.(item)}
-                >
-                  <span className="dov2-pill">{label}</span>
-                  <span className="dov2-priority__copy">
-                    <span>{item.msg}</span>
-                    <small>{item.detail || 'Open this item to continue.'}</small>
-                  </span>
-                  <span className="dov2-priority__action">{item.action || 'Open'} →</span>
-                </button>
-              );
-            })}
+          <div id="dov2-side-panel" role="tabpanel" aria-labelledby={`dov2-tab-${sideTab}`}>
+            {sideTab === 'invoice' && (
+              <>
+                <div className="dov2-side__sum"><b>{formatCompact(readyTotal)}</b> ready to bill across {readyToInvoice.length} order{readyToInvoice.length === 1 ? '' : 's'}</div>
+                {readyToInvoice.length === 0 ? <div className="dov2-empty is-small">Nothing waiting to be invoiced.</div> : (
+                  <div className="dov2-rows">
+                    {readyToInvoice.slice(0, 6).map(({ order, customer, value }) => (
+                      <button type="button" className="dov2-row" key={order.id} onClick={() => (onOpenOrder ? onOpenOrder(order) : onNavigate?.('invoices'))}>
+                        <span className="dov2-row__name">{customer?.name || order.id}<small>{order.id}{order.memo ? ` · ${order.memo}` : ''}</small></span>
+                        <b>{formatCompact(value)}</b>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {readyToInvoice.length > 6 && <div className="dov2-card__foot"><span>{readyToInvoice.length - 6} more</span><button type="button" className="dov2-link" onClick={() => onNavigate?.('invoices')}>Invoices →</button></div>}
+              </>
+            )}
+            {sideTab === 'pastdue' && (
+              <>
+                <div className="dov2-side__sum"><b>{formatCompact(pastDueTotal)}</b> past due across {pastDue.length} invoice{pastDue.length === 1 ? '' : 's'}</div>
+                {pastDue.length === 0 ? <div className="dov2-empty is-small">No past-due invoices.</div> : (
+                  <div className="dov2-rows">
+                    {pastDue.slice(0, 6).map(({ invoice, customer, balance, daysLate }) => (
+                      <button type="button" className="dov2-row" key={invoice.id} onClick={() => (onOpenInvoice ? onOpenInvoice(invoice) : onNavigate?.('invoices'))}>
+                        <span className={`dov2-age ${daysLate > 30 ? 'is-old' : ''}`}>{daysLate}d</span>
+                        <span className="dov2-row__name">{customer?.name || 'Unknown customer'}<small>{invoice.id}</small></span>
+                        <b>{formatCompact(balance)}</b>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {pastDue.length > 6 && <div className="dov2-card__foot"><span>{pastDue.length - 6} more</span><button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Receivables →</button></div>}
+              </>
+            )}
+            {sideTab === 'art' && (
+              <>
+                <div className="dov2-side__sum"><b>{artItems.length}</b> art item{artItems.length === 1 ? '' : 's'} need you</div>
+                {artItems.length === 0 ? <div className="dov2-empty is-small">No art waiting on you.</div> : (
+                  <div className="dov2-rows">
+                    {artItems.slice(0, 6).map((item, index) => (
+                      <button type="button" className="dov2-row" key={item.dismissKey || item.id || `${item.type}-${index}`} onClick={() => onOpenPriority?.(item)}>
+                        <span className="dov2-row__name">{item.msg}<small>{item.detail || ''}</small></span>
+                        <span className="dov2-priority__action">{item.action || 'Open'} →</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {artItems.length > 6 && <div className="dov2-card__foot"><span>{artItems.length - 6} more in the full queue below ↓</span></div>}
+              </>
+            )}
           </div>
-        )}
-        {actionCount > priorityItems.length && (
-          <div className="dov2-card__foot">{actionCount - priorityItems.length} more in the full queue below ↓</div>
-        )}
-      </article>
+        </article>
+      </div>
 
       {/* ═══ Sold vs billed ═══ */}
       <div className="dov2-grid">
