@@ -25,6 +25,8 @@
 // degrade to a centered callout with the instruction text, so nothing breaks
 // as we tag more elements over time.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { PriceListResults } from './VendorPriceLists';
+import { priceListCall } from './lib/vendorPriceLists';
 import { createPortal } from 'react-dom';
 
 const ENDPOINT = '/.netlify/functions/portal-assistant';
@@ -647,6 +649,15 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
     if (res.ok) { setMessages((prev) => [...prev, { id: `c${Date.now()}`, from: 'bot', kind: 'brief', brief: res.lines, briefTitle: `${res.name}${res.tag ? ` · ${res.tag}` : ''}`, briefAll: true }]); }
   }, [onCustomer360]);
 
+  const doVendorPricing = useCallback(async (spec) => {
+    try {
+      const result = await priceListCall('search', spec);
+      setMessages(prev => [...prev, { id: `vp${Date.now()}`, from: 'bot', kind: 'vendor_pricing', result }]);
+    } catch (e) {
+      setMessages(prev => [...prev, { id: `vp${Date.now()}`, from: 'bot', text: e.message || 'Vendor price-list search is unavailable.' }]);
+    }
+  }, []);
+
   const doVendorStock = useCallback(async (query) => {
     const pushBot = (t) => setMessages((prev) => [...prev, { id: `s${Date.now()}`, from: 'bot', text: t }]);
     if (!onVendorStock) { pushBot("I can't check vendor stock yet."); return; }
@@ -737,6 +748,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
     else if (a.type === 'adjust_inventory' && a.spec) doConfirmWrite(onAdjustInventory, a.spec, 'Inventory adjustments are admin-only.');
     else if (a.type === 'daily_brief') doBrief();
     else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
+    else if (a.type === 'vendor_pricing' && a.spec) doVendorPricing(a.spec);
     else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
     else if (a.type === 'start_estimate' && a.customer) doStartEstimate({ customer: a.customer, items: a.items });
     else if (a.type === 'report' && a.report) doReport(a.report);
@@ -744,7 +756,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
     else if (a.type === 'add_note' && a.note) doAddNote(a.note);
     else if (a.type === 'guide' && a.steps) doGuide(a.intro, a.steps);
     else if (a.type === 'find_products' && a.spec) doFindProducts(a.spec);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide, doFindProducts, doConfirmWrite, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory]);
+  }, [doVendorPricing, startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide, doFindProducts, doConfirmWrite, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory]);
 
   // As a guided walkthrough advances, move the user to each step's screen (desktop nav).
   // onNavigate is kept in a ref so this fires only when the step changes — not on every
@@ -894,6 +906,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, userRole, v
                 ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} onReorder={onReorder} />
                 : m.kind === 'brief'
                   ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} title={m.briefTitle} showAll={m.briefAll} />
+                  : m.kind === 'vendor_pricing'
+                    ? <div key={m.id} className="nsa-as-row bot"><div className="nsa-as-results"><PriceListResults result={m.result}/></div></div>
                   : m.kind === 'stock'
                     ? <StockCard key={m.id} stock={m.stock} />
                     : m.kind === 'report'
