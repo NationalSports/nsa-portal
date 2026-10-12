@@ -55,10 +55,16 @@ The audit pass restores contextual record/customer links, size-level partial rec
 
 ## Scope
 
-The prototype includes illustrative garment shapes and sample artwork. These are layout examples, not final production proof assets. Reports include sample account breakdowns and sample conversion cohorts. Arc UI informed the interface direction; this prototype does not include licensed Arc Pro source.
+The prototype includes illustrative AI-generated garment photographs and sample artwork. These are layout examples, not final production proof assets. Reports include sample account breakdowns and sample conversion cohorts. Arc UI informed the interface direction; this prototype does not include licensed Arc Pro source.
 
 No production components, routes, dependencies, database schema, or deployment configuration are changed by this proposal.
 
 ## Pro-inspired page design pass
 
 The local preview now uses compact order/quote registers, inline size-level PO receipts, a warehouse station layout, paper-style invoice details, source/extraction AI intake, directory identities, branded store rows and a settings section rail. Reports add labeled comparisons from their existing sample rows. The continuous coach art review remains one collection with exact placement/version approvals. Desktop SO rows measure 57px (previously 206–216px); all fields and action intents remain represented. This is an independent preview inspired by public Arc Pro examples, with no licensed Pro source copied. See AUDIT.md for the page map and validation.
+
+## Art and coach proof studio pass
+
+Photographic garment mockups now show the pullover, cap, and crewneck front/back with separate artwork overlays and width guides. These are illustrative assets, not manufacturer photography or calibrated production proofs. A compact order-wide placement strip shows version, method, and status; Next pending proof returns to unfinished reviews. Specifications, placement/version-specific approvals, scoped changes, conversations, files, and final review remain available. Desktop, dark mode, and 320/390/736/1024px layouts were visually checked. All four proof placements and the sequential approval flow passed browser checks, alongside the art and page parity suites. Preview only.
+
+The garment sheet was generated with the image_gen tool from an instruction for four unbranded studio garment views (royal quarter-zip front, black perforated cap front, gray crewneck front and back), compressed to WebP, and embedded once in the preview. Existing artwork is rendered independently of this illustrative image.
