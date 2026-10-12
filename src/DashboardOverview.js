@@ -17,6 +17,7 @@ const FULL_DATE = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'lo
 
 const SOLD = '#2a4a9b';
 const BILLED = '#d1873a';
+const LAST_YEAR = '#9aa3b5'; // de-emphasis gray: last year is context, this year is the story
 const STAGE_RAMP = ['#9db2e3', '#7392d6', '#4f73c2', '#3557a6', '#1f3a7a'];
 const QUOTE_RAMP = ['#9db2e3', '#4f73c2', '#1f3a7a'];
 const DAY = 864e5;
@@ -123,8 +124,10 @@ export default function DashboardOverview({
   onOpenPriority,
   onOpenEstimate,
   onOpenCustomer,
+  defaultChartMode = 'yoy',
 }) {
   const [hoverMonth, setHoverMonth] = useState(null);
+  const [chartMode, setChartMode] = useState(defaultChartMode); // 'yoy' = billed this year vs last (default) | 'sold' = sold vs billed
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dayOfMonth = now.getDate();
@@ -167,6 +170,10 @@ export default function DashboardOverview({
     if (date.getDate() <= dayOfMonth) row.salesToDate += rev;
   });
 
+  // Billed by calendar month, this year and last — same invoice rules as the 6-month rows.
+  const thisYear = now.getFullYear();
+  const billedThisYear = Array(12).fill(0);
+  const billedLastYear = Array(12).fill(0);
   const countedInvoiceIds = new Set();
   const addBilling = (invoice, isHistorical) => {
     if (!invoice || invoice.status === 'void' || invoice.deleted_at) return;
@@ -180,9 +187,12 @@ export default function DashboardOverview({
       if (repId !== user?.id) return;
     }
     const date = parsePortalDate(invoice.date || invoice.created_at);
+    if (!date) return;
+    const total = Number(invoice.total) || 0;
+    if (date.getFullYear() === thisYear) billedThisYear[date.getMonth()] += total;
+    else if (date.getFullYear() === thisYear - 1) billedLastYear[date.getMonth()] += total;
     const row = monthRows.find((item) => isSameMonth(date, item.month));
     if (!row) return;
-    const total = Number(invoice.total) || 0;
     row.billed += total;
     if (date.getDate() <= dayOfMonth) row.billedToDate += total;
   };
@@ -263,7 +273,38 @@ export default function DashboardOverview({
   const stageTotal = stages.reduce((sum, stage) => sum + stage.value, 0);
 
   // ── Chart scale ──
-  const rawMax = Math.max(1, ...monthRows.flatMap((row) => [row.sales, row.billed]));
+  const curMonth = now.getMonth();
+  const yoyRows = Array.from({ length: 12 }, (_, m) => ({
+    label: MONTH.format(new Date(thisYear, m, 1)),
+    current: m <= curMonth ? billedThisYear[m] : null,
+    last: billedLastYear[m],
+  }));
+  const ytdThis = billedThisYear.slice(0, curMonth + 1).reduce((a, v) => a + v, 0);
+  const ytdLast = billedLastYear.slice(0, curMonth).reduce((a, v) => a + v, 0) + previousYearMonthToDate();
+  function previousYearMonthToDate() {
+    // last year's current month, only through today's day-of-month, so YTD compares like with like
+    let sum = 0;
+    const seen = new Set();
+    const add = (invoice, isHistorical) => {
+      if (!invoice || invoice.status === 'void' || invoice.deleted_at) return;
+      if (invoice.id && seen.has(invoice.id)) return;
+      if (invoice.id) seen.add(invoice.id);
+      if (scopedToUser) {
+        const parent = !isHistorical ? orderById.get(invoice.so_id) : null;
+        const repId = invoice.rep_id || (parent ? orderRepId(parent) : customerById.get(invoice.customer_id)?.primary_rep_id);
+        if (repId !== user?.id) return;
+      }
+      const date = parsePortalDate(invoice.date || invoice.created_at);
+      if (date && date.getFullYear() === thisYear - 1 && date.getMonth() === curMonth && date.getDate() <= dayOfMonth) sum += Number(invoice.total) || 0;
+    };
+    historicalInvoices.forEach((invoice) => add(invoice, true));
+    invoices.forEach((invoice) => add(invoice, false));
+    return sum;
+  }
+  const ytdPace = pctChange(ytdThis, ytdLast);
+  const rawMax = chartMode === 'yoy'
+    ? Math.max(1, ...billedThisYear, ...billedLastYear)
+    : Math.max(1, ...monthRows.flatMap((row) => [row.sales, row.billed]));
   const step = tickStep(rawMax);
   const chartMax = Math.ceil(rawMax / step) * step;
   const ticks = Array.from({ length: Math.round(chartMax / step) + 1 }, (_, i) => i * step);
@@ -366,65 +407,159 @@ export default function DashboardOverview({
       {/* ═══ Sold vs billed ═══ */}
       <div className="dov2-grid">
         <article className="dov2-card dov2-chart-card">
-          <header className="dov2-card__head">
+          <header className="dov2-card__head dov2-chart-head">
             <div>
-              <span className="dov2-kicker">Last 6 months</span>
-              <h3>Sold vs billed</h3>
+              <span className="dov2-kicker">{chartMode === 'yoy' ? `${thisYear} vs ${thisYear - 1}` : 'Last 6 months'}</span>
+              <h3>{chartMode === 'yoy' ? 'Billed sales vs last year' : 'Sold vs billed'}</h3>
             </div>
-            <div className="dov2-legend" aria-label="Legend">
-              <span><i style={{ background: SOLD }} />Sold</span>
-              <span><i style={{ background: BILLED }} />Billed</span>
+            <div className="dov2-seg" role="group" aria-label="Chart view">
+              <button type="button" className={chartMode === 'yoy' ? 'is-on' : ''} aria-pressed={chartMode === 'yoy'} onClick={() => { setChartMode('yoy'); setHoverMonth(null); }}>vs last year</button>
+              <button type="button" className={chartMode === 'sold' ? 'is-on' : ''} aria-pressed={chartMode === 'sold'} onClick={() => { setChartMode('sold'); setHoverMonth(null); }}>Sold vs billed</button>
             </div>
           </header>
-          <div className="dov2-chart" onMouseLeave={() => setHoverMonth(null)}>
-            <div className="dov2-chart__axis" aria-hidden="true">
-              {ticks.slice().reverse().map((tick) => <span key={tick}>{tick ? formatCompact(tick) : '0'}</span>)}
-            </div>
-            <div className="dov2-chart__plot">
-              <div className="dov2-chart__grid" aria-hidden="true">
-                {ticks.map((tick) => <span key={tick} style={{ bottom: `${(tick / chartMax) * 100}%` }} />)}
+          {chartMode === 'yoy' ? (
+            <>
+              <div className="dov2-chart-sub">
+                <span><b>{formatCompact(ytdThis)}</b> billed YTD</span>
+                <Delta value={ytdPace} label={`vs ${formatCompact(ytdLast)} same point last year`} />
+                <div className="dov2-legend" aria-label="Legend">
+                  <span><i style={{ background: SOLD }} />{thisYear}</span>
+                  <span><i style={{ background: LAST_YEAR }} />{thisYear - 1}</span>
+                </div>
               </div>
-              {monthRows.map((row, index) => {
-                const isCurrent = index === monthRows.length - 1;
-                const active = hoverMonth === index;
-                return (
-                  <div
-                    key={`${row.month.getFullYear()}-${row.month.getMonth()}`}
-                    className={`dov2-chart__month ${active ? 'is-active' : ''}`}
-                    tabIndex={0}
-                    aria-label={`${row.label}: sold ${MONEY.format(row.sales)}, billed ${MONEY.format(row.billed)}`}
-                    onMouseEnter={() => setHoverMonth(index)}
-                    onFocus={() => setHoverMonth(index)}
-                    onBlur={() => setHoverMonth(null)}
-                  >
-                    <div className="dov2-chart__bars">
-                      <div className="dov2-chart__bar" style={{ height: `${(row.sales / chartMax) * 100}%`, background: SOLD }}>
-                        {isCurrent && row.sales > 0 && <b>{formatCompact(row.sales)}</b>}
-                      </div>
-                      <div className="dov2-chart__bar" style={{ height: `${(row.billed / chartMax) * 100}%`, background: BILLED }} />
-                    </div>
-                    <span className="dov2-chart__label">{row.label}{isCurrent ? ' (MTD)' : ''}</span>
-                    {active && (
-                      <div className={`dov2-tip ${index >= monthRows.length - 2 ? 'is-left' : ''}`} role="presentation">
-                        <strong>{row.label} {row.month.getFullYear()}</strong>
-                        <span><i style={{ background: SOLD }} />Sold <b>{MONEY.format(row.sales)}</b></span>
-                        <span><i style={{ background: BILLED }} />Billed <b>{MONEY.format(row.billed)}</b></span>
-                      </div>
-                    )}
+              <div className="dov2-chart" onMouseLeave={() => setHoverMonth(null)}>
+                <div className="dov2-chart__axis" aria-hidden="true">
+                  {ticks.slice().reverse().map((tick) => <span key={tick}>{tick ? formatCompact(tick) : '0'}</span>)}
+                </div>
+                <div className="dov2-chart__plot">
+                  <div className="dov2-chart__grid" aria-hidden="true">
+                    {ticks.map((tick) => <span key={tick} style={{ bottom: `${(tick / chartMax) * 100}%` }} />)}
                   </div>
-                );
-              })}
+                  <div className="dov2-line">
+                    {(() => {
+                      const x = (i) => ((i + 0.5) / 12) * 100;
+                      const y = (v) => 100 - (v / chartMax) * 100;
+                      const path = (vals) => vals.map((v, i) => (v === null ? null : `${i === 0 || vals[i - 1] === null ? 'M' : 'L'}${x(i).toFixed(2)} ${y(v).toFixed(2)}`)).filter(Boolean).join(' ');
+                      const cur = yoyRows.map((r) => r.current);
+                      const curPts = cur.map((v, i) => [i, v]).filter(([, v]) => v !== null);
+                      const area = curPts.length ? `${path(cur)} L${x(curPts[curPts.length - 1][0]).toFixed(2)} 100 L${x(curPts[0][0]).toFixed(2)} 100 Z` : '';
+                      return (
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                          {hoverMonth !== null && <line x1={x(hoverMonth)} x2={x(hoverMonth)} y1="0" y2="100" stroke="#c9d1e3" strokeWidth="1" vectorEffect="non-scaling-stroke" />}
+                          <path d={area} fill="rgba(42,74,155,.10)" />
+                          <path d={path(yoyRows.map((r) => r.last))} fill="none" stroke={LAST_YEAR} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                          <path d={path(cur)} fill="none" stroke={SOLD} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                        </svg>
+                      );
+                    })()}
+                    {yoyRows.map((row, i) => {
+                      const showCur = row.current !== null && (i === curMonth || hoverMonth === i);
+                      return (
+                        <React.Fragment key={row.label}>
+                          {hoverMonth === i && <span className="dov2-dot" style={{ left: `${((i + 0.5) / 12) * 100}%`, bottom: `${(row.last / chartMax) * 100}%`, background: LAST_YEAR }} />}
+                          {showCur && <span className="dov2-dot" style={{ left: `${((i + 0.5) / 12) * 100}%`, bottom: `${(row.current / chartMax) * 100}%`, background: SOLD }} />}
+                          {i === curMonth && row.current > 0 && hoverMonth !== i && (
+                            <span className="dov2-end-label" style={{ left: `${((i + 0.5) / 12) * 100}%`, bottom: `${(row.current / chartMax) * 100}%` }}>{formatCompact(row.current)}</span>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                  {yoyRows.map((row, i) => (
+                    <div
+                      key={row.label}
+                      className={`dov2-chart__month ${hoverMonth === i ? 'is-active' : ''} ${i > curMonth ? 'is-future' : ''}`}
+                      tabIndex={0}
+                      aria-label={`${row.label}: ${thisYear} ${row.current === null ? 'not yet' : MONEY.format(row.current)}, ${thisYear - 1} ${MONEY.format(row.last)}`}
+                      onMouseEnter={() => setHoverMonth(i)}
+                      onFocus={() => setHoverMonth(i)}
+                      onBlur={() => setHoverMonth(null)}
+                    >
+                      <span className="dov2-chart__label">{row.label.slice(0, 1)}<span className="dov2-chart__label-rest">{row.label.slice(1)}</span></span>
+                      {hoverMonth === i && (
+                        <div className={`dov2-tip ${i >= 8 ? 'is-left' : ''}`} role="presentation">
+                          <strong>{row.label}{i === curMonth ? ' (month to date)' : ''}</strong>
+                          <span><i style={{ background: SOLD }} />{thisYear} <b>{row.current === null ? '—' : MONEY.format(row.current)}</b></span>
+                          <span><i style={{ background: LAST_YEAR }} />{thisYear - 1} <b>{MONEY.format(row.last)}</b></span>
+                          {row.current !== null && i < curMonth && row.last > 0 && (
+                            <span className="dov2-tip__delta"><Delta value={pctChange(row.current, row.last)} label="vs last year" /></span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <table className="dov2-sr">
+                <caption>Billed sales by month, {thisYear} vs {thisYear - 1}</caption>
+                <thead><tr><th>Month</th><th>{thisYear}</th><th>{thisYear - 1}</th></tr></thead>
+                <tbody>{yoyRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{row.current === null ? '—' : MONEY.format(row.current)}</td><td>{MONEY.format(row.last)}</td></tr>)}</tbody>
+              </table>
+              <div className="dov2-card__foot">
+                <span>Billed = invoices by invoice date{historicalInvoices.length === 0 ? ' · NetSuite history still loading or unavailable' : ''}</span>
+                <button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Full report →</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="dov2-chart-sub">
+                <span>Orders written vs invoices sent, by month</span>
+                <div className="dov2-legend" aria-label="Legend">
+                  <span><i style={{ background: SOLD }} />Sold</span>
+                  <span><i style={{ background: BILLED }} />Billed</span>
+                </div>
+              </div>
+            <div className="dov2-chart" onMouseLeave={() => setHoverMonth(null)}>
+              <div className="dov2-chart__axis" aria-hidden="true">
+                {ticks.slice().reverse().map((tick) => <span key={tick}>{tick ? formatCompact(tick) : '0'}</span>)}
+              </div>
+              <div className="dov2-chart__plot">
+                <div className="dov2-chart__grid" aria-hidden="true">
+                  {ticks.map((tick) => <span key={tick} style={{ bottom: `${(tick / chartMax) * 100}%` }} />)}
+                </div>
+                {monthRows.map((row, index) => {
+                  const isCurrent = index === monthRows.length - 1;
+                  const active = hoverMonth === index;
+                  return (
+                    <div
+                      key={`${row.month.getFullYear()}-${row.month.getMonth()}`}
+                      className={`dov2-chart__month ${active ? 'is-active' : ''}`}
+                      tabIndex={0}
+                      aria-label={`${row.label}: sold ${MONEY.format(row.sales)}, billed ${MONEY.format(row.billed)}`}
+                      onMouseEnter={() => setHoverMonth(index)}
+                      onFocus={() => setHoverMonth(index)}
+                      onBlur={() => setHoverMonth(null)}
+                    >
+                      <div className="dov2-chart__bars">
+                        <div className="dov2-chart__bar" style={{ height: `${(row.sales / chartMax) * 100}%`, background: SOLD }}>
+                          {isCurrent && row.sales > 0 && <b>{formatCompact(row.sales)}</b>}
+                        </div>
+                        <div className="dov2-chart__bar" style={{ height: `${(row.billed / chartMax) * 100}%`, background: BILLED }} />
+                      </div>
+                      <span className="dov2-chart__label">{row.label}{isCurrent ? ' (MTD)' : ''}</span>
+                      {active && (
+                        <div className={`dov2-tip ${index >= monthRows.length - 2 ? 'is-left' : ''}`} role="presentation">
+                          <strong>{row.label} {row.month.getFullYear()}</strong>
+                          <span><i style={{ background: SOLD }} />Sold <b>{MONEY.format(row.sales)}</b></span>
+                          <span><i style={{ background: BILLED }} />Billed <b>{MONEY.format(row.billed)}</b></span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-          <table className="dov2-sr">
-            <caption>Sold and billed by month</caption>
-            <thead><tr><th>Month</th><th>Sold</th><th>Billed</th></tr></thead>
-            <tbody>{monthRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{MONEY.format(row.sales)}</td><td>{MONEY.format(row.billed)}</td></tr>)}</tbody>
-          </table>
-          <div className="dov2-card__foot">
-            <span>Sold = sales orders by created date · Billed = invoices by invoice date</span>
-            <button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Full report →</button>
-          </div>
+            <table className="dov2-sr">
+              <caption>Sold and billed by month</caption>
+              <thead><tr><th>Month</th><th>Sold</th><th>Billed</th></tr></thead>
+              <tbody>{monthRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{MONEY.format(row.sales)}</td><td>{MONEY.format(row.billed)}</td></tr>)}</tbody>
+            </table>
+            <div className="dov2-card__foot">
+              <span>Sold = sales orders by created date · Billed = invoices by invoice date</span>
+              <button type="button" className="dov2-link" onClick={() => onNavigate?.('reports')}>Full report →</button>
+            </div>
+            </>
+          )}
         </article>
 
         {/* ═══ Quote pipeline ═══ */}
