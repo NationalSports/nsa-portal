@@ -132,3 +132,10 @@ describe('normal visual art choices', () => {
     expect(() => visualLogoCopies(rows, rows, entries.map((r) => ({ ...r, image_url: null })))).toThrow('blank garment');
   });
 });
+
+it('production allowance is separate and cannot silently become zero or accept invalid days', () => {
+  expect(normalizeAllSchoolSettings({}).production.business_days).toBeNull();
+  expect(validateAllSchoolSettings({ production: { business_days: 4 } })).toBe('');
+  expect(validateAllSchoolSettings({ production: { business_days: -1 } })).toMatch(/Production allowance/);
+  expect(validateAllSchoolSettings({ production: { business_days: 2.5 } })).toMatch(/Production allowance/);
+});

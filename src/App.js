@@ -11838,7 +11838,7 @@ export default function App(){
     // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
     // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
     // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
-    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||''}))}:null;
+    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||'',estimated_arrival:l.estimated_arrival||null}))}:null;
     const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
     // GRANULARITY (owner 2026-07-23): stamp each PO line with only ITS item's vendor keys —
     // stamping the whole batch's list on every line let a vendor number alias to the wrong
