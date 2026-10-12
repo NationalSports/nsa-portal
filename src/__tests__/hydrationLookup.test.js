@@ -14,8 +14,9 @@ const source=fs.readFileSync(path.join(__dirname,'..','lib','dbEngine.js'),'utf8
 const body=source.slice(source.indexOf('    // Index child collections once per load;'),source.indexOf('    // Invoices: attach payments'));
 const names=['estRaw','estItems','estDecos','estArt','soRaw','soItems','soDecos','soPicks','soPOs','soJobs','soArt','soFirm'];
 function hydrate(data,lookup=rowsByKey){
-  return Function(...names,'rowsByKey','_loadArtRow','_decoPosGuard','_lastLoadTimedOut','_unconfirmedLoadTables','_truncatedTables','_everHydratedItems','_loadTableUntrusted',body+'return {estimates,sales_orders};')(
-    ...names.map(n=>data[n]||[]),lookup,r=>r,()=>({}),new Set(),new Set(),new Set(),new Set(),()=>false);
+  // _recordJobBase/_recordArtBase: three-way-merge base bookkeeping (no effect on the hydrated shape).
+  return Function(...names,'rowsByKey','_loadArtRow','_decoPosGuard','_lastLoadTimedOut','_unconfirmedLoadTables','_truncatedTables','_everHydratedItems','_loadTableUntrusted','_recordJobBase','_recordArtBase',body+'return {estimates,sales_orders};')(
+    ...names.map(n=>data[n]||[]),lookup,r=>r,()=>({}),new Set(),new Set(),new Set(),new Set(),()=>false,()=>{},()=>{});
 }
 // Compare actual reconstruction against filter semantics, not just helper calls:
 // duplicate-item recovery, sorting, child attachment, and carry-over guards must agree.

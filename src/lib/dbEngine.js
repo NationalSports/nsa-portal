@@ -31,6 +31,7 @@ import { authFetch } from '../utils';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
 import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
 import { resilientAuthStorage } from './authStorage';
+import { createRowBaseStore, snapshotRow, mergeStaleJobRow, changedSinceBase, addedSinceBase, fingerprint } from './staleRowMerge';
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -614,6 +615,7 @@ const _dbLoad = async (opts={}) => {
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=_estArtFor(est.id).map(_loadArtRow);
+      art_files.forEach(a=>_recordArtBase(est.id,a,'db'));// three-way merge base (see _rowBases)
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
@@ -665,6 +667,7 @@ const _dbLoad = async (opts={}) => {
       // them (no live decorations), and persist jobs:[] — which now deletes so_jobs rows. Filtering
       // them out here would hide the UI symptom without ever writing the delete.
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
+      jobs.forEach(j=>_recordJobBase(so.id,j,'db'));art_files.forEach(a=>_recordArtBase(so.id,a,'db'));// three-way merge bases (see _rowBases)
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
       // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
@@ -956,6 +959,29 @@ const _writeRowsSchemaSafe=async(table,rows,send,extraCols)=>{
 };
 const _schemaGapMsg=(what,table,dropped)=>what+' saved WITHOUT '+dropped.join(', ')+' — '+table+' is missing '+(dropped.length>1?'those columns':'that column')+'. Run the pending DB migration before relying on these fields.';
 const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
+// ─── Row bases for three-way merging of stale job / artwork rows (lib/staleRowMerge) ───
+// Each job and artwork row is fingerprinted at every _version this client loads or writes, so a
+// later save holding a stale copy can tell which fields the client actually changed (keep) from
+// fields it merely never refreshed (take the database's newer value). Loaded rows are the
+// database's own content at that version and replace a snapshot recorded from this client's write.
+// 64 versions per row: a light art/jobs save rewrites every job on the order, so a tab left open
+// while an artist works can fall dozens of versions behind and still needs its base. Snapshots are
+// per-field fingerprints (a few hundred bytes); only rows that actually change accumulate versions.
+const _rowBases=createRowBaseStore({keepVersions:64});
+const _JOB_BASE_OPTS={fields:_jobCols.filter(c=>c!=='id')};
+const _jobBaseRow=j=>_fuDefaults({..._pick(j,_jobCols),art_reuse_confirmed:j.art_reuse_confirmed===true});
+const _jobBaseKey=(soId,id)=>'job|'+soId+'|'+id;
+const _artBaseKey=(parentId,id)=>'art|'+parentId+'|'+id;
+const _recordBase=(key,version,build,src)=>{
+  if(version==null)return;
+  const cur=_rowBases.get(key,version);
+  if(cur&&(cur.src==='db'||src!=='db'))return;// DB content at a version never changes; a write never replaces it
+  _rowBases.record(key,version,{...build(),src});
+};
+const _recordJobBase=(soId,j,src,version=j?._version)=>{if(soId&&j&&j.id)_recordBase(_jobBaseKey(soId,j.id),version,()=>snapshotRow(_jobBaseRow(j),_JOB_BASE_OPTS),src)};
+// _ART_BASE_OPTS is defined after the art field lists below; resolved at call time.
+const _recordArtBase=(parentId,a,src,version=a?._version)=>{if(parentId&&a&&a.id)_recordBase(_artBaseKey(parentId,a.id),version,()=>snapshotRow(a,_ART_BASE_OPTS),src)};
+export const _rowBaseStats=()=>({rows:_rowBases.size});
 // ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
 // When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
 // unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
@@ -972,6 +998,7 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived','is_tbd'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
 const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
+const _ART_BASE_OPTS={fields:[..._ART_CONTENT_FIELDS],fileCollections:_ART_FILE_COLLECTIONS,mapCollections:['item_mockups','mock_links']};
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
   // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
@@ -1006,16 +1033,24 @@ const _applyArtDeletes=(merged,clientArt)=>{
   }
   return merged;
 };
-const _mergeArtConflict=(clientArt,dbRow)=>{
+// `base` (when this client recorded the row at its version — see _rowBases) turns the overlay into a
+// real three-way merge: only content the client CHANGED overrides the newer DB row, and only files the
+// client ADDED join the DB's lists — so a stale copy can neither revert another user's rename/color-way
+// edit nor resurrect a file they deleted. Without a base the previous behavior stands (overlay all
+// content, union all files).
+const _mergeArtConflict=(clientArt,dbRow,base=null)=>{
   const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
-  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt)merged[f]=clientArt[f]});// overlay this client's typed content
-  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],clientArt[f])});// union uploads from both sides
+  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt&&changedSinceBase(base,f,clientArt[f]))merged[f]=clientArt[f]});// overlay this client's typed content
+  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],base?addedSinceBase(clientArt[f],base.files[f]):clientArt[f])});// union uploads from both sides
   const im={...(dbRow.item_mockups||{})};// per-item mockup map: union each item's url list
-  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],v)});
+  const _bIm=base?(base.maps.item_mockups||{}):null;
+  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],_bIm?addedSinceBase(v,Array.isArray(_bIm[k])?_bIm[k]:[]):v)});
   merged.item_mockups=im;
   // mock_links: small {garmentKey -> sourceKey} map. Shallow-merge so neither side's reuse links are
-  // dropped on a concurrent edit; the client's link wins for any key it set.
-  merged.mock_links={...(dbRow.mock_links||{}),...(clientArt.mock_links||{})};
+  // dropped on a concurrent edit; the client's link wins for any key it set (with a base: changed).
+  const _bMl=base?(base.maps.mock_links||{}):null;
+  const _clientLinks=Object.fromEntries(Object.entries(clientArt.mock_links||{}).filter(([k,v])=>!_bMl||_bMl[k]!==fingerprint(v)));
+  merged.mock_links={...(dbRow.mock_links||{}),..._clientLinks};
   // Preview / web-logo replacements are user-authoritative only when this tab actually edited the field.
   // Otherwise the DB copy wins so an unrelated stale save cannot restore an older asset URL.
   const edited=new Set(Array.isArray(clientArt._artEditedFields)?clientArt._artEditedFields:[]);
@@ -1032,8 +1067,8 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   let conflicts=0;
   const out=clientArtFiles.map(a=>{
     const db=dbById.get(a.id);
-    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db),baseVersion:db._version||0}}
-    return{client:a,row:a,baseVersion:a._version||0};
+    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db,_rowBases.get(_artBaseKey(parentId,a.id),a._version||0)),baseVersion:db._version||0,parentId}}
+    return{client:a,row:a,baseVersion:a._version||0,parentId};
   });
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
@@ -1050,9 +1085,10 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
 const _dbWrittenArtIds=new Map();
 const _markArtWritten=(table,parentId,ids)=>{const k=table+':'+parentId;let s=_dbWrittenArtIds.get(k);if(!s){s=new Set();_dbWrittenArtIds.set(k,s)}(ids||[]).forEach(id=>{if(id)s.add(id)})};
 const _knownArtIdsFor=(table,doc)=>new Set([...(Array.isArray(doc._hydratedArtIds)?doc._hydratedArtIds:[]),...(_dbWrittenArtIds.get(table+':'+doc.id)||[])]);
-const _adoptResolvedArtRow=({client,row,baseVersion})=>{
+const _adoptResolvedArtRow=({client,row,baseVersion,parentId})=>{
   Object.assign(client,row,{_version:baseVersion+1});
   delete client._artDeletes;delete client._artEditedFields;
+  _recordArtBase(parentId,client,'write');
   return client;
 };
 const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
@@ -1466,9 +1502,20 @@ const _prepareJobUpserts=async(so,jobs)=>{
       // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
       // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
       const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
+      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('*').eq('so_id',so.id);
       if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
       const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
+      // Three-way merge first (lib/staleRowMerge): a stale job row starts from the newer DB row and keeps
+      // only the fields this client changed since the version it holds. The column guards below then run
+      // on the merged row, exactly as before. No recorded base → unchanged behavior (guards only).
+      {let _merged3=0;const _keptCols=new Set();
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db||(j._version||0)>=(db._version||0))return;
+        const r=mergeStaleJobRow(row,db,_rowBases.get(_jobBaseKey(so.id,row.id),j._version||0));
+        if(!r.kept)return;
+        jobRows[i]=r.row;_merged3++;r.kept.forEach(c=>_keptCols.add(c));
+      });
+      if(_merged3)console.warn('[DB] Three-way merged',_merged3,'stale job row(s) on',so.id,'— newer DB values kept; this client\'s own changes kept for:',[..._keptCols].join(', ')||'(none)');}
       {let _preserved=0;
       jobRows.forEach((row,i)=>{
         if(dedupedJobs[i]._coach_cleared)return;
@@ -1575,6 +1622,7 @@ const _prepareJobUpserts=async(so,jobs)=>{
         // copy genuinely behind ANOTHER client's write is treated as stale.
         const _db=_dbCoachById.get(j.id);
         j._version=((_db?_db._version:j._version)||0)+1;
+        _recordJobBase(so.id,j,'write');
       })};
 };
 const _dbSaveSOInner = async (so) => {
@@ -2579,7 +2627,7 @@ const _touchSalesOrder=async(soId)=>{
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
-const _dbSaveArtFilesInner = async (so) => {
+const _dbSaveArtFilesInner = async (so,{quiet=false}={}) => {
   if(!supabase)return false;
   await _ensureFreshSession();
   return _dbSavingGuard(async()=>{try{
@@ -2604,11 +2652,16 @@ const _dbSaveArtFilesInner = async (so) => {
     return true;
   }catch(error){
     if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
-    if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
+    if(quiet)console.warn('[DB] art-only save failed for',so.id,'— retrying as a full order save:',error.message);
+    else if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
     return false;
   }});
 };
-const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesInner,true);
+// quiet: the caller (App's order-save router) retries a failure as a full order save, which reports
+// its own outcome — an "Artwork was not saved" toast before a save that then succeeds is just noise.
+// Stable function identities so _queuedEntitySave can still coalesce repeated saves of one kind.
+const _dbSaveArtFilesQuietInner=so=>_dbSaveArtFilesInner(so,{quiet:true});
+const _dbSaveArtFiles = (so,{quiet=false}={}) => _saveDocument('sales_orders',so,quiet?_dbSaveArtFilesQuietInner:_dbSaveArtFilesInner,true);
 // Art + jobs save for Art Dashboard actions (file uploads, prod-files confirmation, status moves,
 // artist assignment). Writes ONLY so_art_files and so_jobs rows, then touches the header without a
 // version bump — so an artist's click no longer deletes/re-inserts every item, decoration, pick and
@@ -2617,7 +2670,7 @@ const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesI
 // every other screen still refreshes. Each art and job row keeps its own optimistic-version guards;
 // job rows go through the same _prepareJobUpserts protections as the full save. Upsert-only for
 // jobs: removing a job still needs the full save.
-const _dbSaveArtJobsInner = async (so) => {
+const _dbSaveArtJobsInner = async (so,{quiet=false}={}) => {
   if(!supabase)return false;
   await _ensureFreshSession();
   return _dbSavingGuard(async()=>{try{
@@ -2650,11 +2703,13 @@ const _dbSaveArtJobsInner = async (so) => {
     return true;
   }catch(error){
     if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
-    if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
+    if(quiet)console.warn('[DB] art/job save failed for',so.id,'— retrying as a full order save:',error.message);
+    else if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
     return false;
   }});
 };
-const _dbSaveArtJobs = (so) => _saveDocument('sales_orders',so,_dbSaveArtJobsInner,true);
+const _dbSaveArtJobsQuietInner=so=>_dbSaveArtJobsInner(so,{quiet:true});
+const _dbSaveArtJobs = (so,{quiet=false}={}) => _saveDocument('sales_orders',so,quiet?_dbSaveArtJobsQuietInner:_dbSaveArtJobsInner,true);
 const _invCols=['id','payment_revision','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.

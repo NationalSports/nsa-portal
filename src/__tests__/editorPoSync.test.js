@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { mergeExternalPoItems } from '../lib/editorPoSync';
 import { checkBatchPoReservations } from '../lib/batchPoReservations';
-import { shouldAdoptServerCopy, adoptServerCopy } from '../lib/editorServerAdopt';
+import { shouldAdoptServerCopy, adoptServerCopy, childVersionSig } from '../lib/editorServerAdopt';
 
 const po = (id, extra = {}) => ({ po_id: id, M: 3, received: {}, ...extra });
 const item = (extra = {}) => ({ sku: 'JX4456', color: 'Navy/White', sizes: { M: 10 }, pick_lines: [], po_lines: [], ...extra });
@@ -58,13 +58,13 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s PO refresh', file
   const end = source.indexOf(DEPS, start) + DEPS.length;
   if (source.indexOf(DEPS, start) < 0) throw new Error(file + ': external-sync effect deps changed — update this harness');
   const effect = Function('order', 'o', 'dirty', 'React', 'lastSyncRef', 'safeItems', 'safePicks', 'safeJobs', 'safeArt', 'setO', 'mergeArtGroupFiles', 'mergeExternalPoItems',
-    'dirtyRef2', 'sizingDraftRef', '_hasActiveDocumentSave', 'shouldAdoptServerCopy', 'adoptServerCopy', source.slice(start, end));
+    'dirtyRef2', 'sizingDraftRef', '_hasActiveDocumentSave', 'shouldAdoptServerCopy', 'adoptServerCopy', 'childVersionSig', source.slice(start, end));
   const refresh = (local, incoming, cache = { current: '' }, dirty = true) => {
     let state = local;
     effect(incoming, local, dirty, { useEffect: fn => fn() }, cache,
       o => o.items || [], it => it.pick_lines || [], o => o.jobs || [], o => o.art_files || [],
       fn => { state = fn(state); }, (a, b) => ({ ...b, ...a }), mergeExternalPoItems,
-      { current: dirty }, { current: {} }, () => false, shouldAdoptServerCopy, adoptServerCopy);
+      { current: dirty }, { current: {} }, () => false, shouldAdoptServerCopy, adoptServerCopy, childVersionSig);
     return state;
   };
   const order = items => ({ id: 'SO-2851', updated_at: 'same-second', _version: 4, items, jobs: [], art_files: [] });
@@ -97,6 +97,14 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s PO refresh', file
     expect(merged._version).toBe(9);
     expect(merged.items).toBe(incoming.items);
     expect(merged._hydratedPoIds).toEqual(['PO 1']);
+  });
+
+  // Art Dashboard saves write only job/art rows and touch the order without a version bump.
+  test('a clean editor adopts newer job/art rows at the same order version', () => {
+    const local = { ...order([item({ line_id: 'f4af' })]), jobs: [{ id: 'JOB-1', _version: 18, assigned_artist: null }] };
+    const incoming = { ...local, updated_at: 'touched', jobs: [{ id: 'JOB-1', _version: 19, assigned_artist: 'tm-evan' }] };
+    expect(refresh(local, incoming, { current: '' }, false).jobs[0].assigned_artist).toBe('tm-evan');
+    expect(refresh(local, incoming, { current: '' }, true).jobs[0].assigned_artist).toBe(null);
   });
 
   test('the duplicate-purchase guard sees the newly adopted saved PO', async () => {

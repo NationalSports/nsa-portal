@@ -49,3 +49,36 @@ describe('stableStringify', () => {
     expect(stableStringify({ b: 1, a: { d: 2, c: 3 }, z: undefined })).toBe(stableStringify({ a: { c: 3, d: 2 }, b: 1 }));
   });
 });
+
+describe('planOrderSave', () => {
+  const { planOrderSave } = require('../lib/artJobsSaveRouting');
+  const base = {
+    id: 'SO-2444', _version: 137, status: 'waiting_receive', items: [{ line_id: 'f4af', sku: 'JX4476', sizes: { M: 6 } }],
+    art_files: [{ id: 'af1', prod_files: [] }], jobs: [{ id: 'JOB-2444-04', art_status: 'art_requested', _version: 18 }],
+  };
+  it('seps upload → art rows only', () => {
+    expect(planOrderSave(base, { ...base, art_files: [{ id: 'af1', prod_files: [{ url: 's.ai' }] }] })).toEqual({ kind: 'art' });
+  });
+  it('status move → art and job rows', () => {
+    expect(planOrderSave(base, { ...base, jobs: [{ ...base.jobs[0], art_status: 'art_complete' }] })).toEqual({ kind: 'artJobs' });
+  });
+  it('any item or header change → full save', () => {
+    expect(planOrderSave(base, { ...base, items: [{ ...base.items[0], sizes: { M: 8 } }] }).kind).toBe('full');
+    expect(planOrderSave(base, { ...base, status: 'in_production', art_files: [] }).kind).toBe('full');
+  });
+  it('special options, no touch RPC, unknown base or new order → full save', () => {
+    const art = { ...base, art_files: [{ id: 'af1', prod_files: [{ url: 's.ai' }] }] };
+    expect(planOrderSave(base, art, { opts: { exactAttempt: true } })).toEqual({ kind: 'full', fullOpts: { exactAttempt: true } });
+    expect(planOrderSave(base, art, { touchAvailable: false }).kind).toBe('full');
+    expect(planOrderSave(undefined, art).kind).toBe('full');
+    expect(planOrderSave({ ...base, _version: undefined }, art).kind).toBe('full');
+  });
+  it('`before` in opts is a routing input, never a full-save option', () => {
+    const art = { ...base, art_files: [{ id: 'af1', prod_files: [{ url: 's.ai' }] }] };
+    expect(planOrderSave(base, art, { opts: { before: base } })).toEqual({ kind: 'art' });
+    expect(planOrderSave(base, { ...base, memo: 'x' }, { opts: { before: base } })).toEqual({ kind: 'full', fullOpts: undefined });
+  });
+  it('removing a job is a full save (deletion needs the full save path)', () => {
+    expect(planOrderSave(base, { ...base, jobs: [] }).kind).toBe('full');
+  });
+});

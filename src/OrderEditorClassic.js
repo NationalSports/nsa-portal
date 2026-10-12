@@ -9,7 +9,7 @@ import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
 import {_hasActiveDocumentSave} from './lib/dbEngine';
-import {shouldAdoptServerCopy,adoptServerCopy} from './lib/editorServerAdopt';
+import {shouldAdoptServerCopy,adoptServerCopy,childVersionSig} from './lib/editorServerAdopt';
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import { skusMissingRevColorWays, missingRevColorWaysMsg } from './safeHelpers';
 import JobGarmentMocks from './JobGarmentMocks';
@@ -831,7 +831,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
       const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
       const poIdentity=JSON.stringify(safeItems(order).map(it=>[it.line_id||'',it.sku||'',it.color||'',(Array.isArray(it.po_lines)?it.po_lines:[]).map(pl=>pl?.po_id||pl)]));
-      const key=order.id+':'+(order.updated_at||'')+':'+(order._version??'')+':'+pickCount+':'+poCount+':'+poIdentity;
+      const key=order.id+':'+(order.updated_at||'')+':'+(order._version??'')+':'+childVersionSig(order)+':'+pickCount+':'+poCount+':'+poIdentity;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       // Stranded-version heal (SO-2444, 2026-10-12). Another session saved this order while this tab sat

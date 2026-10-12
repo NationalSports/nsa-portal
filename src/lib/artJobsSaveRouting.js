@@ -1,3 +1,5 @@
+import { stableStringify } from './staleRowMerge';
+
 // ─── Route art/job-only order saves to the light path ───
 //
 // The Art Dashboard (mockup/seps uploads, production-files confirmation, status moves, artist
@@ -12,15 +14,6 @@
 // guarded delete path) — keeps the full save.
 
 const ART_JOB_KEYS = new Set(['art_files', 'jobs', 'updated_at']);
-
-// Key-order-independent JSON, so `{...so, jobs}` spreads compare equal to the stored copy.
-export function stableStringify(value) {
-  if (value === undefined) return 'undefined';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(v => (v === undefined ? 'null' : stableStringify(v))).join(',') + ']';
-  return '{' + Object.keys(value).filter(k => value[k] !== undefined).sort()
-    .map(k => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
-}
 
 const withoutArtJobs = so => {
   const rest = {};
@@ -41,3 +34,18 @@ export function isArtJobsOnlyChange(prev, next) {
   }
   return stableStringify(withoutArtJobs(prev)) === stableStringify(withoutArtJobs(next));
 }
+
+// Decide how App should persist an order save. 'full' is the unchanged whole-order save; 'art'
+// writes art rows only; 'artJobs' writes art and job rows. `opts` other than `before` (e.g.
+// exactAttempt for a reviewed recovery) always force a full save, as does a database without the
+// header-touch RPC (touchAvailable false), so the light paths can never silently skip propagation.
+export function planOrderSave(before, so, { opts, touchAvailable = true } = {}) {
+  const { before: _ignored, ...rest } = opts || {};
+  const fullOpts = Object.keys(rest).length ? rest : undefined;
+  if (!so || !so.id || fullOpts || !touchAvailable || !isArtJobsOnlyChange(before, so)) return { kind: 'full', fullOpts };
+  const jobsChanged = stableStringify(before.jobs || []) !== stableStringify(so.jobs || []);
+  return { kind: jobsChanged ? 'artJobs' : 'art' };
+}
+
+// Key-order-independent JSON lives with the stale-row merge; re-exported for existing callers.
+export { stableStringify };
