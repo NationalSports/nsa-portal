@@ -41,8 +41,9 @@ The accounting backend was deployed on 2026-10-12 as Edge Function version 21
 | 20261012153054 | stripe_payout_deposit_automation |
 | 20261012153058 | at_once_qbo_revenue |
 
-Only the accounting dependencies were deployed in this step. The other PR #2501
-purchasing, picking, numbering and fulfillment migrations remain pending.
+The remaining purchasing, picking, numbering and fulfillment migrations were
+applied on 2026-10-12, including isolated All School supplier switches.
+Frontend and Netlify worker publication follows the PR #2501 checks.
 Automatic Stripe bank-deposit posting remains disabled.
 
 Read-only preflight run: `3c2aa0a7-c1aa-4f9c-b2d1-81b829673661`.
@@ -74,3 +75,21 @@ No ordinary store order was substituted and no fake transaction was posted.
 - Shared QBO customer payout test posts once and preserves portal customer.
 - Fixtures run offline and are rolled back; scratch files are wiped. No fake
   transaction or supplier order was sent to live services.
+
+## Operations rollout — 2026-10-12
+
+- Shared All School supplier queues: SanMar, S&S Activewear and Momentec enabled
+  using the dedicated All School flag. Ordinary supplier switches remain false.
+- Native All School settings: $200 garment cost, seven-day maximum wait, separate
+  XPO purchasing, automatic production release after actual readiness checks.
+- Astra Sports is the All School DTF supplier; initial recipient is
+  steve@nationalsportsapparel.com for forwarding. Club purchasing remains manual.
+- Netlify DTF send flag configured for production Functions only; false for
+  previews, branches, agent runners and local development.
+- Warehouse remains one queue: pulls older than five days first, then labeled
+  24/7 Quick Pulls, then other pulls using existing urgency.
+- 131 focused tests and 18 fixture/dashboard reconciliation checks passed;
+  production build passed. A missing database mock in the legacy Momentec proxy
+  test was corrected; all 30 proxy/guard checks pass using the actual guard.
+- No native paid orders exist yet. No supplier request or fake QBO transaction
+  was sent. The existing All School storefront remains draft.
