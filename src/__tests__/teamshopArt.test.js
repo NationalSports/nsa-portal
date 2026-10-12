@@ -75,7 +75,7 @@ const PNG_1x1 = Buffer.from(
   'hex'
 ).toString('base64');
 
-const call = ({ body = {}, user = { id: 'auth1', email: 'coach@team.com' }, tables = baseTables(), storage, auth = 'Bearer tok', method = 'POST' } = {}) => {
+const call = ({ body = {}, user = { id: 'auth1', email: 'coach@team.com', email_confirmed_at:'2026-01-01' }, tables = baseTables(), storage, auth = 'Bearer tok', method = 'POST' } = {}) => {
   mockAdmin = fakeSb(tables, user, storage);
   return teamshopArt.handler({ httpMethod: method, headers: auth ? { authorization: auth } : {}, body: JSON.stringify(body) });
 };

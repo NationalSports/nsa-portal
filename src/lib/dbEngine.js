@@ -355,14 +355,14 @@ const _sbGetSession=async()=>{
 };
 const _sbLinkTeamAuth=async(teamId,authId)=>{
   if(!supabase)return;
-  const{error}=await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+  const{error}=await supabase.rpc('link_my_team_auth');
   if(error)throw new Error('Could not link your staff profile: '+error.message);
 };
 const _sbGetMyProfile=async()=>{
   if(!supabase)return null;
   const{data,error}=await supabase.rpc('get_my_profile');
   if(error)throw new Error('Could not load your staff profile: '+error.message);
-  return data?.[0]||null;
+  return data?.[0]?.is_active===false?null:(data?.[0]||null);
 };
 // Reshape one customer_invoices row into the read-only _hist invoice object the app merges into
 // allOrders — one mapper shared by the initial load and the poll's self-heal refetch below.
@@ -412,10 +412,11 @@ const _dbLoadHistInvoices=async()=>{
   return{rows:(r.data||[]).map(_mapHistInvoice),status:'ok'};
 };
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
-  if (!supabase) return null;
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false, source=null} = opts;
+  if (!supabase && !source) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
+    const queryTable=source ? async table=>({data:source[table]||[],error:null,status:200}) : async (table,opts)=>table==='team_members'?{...await supabase.rpc('get_staff_directory'),status:200}:_safeQuery(table,opts);
     const recoveryOwner=currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
     const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
@@ -449,15 +450,15 @@ const _dbLoad = async (opts={}) => {
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
-      _cold(()=>_safeQuery('team_members',{order:'name'})),
+      _cold(()=>queryTable('team_members',{order:'name'})),
       // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
       // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
       // Parent and ALL children share the cold flag so a coreOnly load skips them together (group
       // parity); setCust below is .length-guarded and the snapshot is preserved on coreOnly so an
       // empty skip can never wipe customer state or the _diffSave baseline.
-      _grp('customers',()=>_safeQuery('customers',{order:'name'}),true),
-      _grp('customers',()=>_safeQuery('customer_contacts'),true),
-      _cold(()=>_safeQuery('vendors',{order:'name'})),
+      _grp('customers',()=>queryTable('customers',{order:'name'}),true),
+      _grp('customers',()=>queryTable('customer_contacts'),true),
+      _cold(()=>queryTable('vendors',{order:'name'})),
       // products + product_inventory are COLD: a 17k-row catalog that changes only via the daily
       // vendor syncs. Realtime (products channel) + the ~10-min full poll keep them fresh; re-pulling
       // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
@@ -466,29 +467,29 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
-      essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
-      _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
-      _grp('estimates',()=>_safeQuery('estimate_art_files')),
-      _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
-      _grp('estimates',()=>_safeQuery('estimate_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('sales_orders',{order:'id'})),
-      _grp('sales_orders',()=>_safeQuery('so_art_files')),
-      _grp('sales_orders',()=>_safeQuery('so_firm_dates')),
-      _grp('sales_orders',()=>_safeQuery('so_items',{order:'item_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_jobs')),
-      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
-      _grp('invoices',()=>_safeQuery('invoice_payments')),
-      _grp('invoices',()=>_safeQuery('invoice_items')),
-      _grp('invoices',()=>_safeQuery('invoice_credit_memos',{order:'created_at'})),
-      _grp('messages',()=>_safeQuery('messages',{order:'id'})),
-      _grp('messages',()=>_safeQuery('message_reads')),
-      _cold(()=>_safeQuery('omg_stores',{order:'id'})),
-      _cold(()=>_safeQuery('omg_store_products')),
-      _cold(()=>_safeQuery('issues')),
+      essential?_skip:_grp('products',()=>queryTable('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
+      essential?_skip:_grp('products',()=>queryTable('product_inventory'),true),
+      _grp('estimates',()=>queryTable('estimates',{order:'id'})),
+      _grp('estimates',()=>queryTable('estimate_art_files')),
+      _grp('estimates',()=>queryTable('estimate_items',{order:'item_index'})),
+      _grp('estimates',()=>queryTable('estimate_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>queryTable('sales_orders',{order:'id'})),
+      _grp('sales_orders',()=>queryTable('so_art_files')),
+      _grp('sales_orders',()=>queryTable('so_firm_dates')),
+      _grp('sales_orders',()=>queryTable('so_items',{order:'item_index'})),
+      _grp('sales_orders',()=>queryTable('so_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>queryTable('so_item_pick_lines')),
+      _grp('sales_orders',()=>queryTable('so_item_po_lines')),
+      _grp('sales_orders',()=>queryTable('so_jobs')),
+      _grp('invoices',()=>queryTable('invoices',{order:'id'})),
+      _grp('invoices',()=>queryTable('invoice_payments')),
+      _grp('invoices',()=>queryTable('invoice_items')),
+      _grp('invoices',()=>queryTable('invoice_credit_memos',{order:'created_at'})),
+      _grp('messages',()=>queryTable('messages',{order:'id'})),
+      _grp('messages',()=>queryTable('message_reads')),
+      _cold(()=>queryTable('omg_stores',{order:'id'})),
+      _cold(()=>queryTable('omg_store_products')),
+      _cold(()=>queryTable('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
       // A full SELECT * here was ~1.66 MB/call (~14% of DB CPU). Routine poll/realtime reloads apply
@@ -506,7 +507,7 @@ const _dbLoad = async (opts={}) => {
         // same cure, as the `_qb_link_v1_*` exclusion below. `qb_config` is NOT matched by this
         // pattern (`qbo_` vs `qb_`) and still loads, so the QuickBooks page is unaffected.
         const _SCRATCH=['id','like','qbo_*'];
-        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
+        if(fullState&&!essential)return queryTable('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
         // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
         const not=[['id','in','(so_history,est_history)'],_SCRATCH];
@@ -517,28 +518,28 @@ const _dbLoad = async (opts={}) => {
         // every QBO link on fresh tabs.
         not.push(['id','like','_qb_link_v1_*']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
-        return _safeQuery('app_state',not.length?{not}:undefined);
+        return queryTable('app_state',not.length?{not}:undefined);
       },
-      _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_credits'),true),
-      _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping_usage'),true),
-      _cold(()=>_safeQuery('rep_csr_assignments')),
-      _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
-      _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
-      _cold(()=>_safeQuery('deco_vendors',{order:'name'})),
-      _cold(()=>_safeQuery('deco_vendor_pricing')),
-      _cold(()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
-      _cold(()=>_safeQuery('quote_request_items',{order:'sort_order'})),
-      _cold(()=>_safeQuery('dismissed_todos')),
-      _cold(()=>_safeQuery('dismissed_notifs')),
+      _grp('customers',()=>queryTable('customer_promo_programs'),true),
+      _grp('customers',()=>queryTable('customer_promo_periods'),true),
+      _grp('customers',()=>queryTable('customer_promo_usage'),true),
+      _grp('customers',()=>queryTable('customer_credits'),true),
+      _grp('customers',()=>queryTable('customer_credit_usage'),true),
+      _grp('customers',()=>queryTable('customer_pending_shipping'),true),
+      _grp('customers',()=>queryTable('customer_pending_shipping_usage'),true),
+      _cold(()=>queryTable('rep_csr_assignments')),
+      _grp('assigned_todos',()=>queryTable('assigned_todos'),true),
+      _grp('assigned_todos',()=>queryTable('todo_comments'),true),
+      _cold(()=>queryTable('deco_vendors',{order:'name'})),
+      _cold(()=>queryTable('deco_vendor_pricing')),
+      _cold(()=>queryTable('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
+      _cold(()=>queryTable('quote_request_items',{order:'sort_order'})),
+      _cold(()=>queryTable('dismissed_todos')),
+      _cold(()=>queryTable('dismissed_notifs')),
       // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
-      ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
+      ()=>histInvoices?queryTable('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -715,7 +716,7 @@ const _dbLoad = async (opts={}) => {
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:consolidateOmgProductRows(omgProd.filter(p=>p.store_id===s.id)).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
     // Selective loads may not include customers/sales_orders — judge by whatever was fetched
-    const hasData=only?[customers,sales_orders,products,estimates,invoices,messages,assignedTodos].some(a=>a.length>0):((customers.length>0)||(sales_orders.length>0));
+    const hasData=only?[customers,sales_orders,products,estimates,invoices,messages,assignedTodos].some(a=>a.length>0):([team,customers,sales_orders,products,estimates,invoices,messages].some(a=>a.length>0));
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves

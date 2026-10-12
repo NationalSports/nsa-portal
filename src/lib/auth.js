@@ -52,24 +52,21 @@ export const sbGetSession = async () => {
   return data?.session || null;
 };
 
-export const sbLinkTeamAuth = async (teamId, authId) => {
-  if (!supabase) return;
-  await supabase.rpc('link_team_auth', { p_team_id: teamId, p_auth_id: authId });
+export const sbLinkTeamAuth = async () => {
+  if(!supabase)return;
+  const {error}=await supabase.rpc('link_my_team_auth');
+  if(error)throw new Error(error.message);
 };
 
 export const sbGetMyProfile = async () => {
   if (!supabase) return null;
   const { data } = await supabase.rpc('get_my_profile');
-  return data?.[0] || null;
+  return data?.[0]?.is_active === false ? null : (data?.[0] || null);
 };
 
-// Team roster for the gate's first-time-setup and admin-impersonation modes.
-// Small table (dozens of rows); a normal sign-in never blocks on it — the gate
-// seeds reps from localStorage/defaults and refreshes with this in the
-// background. Mirrors App.js's `_safeQuery('team_members',{order:'name'})`.
+// Signed-in staff directory; authorization controls the returned profile fields.
 export const sbGetTeam = async () => {
-  if (!supabase) return [];
-  const { data, error } = await supabase.from('team_members').select('*').order('name');
-  if (error) return [];
-  return data || [];
+  if(!supabase)return [];
+  const {data,error}=await supabase.rpc('get_staff_directory');
+  return error?[]:(data||[]);
 };

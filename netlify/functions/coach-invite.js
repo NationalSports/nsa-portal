@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Netlify function: emails a coach their catalog invite when staff OR another
 // coach invite them in the portal. Sends via Brevo; the coach clicks through to
 // /adidas and signs in with the magic link (their email is pre-filled).
@@ -79,15 +80,15 @@ exports.handler = async (event) => {
     //       anon writes (migration 00176 closes that and makes this the live path).
     let authed = false;
     let scopeFam = null; // null = staff (unrestricted); a Set = coach-portal family bound
-    try { const v = await verifyUser(event); if (v && v.ok) authed = true; } catch (_) {}
+    try { const v = await verifyUser(event, ["customers"]); if (v && v.ok) authed = true; } catch (_) {}
     if (!authed) {
       const alphaTag = String(body.alpha_tag || '').trim();
       if (alphaTag && customerId) {
         const adminAuth = getSupabaseAdmin();
         if (adminAuth) {
-          const famRes = await resolveCustomerFamily(adminAuth, alphaTag);
-          if (famRes.error && !famRes.notFound) {
-            return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: famRes.error }) };
+          const famRes = await authorizeCoachPortal(event, adminAuth, alphaTag);
+          if (!famRes.ok) {
+            return { statusCode: famRes.status || 403, headers, body: JSON.stringify({ ok: false, error: famRes.error }) };
           }
           if (famRes.fam && famRes.fam.has(customerId)) { authed = true; scopeFam = famRes.fam; }
         }

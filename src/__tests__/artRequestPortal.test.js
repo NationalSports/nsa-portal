@@ -1,3 +1,5 @@
+jest.mock('../../netlify/functions/_coachPortalAuth',()=>({authorizeCoachPortal:jest.fn()}));
+const {authorizeCoachPortal}=require('../../netlify/functions/_coachPortalAuth');
 const { createClient } = require('@supabase/supabase-js');
 jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn() }));
 const { handler } = require('../../netlify/functions/art-request-portal');
@@ -6,6 +8,7 @@ function setup(results) {
     const result=results.shift();const q={then:fn=>Promise.resolve(result).then(fn)};
     ['select','eq','in','maybeSingle','neq','order','range'].forEach(k=>q[k]=jest.fn(()=>q));return q;
   })};
+  const roots=results.shift(),children=results.shift();authorizeCoachPortal.mockResolvedValue(roots?.data?.length?{ok:true,fam:new Set(roots.data.map(r=>r.id))}:{ok:false,status:403,error:'Denied'});
   createClient.mockReturnValue(db);return db;
 }
 const invoke = body => handler({httpMethod:'POST',body:JSON.stringify(body)});

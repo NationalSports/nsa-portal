@@ -2,6 +2,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import BarcodeScanner from './BarcodeScanner';
+import {canViewPortalPage} from './lib/pageAccess';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -50,9 +51,9 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onAccountPrivacy,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
-  const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
+  const _caTop=canAccess||(page=>canViewPortalPage(cu,page));// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
@@ -409,7 +410,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           </div>})}
         {/* ─── Purchase Orders + Check-In status — so warehouse can see what's on order and what's arrived ─── */}
         {(()=>{
-          const _ca=canAccess||(()=>true);
+          const _ca=canAccess||(page=>canViewPortalPage(cu,page));
           // Same size-key discovery as warehouse receive (meta-exclusion, not SZ_ORD whitelist)
           // so QTY / OS / OSFA and other non-standard buckets show up for check-in.
           const szKeys=(obj)=>{
@@ -1102,10 +1103,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   };
 
   // ─── NEW ESTIMATE GATE ───
-  if(newEst)return renderNewEstimate();
+  const deniedPage=()=> <div className="mp-page" role="alert"><h2>Access denied</h2><p>Your account does not have access to this section.</p><button onClick={()=>{setDetail(null);setNewEst(null);setMoreSubPage(null);setTab('more')}}>Back to menu</button></div>;
+  if(newEst)return _caTop(newEst._soId?'orders':'estimates')?renderNewEstimate():deniedPage();
 
   // ─── RENDER DETAIL ROUTER ───
   if(detail){
+    const detailPage={order:'orders',estimate:'estimates',customer:'customers',invoice:'invoices',message:'messages'}[detail.type];
+    if(!detailPage||!_caTop(detailPage))return deniedPage();
     if(detail.type==='order')return renderOrderDetail(detail.data);
     if(detail.type==='estimate')return renderEstDetail(detail.data);
     if(detail.type==='customer')return renderCustDetail(detail.data);
@@ -1117,7 +1121,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // Warehouse staff get a quick-navigation grid (like the More page) instead of the
   // rep/CSR dashboard + TODO list — they need fast access to receiving, not sales stats.
   const renderWhHome=()=>{
-    const _ca=canAccess||(()=>true);
+    const _ca=canAccess||(page=>canViewPortalPage(cu,page));
     const go=(sub)=>{setTab('more');setMoreSubPage(sub)};
     const tiles=[
       {label:'Inventory',icon:'warehouse',color:'#16a34a',access:'inventory',onClick:()=>go('inventory')},
@@ -1840,6 +1844,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ─── MORE TAB (hamburger) ───
   const renderMore=()=>{
     const subPage=moreSubPage;const setSubPage=setMoreSubPage;
+    if(subPage&&!_caTop(subPage))return deniedPage();
     if(subPage==='estimates'){
       const filteredE=(()=>{
         let list=ests.filter(e=>inScope(e.customer_id,e.created_by));
@@ -2132,7 +2137,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       </div>;
     }
     // More menu grid
-    const _ca=canAccess||(()=>true);
+    const _ca=canAccess||(page=>canViewPortalPage(cu,page));
     return<div className="mp-page">
       <div className="mp-page-title">More</div>
       <div className="mp-more-grid">
@@ -2172,7 +2177,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <div className="mp-user-card">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div><div style={{fontWeight:700,fontSize:15}}>{cu.name}</div><div style={{fontSize:12,color:'#64748b',textTransform:'capitalize'}}>{cu.role}</div></div>
-          <button className="mp-logout-btn" onClick={onLogout}>Log Out</button>
+          <button onClick={onAccountPrivacy}>Account and privacy</button><button className="mp-logout-btn" onClick={onLogout}>Log Out</button>
         </div>
       </div>
     </div>;
@@ -2187,32 +2192,32 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <button onClick={()=>{setShowSearch(false);setQ('')}} className="mp-search-cancel">Cancel</button>
       </div>
       {searchResults&&<div className="mp-search-results">
-        {searchResults.orders.length>0&&<><div className="mp-search-section">Orders</div>
+        {_caTop('orders')&&searchResults.orders.length>0&&<><div className="mp-search-section">Orders</div>
           {searchResults.orders.map(so=>{const cc=custObj(so.customer_id);return<div key={so.id} className="mp-search-item" onClick={()=>{setDetail({type:'order',data:so});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span style={{color:'#64748b',marginLeft:8}}>{cc?.alpha_tag||cc?.name||''}</span>
             <span style={{...statusBadge(so.status||'new'),marginLeft:'auto'}}>{so.status||'new'}</span>
           </div>})}</>}
-        {searchResults.estimates.length>0&&<><div className="mp-search-section">Estimates</div>
+        {_caTop('estimates')&&searchResults.estimates.length>0&&<><div className="mp-search-section">Estimates</div>
           {searchResults.estimates.map(e=>{const cc=custObj(e.customer_id);return<div key={e.id} className="mp-search-item" onClick={()=>{setDetail({type:'estimate',data:e});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span style={{color:'#64748b',marginLeft:8}}>{cc?.alpha_tag||cc?.name||''}</span>
           </div>})}</>}
-        {searchResults.customers.length>0&&<><div className="mp-search-section">Customers</div>
+        {_caTop('customers')&&searchResults.customers.length>0&&<><div className="mp-search-section">Customers</div>
           {searchResults.customers.map(cc=><div key={cc.id} className="mp-search-item" onClick={()=>{setDetail({type:'customer',data:cc});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700}}>{cc.name}</span>{cc.alpha_tag&&<span style={{color:'#64748b',marginLeft:8}}>{cc.alpha_tag}</span>}
           </div>)}</>}
-        {searchResults.invoices.length>0&&<><div className="mp-search-section">Invoices</div>
+        {_caTop('invoices')&&searchResults.invoices.length>0&&<><div className="mp-search-section">Invoices</div>
           {searchResults.invoices.map(inv=><div key={inv.id} className="mp-search-item" onClick={()=>{setDetail({type:'invoice',data:inv});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span style={{color:'#64748b',marginLeft:8}}>{fmtMoney(inv.total)}</span>
             <span style={{...statusBadge(inv.status||'open'),marginLeft:'auto'}}>{inv.status||'open'}</span>
           </div>)}</>}
-        {searchResults.batches.length>0&&<><div className="mp-search-section">Batch POs</div>
+        {_caTop('warehouse')&&searchResults.batches.length>0&&<><div className="mp-search-section">Batch POs</div>
           {searchResults.batches.map(b=><div key={b.batchNo} className="mp-search-item" onClick={()=>openBatchByNumber(b.batchNo,b.poKeys)}>
             <span style={{fontWeight:800,color:'#7c3aed',fontFamily:'monospace'}}>{b.batchNo}</span>
             <span style={{color:'#64748b',marginLeft:8}}>{b.vendor||'—'}</span>
             <span style={{color:'#94a3b8',marginLeft:6,fontSize:11}}>{b.poKeys.length} PO{b.poKeys.length!==1?'s':''}</span>
             <span style={{fontSize:9,padding:'1px 6px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,marginLeft:'auto'}}>BATCH</span>
           </div>)}</>}
-        {searchResults.pos.length>0&&<><div className="mp-search-section">POs</div>
+        {_caTop('warehouse')&&searchResults.pos.length>0&&<><div className="mp-search-section">POs</div>
           {searchResults.pos.map(po=><div key={po.key} className="mp-search-item" onClick={()=>{setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhRcvQty({});setWhDetail({kind:'po',key:po.key});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700,color:'#1e40af'}}>{po.poId||'PO'}</span>
             {po.batchPo&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontFamily:'monospace',marginLeft:6}}>{po.batchPo}</span>}
@@ -2615,28 +2620,28 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     </div>
     {/* Page content */}
     <div className="mp-content">
-      {tab==='home'&&renderHome()}
-      {tab==='orders'&&renderOrders()}
-      {tab==='messages'&&renderMessages()}
-      {tab==='customers'&&renderCustomers()}
+      {tab==='home'&&_caTop('dashboard')&&renderHome()}
+      {tab==='orders'&&_caTop('orders')&&renderOrders()}
+      {tab==='messages'&&_caTop('messages')&&renderMessages()}
+      {tab==='customers'&&_caTop('customers')&&renderCustomers()}
       {tab==='more'&&renderMore()}
     </div>
     {/* Bottom tab bar */}
     <div className="mp-tabbar">
-      <button className={`mp-tab${tab==='home'?' active':''}`} onClick={()=>{setTab('home');setDetail(null);setMoreSubPage(null)}}>
+      {_caTop('dashboard')&&<button className={`mp-tab${tab==='home'?' active':''}`} onClick={()=>{setTab('home');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="home" size={20}/><span className="mp-tab-label">Home</span>
-      </button>
-      <button className={`mp-tab${tab==='orders'?' active':''}`} onClick={()=>{setTab('orders');setDetail(null);setMoreSubPage(null)}}>
+      </button>}
+      {_caTop('orders')&&<button className={`mp-tab${tab==='orders'?' active':''}`} onClick={()=>{setTab('orders');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="box" size={20}/><span className="mp-tab-label">Orders</span>
-      </button>
-      <button className="mp-tab mp-tab-new" onClick={startNewEstimate}>
+      </button>}
+      {_caTop('estimates')&&<button className="mp-tab mp-tab-new" onClick={startNewEstimate}>
         <div className="mp-tab-new-btn"><MIcon name="plus" size={22}/></div>
         <span className="mp-tab-label">New Est.</span>
-      </button>
-      <button className={`mp-tab${tab==='messages'?' active':''}`} onClick={()=>{setTab('messages');setDetail(null);setMoreSubPage(null)}}>
+      </button>}
+      {_caTop('messages')&&<button className={`mp-tab${tab==='messages'?' active':''}`} onClick={()=>{setTab('messages');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="mail" size={20}/><span className="mp-tab-label">Messages</span>
         {unreadForMeCount>0&&<span className="mp-tab-badge">{unreadForMeCount}</span>}
-      </button>
+      </button>}
       <button className={`mp-tab${tab==='more'?' active':''}`} onClick={()=>{setTab('more');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="menu" size={20}/><span className="mp-tab-label">More</span>
       </button>

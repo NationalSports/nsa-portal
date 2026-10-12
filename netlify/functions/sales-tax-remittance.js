@@ -53,7 +53,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return response(200, origin, {});
   if (event.httpMethod !== 'POST') return response(405, origin, { error: 'POST only' });
 
-  const verified = await verifyUser(event);
+  const verified = await verifyUser(event, ["receive_payments"]);
   if (!verified.ok) return response(verified.status, origin, { error: verified.error });
 
   let body;

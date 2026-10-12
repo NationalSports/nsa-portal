@@ -15,7 +15,7 @@ exports.handler = async (event) => {
   }
 
   // Staff-only: each call consumes paid Vectorizer.AI credits.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["art"]);
   if (!v.ok) {
     return { statusCode: v.status, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: v.error }) };
   }

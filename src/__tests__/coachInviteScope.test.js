@@ -91,6 +91,8 @@ describe('rosterTeamCustomerId — team → owning customer', () => {
   });
 });
 
+jest.mock('../../netlify/functions/_coachPortalAuth',()=>({authorizeCoachPortal:jest.fn()}));
+const {authorizeCoachPortal}=require('../../netlify/functions/_coachPortalAuth');
 // Handler-level denial paths. Mock _shared so we drive the auth decision directly;
 // denials return before any provisioning/email, so no Brevo/fetch mock is needed.
 jest.mock('../../netlify/functions/_shared', () => {
@@ -108,6 +110,7 @@ describe('coach-invite handler — family/team scoping', () => {
     mockedShared.verifyUser.mockReset().mockResolvedValue({ ok: false });   // no staff JWT → coach path
     mockedShared.getSupabaseAdmin.mockReset().mockReturnValue({});          // truthy admin stub
     mockedShared.resolveCustomerFamily.mockReset();
+    authorizeCoachPortal.mockReset().mockImplementation(async()=>({ok:true,fam:(await mockedShared.resolveCustomerFamily()).fam}));
     mockedShared.rosterTeamCustomerId.mockReset();
   });
 

@@ -7,6 +7,7 @@
 // OrderEditor; the client still confirms before saving.
 // ─────────────────────────────────────────────────────────
 
+import { requireStaffOrService } from "../_shared/auth.ts";
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -257,6 +258,8 @@ async function fetchUrlAsText(url: string): Promise<{ ok: boolean; text?: string
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  const authorization = await requireStaffOrService(req, ["orders", "estimates"]);
+  if (!authorization.ok) return new Response(JSON.stringify({ok:false,error:authorization.error}), {status:authorization.status || 403,headers:CORS});
   const t0 = Date.now();
   let auditId: number | null = null;
   let userId: string | null = null;

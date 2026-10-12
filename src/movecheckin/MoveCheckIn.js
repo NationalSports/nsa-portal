@@ -179,7 +179,7 @@ const fmtWhen = (ts) => { try { const d = new Date(ts); return d.toLocaleDateStr
 const boxTitle = (b) => [b.so_id, b.if_id, b.po_id].filter(Boolean).join(' · ') || (b.assigned_to === 'inventory' ? 'INVENTORY' : (b.kind || ''));
 
 export default function MoveCheckIn() {
-  const { loading, signedIn, email } = useStaffSession();
+  const { loading, signedIn, email } = useStaffSession('warehouse');
   const [mode, setMode] = useState('checkin'); // 'checkin' | 'place' | 'boxes' | 'submit'
   const [boxes, setBoxes] = useState([]);
   const [banner, setBanner] = useState(null); // {kind:'ok'|'dupe'|'err', title, sub}
@@ -212,19 +212,13 @@ export default function MoveCheckIn() {
   const [submitProg, setSubmitProg] = useState(null); // {done,total,fails:[]} while writing
   const [submitDone, setSubmitDone] = useState(null); // final summary
   // ── who's allowed in ──
-  // Gating on the Supabase auth session ALONE locked out anyone who signed into
-  // the portal with the admin-password override (LoginGate's pick-your-name
-  // path sets _adminOverride and never creates an auth session). What actually
-  // matters is whether this browser can read the boxes table, so probe that and
-  // let real access — however it was obtained — decide.
-  //   'checking' | 'ok' | 'no_session' (nothing signed in) | 'no_access' (signed in, RLS says no)
+  // Only a verified active profile with Warehouse access may operate this station.
   const [access, setAccess] = useState('checking');
   // Who to stamp on checked_in_by/created_by: the auth email when there is one,
   // otherwise the portal user the browser is carrying.
   const whoRef = useRef(null);
   const [probeErr, setProbeErr] = useState('');
-  const portalUser = (() => { try { return JSON.parse(localStorage.getItem('nsa_user') || 'null'); } catch (e) { return null; } })();
-  const who = email || (portalUser && (portalUser.email || portalUser.name)) || null;
+  const who = signedIn ? email : null;
   whoRef.current = who;
   useWakeLock(access === 'ok' && (mode === 'checkin' || mode === 'place'));
 
@@ -250,7 +244,7 @@ export default function MoveCheckIn() {
     let alive = true;
     (async () => {
       if (!supabase) { if (alive) { setAccess('no_access'); setProbeErr('No database connection configured.'); } return; }
-      if (probeTick && access === 'ok') return; // already in — a focus event shouldn't re-gate
+      if (!signedIn) {setAccess('no_session');setBoxes([]);return;} // already in — a focus event shouldn't re-gate
       // A stored access token that expired while the tab was closed makes the
       // FIRST request go out stale — PostgREST answers 401 while the background
       // refresh is still in flight (the edge logs show exactly this: 401s and
@@ -268,7 +262,7 @@ export default function MoveCheckIn() {
         if (!alive) return;
       }
       setProbeErr((lastErr && lastErr.message) || String(lastErr));
-      setAccess(signedIn || portalUser ? 'no_access' : 'no_session');
+      setAccess(signedIn ? 'no_access' : 'no_session');
     })();
     return () => { alive = false; };
   }, [loading, signedIn, probeTick]);// eslint-disable-line

@@ -12,7 +12,7 @@ exports.handler = async (event) => {
 
   // Staff-only: this hands out the (base64) Vectorizer.AI credential — it must
   // not be obtainable by any anonymous caller.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["art"]);
   if (!v.ok) {
     return { statusCode: v.status, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: v.error }) };
   }

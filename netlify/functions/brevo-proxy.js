@@ -24,7 +24,7 @@ exports.handler = async (event) => {
   // domain. Public surfaces no longer need it: storefront confirmations are sent
   // by webstore-checkout/stripe-webhook, and the public quote form notifies reps
   // via the content-locked quote-notify function.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["orders", "estimates", "customers", "invoices", "messages"]);
   if (!v.ok) {
     return { statusCode: v.status, headers: JSON_HEADERS, body: JSON.stringify({ error: v.error }) };
   }

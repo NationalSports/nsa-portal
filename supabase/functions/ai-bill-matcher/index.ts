@@ -1,3 +1,4 @@
+import {requireStaffOrService} from "../_shared/auth.ts";
 // supabase/functions/ai-bill-matcher/index.ts
 // ─────────────────────────────────────────────────────────
 // "AI bill reconciliation" — two related passes over a supplier
@@ -167,6 +168,11 @@ function buildFindPoContext(candidates: Candidate[], bill: { doc_number?: string
 }
 
 serve(async (req: Request) => {
+  if(req.method!=='OPTIONS'){
+    const authorization=await requireStaffOrService(req, ["import", "qb"]);
+    if(!authorization.ok)return new Response(JSON.stringify({error:authorization.error}),{status:authorization.status,headers:{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}});
+  }
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   const t0 = Date.now();

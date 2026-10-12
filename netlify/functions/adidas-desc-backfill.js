@@ -113,7 +113,7 @@ exports.handler = async (event) => {
   // Admin-only: this endpoint spends Anthropic API credits, so require an active
   // admin/super_admin JWT. verifyAdmin also hands back a service-role client we reuse.
   let adminCheck;
-  try { adminCheck = await verifyAdmin(event); } catch (e) { return json(500, { error: e.message }); }
+  try { adminCheck = await verifyAdmin(event, ["products"]); } catch (e) { return json(500, { error: e.message }); }
   if (!adminCheck.ok) return json(adminCheck.status || 403, { error: adminCheck.error || 'Not authorized' });
   const admin = adminCheck.admin;
 

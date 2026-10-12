@@ -323,7 +323,7 @@ exports.handler = async (event) => {
   // injects the company SanMar credentials and can even submit purchase orders
   // (service=po). The background catalog syncs call it server-to-server with the
   // internal secret; browser callers must present a staff JWT.
-  const auth = await verifyUserOrInternal(event);
+  const auth = await verifyUserOrInternal(event, ["products", "estimates", "orders"]);
   if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ error: auth.error }) };
 
   const username = process.env.SANMAR_USERNAME;

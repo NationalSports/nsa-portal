@@ -1,3 +1,4 @@
+import {canViewPortalPage} from './lib/pageAccess';
 // ═══════════════════════════════════════════════════════════════════
 // FinancialsPage — admin-only financial suite: digest, matched P&L,
 // receivables, and forecast. All computation lives in lib/financeEngine
@@ -409,7 +410,7 @@ export default function FinancialsPage() {
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
     ['profit', 'Profitability'], ['stale', 'Ready to Invoice'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
-    ['comm', 'Commission Reports'],
+    ...(canViewPortalPage(cu,'commission_admin')?[['comm','Commission Reports']]:[]),
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
   const card = { background: '#fff', border: '1px solid ' + HAIR, borderRadius: 12, padding: 16 };
@@ -808,7 +809,7 @@ export default function FinancialsPage() {
         </>
       )}
 
-      {tab === 'comm' && (
+      {tab === 'comm' && canViewPortalPage(cu,'commission_admin') && (
         <div style={card}>
           <h2 style={S.h2}>Commission reports</h2>
           <div style={{ fontSize: 11.5, color: INK2, marginBottom: 12 }}>

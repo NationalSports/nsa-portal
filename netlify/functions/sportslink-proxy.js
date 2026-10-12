@@ -17,7 +17,7 @@
 const { verifyUserOrInternal } = require('./_shared');
 
 exports.handler = async (event) => {
-  const v = await verifyUserOrInternal(event);
+  const v = await verifyUserOrInternal(event, ["products", "estimates", "orders"]);
   if (!v.ok) return { statusCode: v.status || 401, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error || 'Unauthorized' }) };
 
   const apiKey = process.env.SPORTSLINK_API_KEY;

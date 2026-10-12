@@ -30,7 +30,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: name => Promise.resolve({ data: name==='get_staff_directory'?[{id:'team_members-1'}]:null, error: null }),
   };
   return { createClient: () => client, __loadState: state };
 });

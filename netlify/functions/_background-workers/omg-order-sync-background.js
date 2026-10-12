@@ -154,7 +154,7 @@ function buildStoreUpdate(store, summary, now) {
 }
 
 exports.handler = async event => {
-  const auth = await verifyUserOrInternal(event);
+  const auth = await verifyUserOrInternal(event, ["omg"]);
   if (!auth.ok) return { statusCode: auth.status, body: auth.error };
   if (!API_KEY) return { statusCode: 500, body: 'OMG_API_KEY is not configured' };
 

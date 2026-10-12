@@ -1,3 +1,5 @@
+import AiConsentNotice from '../AiConsentNotice';
+import { AI_CONSENT } from '../lib/aiConsent.shared';
 import React, { useEffect, useRef, useState } from 'react';
 import useCoachSession from './useCoachSession';
 import { fetchTeamShopOrders } from './teamshopOrdersApi';
@@ -89,7 +91,7 @@ async function askAssistant({ messages, accessToken, customerId }) {
     const res = await fetch('/.netlify/functions/teamshop-assistant', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ messages, customer_id: customerId || undefined }),
+      body: JSON.stringify({ messages, customer_id: customerId || undefined, ai_consent: AI_CONSENT }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.fallback || !json.ok || !String(json.text || '').trim()) return null;
@@ -355,6 +357,8 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
   const [messages, setMessages] = useState(null); // null = not greeted yet
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState('');
+  const [aiAllowed, setAiAllowed] = useState(false);
+  const [aiPending, setAiPending] = useState(null);
   const { signedIn, accessToken } = useCoachSession();
   const listRef = useRef(null);
   const typingTimer = useRef(null);
@@ -478,7 +482,9 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
   // Free text — AI first, v1 keyword routing as the fallback. The v1 path is
   // NEVER removed: it's what answers when the endpoint is unconfigured
   // (fallback:true), errors, or is unreachable.
-  const sendFreeText = async (text) => {
+  const sendFreeText = async (text, consent = aiAllowed, localOnly = false) => {
+    if(!consent&&!localOnly){setAiPending(text);return;}
+    if(localOnly){push({ from:'user',kind:'text',text });respondFor(routeIntent(text));return;}
     push({ from: 'user', kind: 'text', text });
     setTyping(true);
     const ai = await askAssistant({
@@ -502,6 +508,8 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
     // both values, so hand them over in the message itself.
     sendFreeText(`Look up my order — order number ${orderNumber}, checkout email ${email}.`);
   };
+
+  useEffect(()=>{setAiAllowed(false);setAiPending(null);setMessages(null);},[signedIn, accessToken]);
 
   const handleSend = () => {
     const text = draft.trim();
@@ -596,6 +604,7 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2"><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>
           </button>
         </div>
+        <AiConsentNotice allowed={aiAllowed} onAllow={()=>{setAiAllowed(true);if(aiPending){const text=aiPending;setAiPending(null);sendFreeText(text,true);}}} onRevoke={()=>{setAiAllowed(false);setAiPending(null);setMessages(null);}} onDecline={()=>{if(aiPending){const text=aiPending;setAiPending(null);sendFreeText(text,false,true);}}}/>
         <p style={{ textAlign: 'center', fontSize: 10.5, color: TEXT_FAINT, margin: '8px 0 0' }}>Powered by National Team Shop</p>
       </div>
     </div>

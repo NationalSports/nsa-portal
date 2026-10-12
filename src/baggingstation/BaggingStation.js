@@ -1200,7 +1200,7 @@ function BaggingScreen({ stationToken, staffMode }) {
 
 export default function BaggingStation() {
   const [stationToken] = useState(stationTokenFromUrl);
-  const { loading, signedIn } = useStaffSession();
+  const { loading, signedIn } = useStaffSession('warehouse');
 
   if (stationToken) return <BaggingScreen stationToken={stationToken} />;
   if (loading) {

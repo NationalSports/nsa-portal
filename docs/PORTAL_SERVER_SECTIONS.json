@@ -1,0 +1,255 @@
+{
+  "team-list": [
+    "team"
+  ],
+  "team-invite": [
+    "team"
+  ],
+  "team-deactivate": [
+    "team"
+  ],
+  "onboarding-admin": [
+    "team"
+  ],
+  "sanmar-proxy": [
+    "products",
+    "estimates",
+    "orders"
+  ],
+  "ss-proxy": [
+    "products",
+    "estimates",
+    "orders"
+  ],
+  "momentec-proxy": [
+    "products",
+    "estimates",
+    "orders"
+  ],
+  "richardson-proxy": [
+    "products",
+    "estimates",
+    "orders"
+  ],
+  "sportslink-proxy": [
+    "products",
+    "estimates",
+    "orders"
+  ],
+  "teamshop-auto-release": [
+    "webstores"
+  ],
+  "teamshop-auto-po": [
+    "webstores"
+  ],
+  "ai-clean-description": [
+    "products"
+  ],
+  "adidas-desc-backfill": [
+    "products"
+  ],
+  "vendor-stock-backfill": [
+    "products"
+  ],
+  "vectorizer-auth": [
+    "art"
+  ],
+  "vectorizer-proxy": [
+    "art"
+  ],
+  "silverscreen-job": [
+    "art"
+  ],
+  "omg-proxy": [
+    "omg"
+  ],
+  "omg-order-enrich": [
+    "omg"
+  ],
+  "omg-order-notify": [
+    "omg"
+  ],
+  "omg-store-ingest": [
+    "omg"
+  ],
+  "omg-packing-slip-ingest": [
+    "omg"
+  ],
+  "omg-player-report-ingest": [
+    "omg"
+  ],
+  "omg-order-sync-background": [
+    "omg"
+  ],
+  "omg-profit-sync-background": [
+    "omg"
+  ],
+  "capture-so-save": [
+    "orders"
+  ],
+  "manual-cost-notify": [
+    "orders"
+  ],
+  "oos-removal-notify": [
+    "orders"
+  ],
+  "so-shipment-notify": [
+    "orders"
+  ],
+  "so-shipment-rep-notify": [
+    "orders"
+  ],
+  "so-shipment-notify-sweep": [
+    "orders"
+  ],
+  "so-shipstation-sync": [
+    "orders"
+  ],
+  "shipstation-proxy": [
+    "orders",
+    "warehouse"
+  ],
+  "webstore-shipment-record": [
+    "orders",
+    "warehouse"
+  ],
+  "webstore-shipment-void-record": [
+    "orders",
+    "warehouse"
+  ],
+  "webstore-clone": [
+    "webstores"
+  ],
+  "webstore-closed-notify": [
+    "webstores"
+  ],
+  "webstore-message-notify": [
+    "webstores"
+  ],
+  "store-approval": [
+    "webstores"
+  ],
+  "all-school-purchasing": [
+    "webstores"
+  ],
+  "all-school-dtf": [
+    "webstores"
+  ],
+  "teamshop-po-review": [
+    "webstores"
+  ],
+  "teamshop-retry-convert": [
+    "webstores"
+  ],
+  "teamshop-stuck-sweep": [
+    "webstores"
+  ],
+  "job-scan": [
+    "production"
+  ],
+  "store-production-packet": [
+    "production"
+  ],
+  "bagging-api": [
+    "warehouse"
+  ],
+  "marketing-draft-reply": [
+    "marketing"
+  ],
+  "marketing-gbp-reply": [
+    "marketing"
+  ],
+  "marketing-sync": [
+    "marketing"
+  ],
+  "methodic-accounting": [
+    "methodic"
+  ],
+  "methodic-workflow": [
+    "methodic"
+  ],
+  "unapply-invoice-payment": [
+    "receive_payments"
+  ],
+  "stripe-verification": [
+    "receive_payments"
+  ],
+  "stripe-reconciliation": [
+    "receive_payments"
+  ],
+  "sales-tax-remittance": [
+    "receive_payments"
+  ],
+  "stripe-payment": [
+    "invoices"
+  ],
+  "coach-invite": [
+    "customers"
+  ],
+  "roster-invite": [
+    "customers"
+  ],
+  "uniform-order": [
+    "uniforms"
+  ],
+  "showcase-admin": [
+    "sales_tools"
+  ],
+  "create-quote-request": [
+    "estimates"
+  ],
+  "pdf-generator": [
+    "orders",
+    "estimates",
+    "customers",
+    "invoices",
+    "messages"
+  ],
+  "brevo-proxy": [
+    "orders",
+    "estimates",
+    "customers",
+    "invoices",
+    "messages"
+  ],
+  "review-request-send": [
+    "orders",
+    "estimates",
+    "customers",
+    "invoices",
+    "messages"
+  ],
+  "gmail-send": [
+    "orders",
+    "estimates",
+    "customers",
+    "invoices",
+    "messages"
+  ],
+  "gmail-ai-action": [
+    "ai_inbox"
+  ],
+  "portal-assistant": [
+    "@staff"
+  ],
+  "account-deletion-request": [
+    "@staff"
+  ],
+  "backorder-ready-sweep": [
+    "orders",
+    "warehouse"
+  ],
+  "omg-report-proxy": [
+    "omg"
+  ],
+  "richardson-debug": [
+    "products"
+  ],
+  "sanmar-pricing-sync": [
+    "products"
+  ],
+  "sheet-fetch": [
+    "import",
+    "products"
+  ]
+}

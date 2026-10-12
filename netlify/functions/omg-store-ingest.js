@@ -36,7 +36,7 @@ exports.handler = async (event) => {
   // Staff-only: this was an open webhook that could replace omg_store data via
   // service role. No in-repo caller exists; if an external integration needs it
   // again, give it a signed-in user token (or add a shared-secret path here).
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["omg"]);
   if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');

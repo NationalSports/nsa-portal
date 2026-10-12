@@ -69,7 +69,7 @@ serve(async (req: Request) => {
   // (customer form), the refresh cron, and webstore-checkout server-side — all
   // send either a staff JWT or the service-role key. Previously any anon-key
   // holder could drain the monthly cap.
-  const auth = await requireStaffOrService(req);
+  const auth = await requireStaffOrService(req, ["orders", "estimates", "invoices", "webstores"]);
   if (!auth.ok) {
     return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
   }

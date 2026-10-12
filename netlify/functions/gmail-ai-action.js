@@ -15,7 +15,7 @@ exports.handler = async (event) => {
     return { statusCode: 413, headers, body: JSON.stringify({ error: 'Draft payload is too large' }) };
   }
 
-  const verified = await verifyUser(event);
+  const verified = await verifyUser(event, ["ai_inbox"]);
   if (!verified.ok) {
     return { statusCode: verified.status, headers, body: JSON.stringify({ error: verified.error }) };
   }

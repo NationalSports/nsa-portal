@@ -205,7 +205,7 @@ exports.handler = async (event) => {
   }
   if (!authed) {
     try {
-      const v = await verifyUser(event);
+      const v = await verifyUser(event, ["production"]);
       if (v && v.ok) { authed = true; actor = 'staff:' + v.teamMemberId; }
     } catch (_) { /* fall through to 401 */ }
   }

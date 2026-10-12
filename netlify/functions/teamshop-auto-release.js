@@ -374,7 +374,7 @@ exports.handler = async (event) => {
     let body;
     try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid JSON' }) }; }
     if (body.action !== 'run') return { statusCode: 400, headers, body: JSON.stringify({ error: 'Unknown action.' }) };
-    const staff = await verifyUser(event);
+    const staff = await verifyUser(event, ["webstores"]);
     if (!staff.ok) return { statusCode: staff.status, headers, body: JSON.stringify({ error: staff.error }) };
     actor = staff.teamMemberId || 'staff';
   }

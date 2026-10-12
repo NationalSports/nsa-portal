@@ -45,3 +45,6 @@ exports.handler = async (event) => {
     return { statusCode: 502, headers: CORS, body: `Could not fetch the sheet: ${error.message}` };
   }
 };
+
+// Enforce staff sections before using server-side vendor credentials.
+exports.handler=require('./_sectionHandler').sectionHandler(exports.handler,["import", "products"]);

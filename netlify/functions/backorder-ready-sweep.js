@@ -499,7 +499,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const auth = await verifyUser(event);
+    const auth = await verifyUser(event, ["orders", "warehouse"]);
     if (!auth.ok) return bad(auth.status || 401, auth.error || 'Unauthorized');
     let admin;
     try { admin = getSupabaseAdmin(); } catch (e) { return bad(500, 'Service not configured'); }

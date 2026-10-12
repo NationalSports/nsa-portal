@@ -6,7 +6,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders(), body: '' };
 
   try {
-    const adminCheck = await verifyAdmin(event);
+    const adminCheck = await verifyAdmin(event, ["team"]);
     if (!adminCheck.ok) {
       return { statusCode: adminCheck.status || 403, headers: corsHeaders(), body: JSON.stringify({ error: adminCheck.error || 'Not authorized' }) };
     }

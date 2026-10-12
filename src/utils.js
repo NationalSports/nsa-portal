@@ -1,3 +1,4 @@
+import {coachPortalFetch} from './lib/coachPortalFetch';
 /* eslint-disable */
 import { NSA as _NSA_CONST, szRank, orderLineSizes } from './constants';
 // Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
@@ -220,7 +221,7 @@ export const queueEmailCart=async(supabase,{inboxMessageId})=>{
 // service-role key to persist the change and send the rep notification.
 export const _portalAction=async(payload)=>{
   try{
-    const r=await fetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const r=await coachPortalFetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
     if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status),code:d.code};
     return{ok:true,...d};

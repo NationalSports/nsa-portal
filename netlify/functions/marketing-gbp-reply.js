@@ -37,7 +37,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["marketing"]);
   if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ error: auth.error }) };
 
   if (!process.env.GBP_CLIENT_ID || !process.env.GBP_CLIENT_SECRET || !process.env.GBP_REFRESH_TOKEN) {

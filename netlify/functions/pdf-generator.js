@@ -35,7 +35,7 @@ exports.handler = async (event) => {
 
   // Staff-only: the function renders caller-supplied HTML in a headless browser
   // (an SSRF/DoS/brand-forgery surface if left public). Require a valid team member.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["orders", "estimates", "customers", "invoices", "messages"]);
   if (!v.ok) return { statusCode: v.status, body: v.error };
 
   if (event.body && Buffer.byteLength(event.body, 'utf8') > MAX_HTML_BYTES) {

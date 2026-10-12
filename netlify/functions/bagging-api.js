@@ -211,7 +211,7 @@ exports.handler = async (event) => {
   }
   if (!actor) {
     try {
-      const v = await verifyUser(event);
+      const v = await verifyUser(event, ["warehouse"]);
       if (v && v.ok) actor = 'staff:' + v.teamMemberId;
     } catch (_) { /* fall through */ }
   }

@@ -54,7 +54,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return response(405, { ok: false, error: 'POST only' });
   let auth;
-  try { auth = await verifyUser(event); }
+  try { auth = await verifyUser(event, ["orders", "warehouse"]); }
   catch (error) { return response(500, { ok: false, error: 'Authentication check failed' }); }
   if (!auth.ok) return response(auth.status, { ok: false, error: auth.error });
 

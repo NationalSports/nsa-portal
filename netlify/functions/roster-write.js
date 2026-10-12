@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Coach-portal roster write endpoint (audit #11, Phase 1).
 //
 // The coach roster portal is a public link (?portal=<alpha_tag>) that runs as the
@@ -91,8 +92,8 @@ exports.handler = async (event) => {
   const admin = getAdmin();
   if (!admin) return bad(500, 'Service not configured');
 
-  const famRes = await resolveCustomerFamily(admin, alphaTag);
-  if (famRes.error) return bad(famRes.notFound ? 403 : 500, famRes.error);
+  const famRes = await authorizeCoachPortal(event, admin, alphaTag);
+  if (!famRes.ok) return bad(famRes.status || 403, famRes.error);
   const fam = famRes.fam;
 
   try {

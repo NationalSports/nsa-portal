@@ -13,7 +13,7 @@ const { verifyUser } = require('./_shared');
 
 exports.handler = async (event) => {
   // Staff-only: this proxy injects the company Richardson API key.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["products", "estimates", "orders"]);
   if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
 
   const apiKey = process.env.RICHARDSON_API_KEY;

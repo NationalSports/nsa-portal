@@ -49,7 +49,7 @@ const baseTables = (over = {}) => ({
   ...over,
 });
 
-const call = ({ user = { id: 'auth1', email: 'coach@team.com' }, tables = baseTables(), auth = 'Bearer tok', method = 'POST', body = { action: 'list', customer_id: 'custA' } } = {}) => {
+const call = ({ user = { id: 'auth1', email: 'coach@team.com',email_confirmed_at:'2026-01-01' }, tables = baseTables(), auth = 'Bearer tok', method = 'POST', body = { action: 'list', customer_id: 'custA' } } = {}) => {
   mockAdmin = fakeSb(tables, user);
   return teamshopOrders.handler({ httpMethod: method, headers: auth ? { authorization: auth } : {}, body: JSON.stringify(body) });
 };

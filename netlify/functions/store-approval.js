@@ -142,7 +142,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ ok: false, error: 'Method not allowed' }) };
 
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["webstores"]);
   if (!auth.ok) return { statusCode: auth.status || 401, headers, body: JSON.stringify({ ok: false, error: auth.error || 'Not authorized' }) };
 
   let body;

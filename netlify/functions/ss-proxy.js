@@ -26,7 +26,7 @@ const { guardAllSchoolVendorRequest } = require('./_allSchoolVendorGuard');
 
 exports.handler = async (event) => {
   // Staff-only: this proxy injects the company S&S Activewear credentials.
-  const v = await verifyUserOrInternal(event);
+  const v = await verifyUserOrInternal(event, ["products", "estimates", "orders"]);
   if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
 
   const accountNumber = process.env.SS_ACCOUNT_NUMBER;

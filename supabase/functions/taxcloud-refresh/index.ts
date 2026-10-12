@@ -101,7 +101,7 @@ serve(async (req: Request) => {
   // Authorize first: this bulk-updates customers.tax_rate and spends the metered
   // TaxCloud budget. Staff (browser) or the trusted server/pg_cron (service role,
   // which the taxcloud crons send) only — previously any anon-key holder could run it.
-  const auth = await requireStaffOrService(req);
+  const auth = await requireStaffOrService(req, ["settings", "invoices"]);
   if (!auth.ok) {
     return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
   }

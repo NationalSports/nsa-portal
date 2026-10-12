@@ -178,6 +178,7 @@ describe('ChatWidget keyword routing (free text)', () => {
     const box = screen.getByLabelText('Message');
     fireEvent.change(box, { target: { value: input } });
     fireEvent.keyDown(box, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue without AI' }));
     await advanceTyping();
     if (chipLabel === 'Track my order') {
       expect(await screen.findByText(/Sign in and I can show you live status/)).toBeTruthy();

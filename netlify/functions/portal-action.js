@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Coach-portal write endpoint.
 //
 // The coach portal is a public link (?portal=<alpha_tag>) and runs as the
@@ -182,15 +183,9 @@ exports.handler = async (event) => {
   let allowedSO = new Set(), allowedEst = new Set();
   const allowedSODocs = new Map(), allowedEstDocs = new Map(), primaryRepByCustomer = new Map();
   try {
-    const { data: parents, error: custErr } = await admin.from('customers').select('id,primary_rep_id').eq('alpha_tag', alphaTag.trim());
-    if (custErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: custErr.message }) };
-    if (!parents || !parents.length) return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: 'Unknown portal tag' }) };
-    const parentIds = parents.map(p => p.id);
-    const { data: kids, error: kidErr } = await admin.from('customers').select('id,primary_rep_id').in('parent_id', parentIds);
-    if (kidErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: kidErr.message }) };
-    const famIds = new Set([...parentIds, ...(kids || []).map(k => k.id)]);
-    [...parents, ...(kids || [])].forEach(c => primaryRepByCustomer.set(c.id, c.primary_rep_id || null));
-
+    const scope=await authorizeCoachPortal(event,admin,alphaTag);
+    if(!scope.ok)return {statusCode:scope.status,headers:CORS,body:JSON.stringify({error:scope.error})};
+    const famIds=scope.fam;
     const soIds = [...new Set([...jobs, ...artFiles].map(r => r?.so_id).concat(touchSO ? [touchSO] : []).concat(artDecision?.so_id ? [artDecision.so_id] : []).filter(Boolean))];
     if (soIds.length) {
       const { data: sos, error: soErr } = await admin.from('sales_orders').select('id,customer_id,created_by').in('id', soIds);

@@ -84,7 +84,7 @@ serve(async (req: Request) => {
   // Authorize before doing anything: this endpoint files real tax with TaxCloud
   // (AuthorizedWithCapture) and previously trusted any caller's customer_id /
   // invoice_id. Only staff or a trusted server (service role) may file.
-  const auth = await requireStaffOrService(req);
+  const auth = await requireStaffOrService(req, ["invoices"]);
   if (!auth.ok) {
     return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
   }

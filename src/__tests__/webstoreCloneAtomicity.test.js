@@ -36,7 +36,7 @@ describe('atomic webstore cloning', () => {
     expect(migration).toMatch(/v_role <> 'service_role' and not public\.is_team_member\(\)/);
     expect(migration).toMatch(/revoke all on function[\s\S]*from public, anon, authenticated/);
     expect(migration).toMatch(/grant execute on function[\s\S]*to service_role/);
-    expect(endpoint).toMatch(/await verifyUser\(event\)/);
+    expect(endpoint).toMatch(/await verifyUser\(event, \["webstores"\]\)/);
     expect(endpoint).toMatch(/sb\.rpc\('clone_webstore_atomic'/);
   });
 });

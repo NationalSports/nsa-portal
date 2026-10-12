@@ -1,3 +1,4 @@
+const {authorizeCoachPortal}=require('./_coachPortalAuth');
 // Token-scoped coach team-store tracking and roster gateway.
 // The public portal tag is a bearer credential. It is resolved server-side to a
 // customer family; the browser never receives a service key and cannot choose a
@@ -39,8 +40,8 @@ exports.handler = async (event) => {
 
   let admin;
   try { admin = getSupabaseAdmin(); } catch { return bad(500, 'Service not configured'); }
-  const familyResult = await resolveCustomerFamily(admin, alphaTag);
-  if (familyResult.error) return bad(familyResult.notFound ? 403 : 500, familyResult.error);
+  const familyResult = await authorizeCoachPortal(event, admin, alphaTag);
+  if (!familyResult.ok) return bad(familyResult.status || 403, familyResult.error);
   const family = familyResult.fam;
 
   try {

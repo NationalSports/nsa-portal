@@ -199,7 +199,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders(), body: '' };
   if (event.httpMethod !== 'POST') return reply(405, { error: 'Method not allowed' });
 
-  const auth = await verifyUser(event);
+  const auth = await verifyUser(event, ["sales_tools"]);
   if (!auth.ok) return reply(auth.status, { error: auth.error });
   const admin = auth.admin;
 

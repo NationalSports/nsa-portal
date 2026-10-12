@@ -2214,7 +2214,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!uuidMatch) { flash('Invalid report URL — needs a valid OMG report link'); return; }
     setOmgFetching(true);
     try {
-      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      const resp = await authFetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
       if (!resp.ok) throw new Error(await omgProxyError(resp));
       const report = await resp.json();
       if (!report?.reports?.length) throw new Error('Report JSON has no data');
@@ -10633,7 +10633,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
     if (!/docs\.google\.com|spreadsheets/i.test(url)) { setErr('Paste a Google Sheets share link (docs.google.com/spreadsheets/…).'); return; }
     setErr(''); setDone(null); setBusy(true); setStage('Reading the sheet…'); setFileName(''); setRows([]); setIssues(null);
     try {
-      const res = await fetch('/.netlify/functions/sheet-fetch?url=' + encodeURIComponent(url));
+      const res = await authFetch('/.netlify/functions/sheet-fetch?url=' + encodeURIComponent(url));
       const text = await res.text();
       if (!res.ok) { setErr(text || 'Could not read that sheet.'); setBusy(false); setStage(''); return; }
       setFileName('Google Sheet'); setStage('');

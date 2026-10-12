@@ -35,11 +35,12 @@ jest.mock('../lib/supabase', () => {
   return {
     supabase: {
       auth: {
+        getUser:()=>Promise.resolve({data:{user:global.__mockSession?.user}}),
         getSession: () => Promise.resolve({ data: { session: global.__mockSession } }),
         onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
       },
       from: (table) => makeBuilder((global.__mockTables || {})[table] || { data: [], error: null }),
-      rpc: () => Promise.resolve({ data: { ok: true }, error: null }),
+      rpc: (name) => Promise.resolve({ data: name==='get_my_profile'?[{id:'staff',auth_id:'verified-staff',role:'production',access:['production'],is_active:true}]:{ ok: true }, error: null }),
     },
   };
 });
@@ -650,7 +651,7 @@ describe('migration 00202', () => {
 });
 
 // ── Auto POs tab (staff UI) ──────────────────────────────────────────
-const SESSION = { user: { email: 'staff@nsa.test' }, access_token: 'tok' };
+const SESSION = { user: { id:'verified-staff',email: 'staff@nsa.test' }, access_token: 'tok' };
 const baseTables = () => ({
   webstore_orders: { data: [], error: null },
   sales_orders: { data: [], error: null },

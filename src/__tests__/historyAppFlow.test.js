@@ -35,6 +35,6 @@ const queryEnd=engine.indexOf("      _grp('customers'",queryStart);
 const query=engine.slice(queryStart,queryEnd).trim().replace(/,$/,'');
 test.each([[true,true],[true,false],[false,false]])('history blobs are excluded from actual app-state query (full=%s essential=%s)',(fullState,essential)=>{
   const safe=jest.fn();
-  const run=Function('only','fullState','essential','_productsLoading','_safeQuery','_skip','_APPSTATE_INIT_ONLY_KEYS','return '+query)(null,fullState,essential,true,safe,jest.fn(),['so_history','est_history','qb_config']);
+  const run=Function('only','fullState','essential','_productsLoading','queryTable','_skip','_APPSTATE_INIT_ONLY_KEYS','return '+query)(null,fullState,essential,true,safe,jest.fn(),['so_history','est_history','qb_config']);
   run();expect(safe).toHaveBeenCalledWith('app_state',expect.objectContaining({not:expect.arrayContaining([['id','in','(so_history,est_history)']])}));
 });

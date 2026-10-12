@@ -21,7 +21,7 @@ exports.handler = async (event) => {
 
   // Staff-only: quote requests are created from the logged-in app; without this
   // gate any caller could insert rows with a forged customer_id/created_by.
-  const v = await verifyUser(event);
+  const v = await verifyUser(event, ["estimates"]);
   if (!v.ok) {
     return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
   }

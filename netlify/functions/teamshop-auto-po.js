@@ -857,7 +857,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const auth = await verifyUser(event);
+    const auth = await verifyUser(event, ["webstores"]);
     if (!auth.ok) return bad(auth.status || 401, auth.error || 'Unauthorized');
 
     let admin;

@@ -11,6 +11,7 @@ const path = require('path');
 
 let mockVerifyResult = { ok: true, userId: 'u1', teamMemberId: 'tm1', role: 'staff' };
 jest.mock('../../netlify/functions/_shared', () => ({
+  corsHeaders:()=>({'Content-Type':'application/json'}),
   verifyUser: jest.fn(async () => mockVerifyResult),
   verifyUserOrInternal: jest.fn(async () => mockVerifyResult),
 }));
@@ -168,11 +169,11 @@ describe('omg-proxy (GATED-but-permissive)', () => {
 });
 
 // ───────────────────────────── omg-report-proxy.js ─────────────────────────────
-// SAFE-allowlisted: anonymous, but the host is a fixed literal and the only
+// Section-gated: the host is a fixed literal and the only
 // caller input (report id) is regex-validated to a UUID shape before it ever
 // reaches the URL, so it cannot smuggle a path/host change.
 describe('omg-report-proxy (SAFE-allowlisted)', () => {
-  const { handler } = require('../../netlify/functions/omg-report-proxy');
+  const handler = event => load('omg-report-proxy.js').handler(event);
   const VALID = '48ff450f-30dc-46c0-5101-698fe5464e53';
 
   test('valid id fetches only report.ordermygear.com', async () => {

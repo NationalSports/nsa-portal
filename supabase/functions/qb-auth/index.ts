@@ -4,6 +4,7 @@
 // Redirects the user to Intuit's consent screen.
 // ─────────────────────────────────────────────────────────
 
+import { requireStaffOrService } from "../_shared/auth.ts";
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 const QBO_CLIENT_ID = Deno.env.get("QBO_CLIENT_ID") || "";
@@ -23,6 +24,8 @@ serve(async (req: Request) => {
     });
   }
 
+  const caller = await requireStaffOrService(req, ["qb"]);
+  if (!caller.ok) return new Response(JSON.stringify({ok:false,error:caller.error}),{status:caller.status || 403,headers:{"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}});
   try {
     if (!QBO_CLIENT_ID || !QBO_REDIRECT_URI) {
       return new Response(

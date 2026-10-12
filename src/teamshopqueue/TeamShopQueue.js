@@ -2628,7 +2628,7 @@ function TeamShopQueueTabs({ email }) {
 }
 
 export default function TeamShopQueue() {
-  const { loading, signedIn, email } = useStaffSession();
+  const { loading, signedIn, email } = useStaffSession('production');
 
   if (loading) {
     return (

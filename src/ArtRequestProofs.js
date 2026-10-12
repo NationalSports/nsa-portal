@@ -1,3 +1,4 @@
+import {coachPortalFetch} from './lib/coachPortalFetch';
 import React, { useEffect, useState } from 'react';
 const labels = { pending: 'Waiting for customer approval', approved: 'Customer approved', changes_requested: 'Customer requested changes' };
 export function ProofHistory({ proofs = [] }) {
@@ -19,7 +20,7 @@ export function ShareArtProof({ row, service, onChanged, portalTag }) {
   </section>;
 }
 async function portalCall(body) {
-  const res = await fetch('/.netlify/functions/art-request-portal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await coachPortalFetch('/.netlify/functions/art-request-portal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Could not save your response');
   return data;

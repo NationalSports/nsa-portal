@@ -1,3 +1,4 @@
+import {coachPortalFetch} from './lib/coachPortalFetch';
 /* eslint-disable */
 import CustomerArtProofs from './ArtRequestProofs';
 import React, { useState, useEffect, useRef } from 'react';
@@ -48,7 +49,7 @@ const cpShopHref = (slug) => CP_EMBEDDED ? `${CP_MARKETING}/shop/${slug}` : `/sh
 // Supabase role. The portal tag is sent to this server gateway, which resolves
 // it to a customer family and returns only that family's curated tracking data.
 const coachWebstoreCall = async (alphaTag, action, payload = {}) => {
-  const response = await fetch('/.netlify/functions/coach-webstore-access', {
+  const response = await coachPortalFetch('/.netlify/functions/coach-webstore-access', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ alpha_tag: alphaTag, action, payload }),
@@ -383,7 +384,7 @@ function CoachRosterManager({ store, initialRoster, alphaTag }) {
     if (!ids.length) { flash('No players with an email address to send to.'); return; }
     if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
     setBusy(true);
-    try { const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alpha_tag: alphaTag, store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
+    try { const res = await coachPortalFetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alpha_tag: alphaTag, store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
     catch (err) { flash('Email failed: ' + err.message); }
     setBusy(false);
   };
