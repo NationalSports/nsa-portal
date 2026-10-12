@@ -1449,134 +1449,6 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
   return{so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
     billed:billed||{},tracking_numbers:tracking_numbers||[],
     sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
-// Prepare so_jobs upsert rows with every stale-copy guard (coach decisions, art-status regression,
-// receipt regression, append-only history). Shared by the full order save and the art+jobs save, so
-// an Art Dashboard action that skips the line items keeps exactly the same protections. Returns the
-// rows to write and `adopt`, which must run only after the write commits.
-const _prepareJobUpserts=async(so,jobs)=>{
-      const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
-      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
-      // order with one reviewed job and older jobs would otherwise send NULL for
-      // the older rows rather than using the database default.
-      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
-      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
-      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
-      // decision columns and silently reverts it. Never null a non-null coach column unless this save
-      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
-      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
-      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
-      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
-      if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
-      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
-      {let _preserved=0;
-      jobRows.forEach((row,i)=>{
-        if(dedupedJobs[i]._coach_cleared)return;
-        const db=_dbCoachById.get(row.id);if(!db)return;
-        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
-        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
-      });
-      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
-      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
-      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
-      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
-      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
-      // already cleared. A stale copy may never move art_status BACKWARD through the review
-      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
-      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
-      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
-      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
-      // rep wants persisted. The three production-files stages share one rank: which of them a job
-      // sits in is a per-deco routing detail, not review progress.
-      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
-      let _artKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
-        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
-        const _stale=(j._version||0)<(db._version||0);
-        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
-      });
-      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
-      // Receipt-state regression guard (same SO-1131 incident — the stale save also wiped the job's
-      // received count 6→0 and flipped it back to Need to Order; 124 such regressions in the prior
-      // 30 days). A stale copy may not LOWER a job's fulfilled_units. Restored as a PAIR with
-      // item_status, which is derived from fulfilled_units — restoring one without the other would
-      // write a contradictory shape. Version-gated: a current tab's deliberate un-receive / receipt
-      // edit passes untouched, and the receiving flows re-derive both on their own saves anyway.
-      {let _rcptKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
-        const _stale=(j._version||0)<(db._version||0);
-        const _dbFul=Number(db.fulfilled_units)||0;
-        if(_stale&&('fulfilled_units'in row)&&(Number(row.fulfilled_units)||0)<_dbFul){
-          row.fulfilled_units=db.fulfilled_units;
-          if(('item_status'in row)&&db.item_status)row.item_status=db.item_status;
-          _rcptKept++;
-        }
-      });
-      if(_rcptKept)console.warn('[DB] Preserved',_rcptKept,'job receipt state(s) on',so.id,'that a stale save would have lowered (client job copy behind DB _version)');}
-      // Append-only history guard: art_messages / sent_history / rejections only ever GROW — no UI
-      // deletes an artist message, a coach-send record, or a rejection. A stale copy writing its
-      // shorter list permanently drops entries another session appended since this tab loaded
-      // (46 / 17 / 5 shrink-writes respectively in the 30 days before this guard) — unlike the
-      // status columns those never self-heal. On a stale copy, union DB + client entries (DB order
-      // first, client-only entries appended, so a fresh reply still lands at the end) instead of
-      // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
-      // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
-      {const _HIST_COLS=['art_messages','sent_history','rejections'];
-      // rejections key deliberately ignores timestamps: the coach portal writes the decision
-      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
-      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
-      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
-      // twice. by+reason identifies the logical decision across both writes.
-      const _histKey=(c,e)=>{
-        if(!e||typeof e!=='object')return JSON.stringify(e);
-        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
-        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
-      };
-      let _histKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
-        if(((j._version||0)>=(db._version||0)))return;// current copy — its list is authoritative
-        _HIST_COLS.forEach(c=>{
-          if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
-          const client=Array.isArray(row[c])?row[c]:[];
-          // DB order first; where the client holds its own copy of the same logical entry, the
-          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
-          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
-          // entries append at the end, so a fresh reply still lands last.
-          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
-          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
-          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
-          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
-        });
-      });
-      if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
-      // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
-      // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
-      // client sends on every save (_draft, priced_separately, price_override, split_group) — one
-      // more and the strip-all fallback fired, silently dropping split_open (which mis-orders
-      // split-family receipt apportioning, SO-1462) along with the coach/follow-up flags. Both
-      // halves of that are kept: the helper's budget is far above any real gap, AND this branch
-      // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
-      // other three now have a migration, so the retry should never fire here at all.
-      return{jobRows,adopt:()=>dedupedJobs.forEach((j,i)=>{
-        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
-        // protected first save promotes stale local content to the current version and a second save can
-        // regress art status, receipts, or append-only history with the guards now disarmed.
-        Object.assign(j,jobRows[i]);
-        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
-        if(j._art_moved)delete j._art_moved;
-        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
-        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
-        // were never rebased before, so after ONE save every tab read as "stale" forever — which
-        // would make the regression guard above block this tab's own later deliberate backward
-        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
-        // copy genuinely behind ANOTHER client's write is treated as stale.
-        const _db=_dbCoachById.get(j.id);
-        j._version=((_db?_db._version:j._version)||0)+1;
-      })};
-};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return false;
   // Stale-write circuit breaker (mirrors _dbSaveEstimateInner). A save rejected as STALE_SO_WRITE is
@@ -2356,9 +2228,129 @@ const _dbSaveSOInner = async (so) => {
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
-      const _jobPrep=await _prepareJobUpserts(so,jobs);
-      savePlan.job_upserts=_jobPrep.jobRows;
-      afterCommit.push(_jobPrep.adopt);
+      const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
+      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
+      // order with one reviewed job and older jobs would otherwise send NULL for
+      // the older rows rather than using the database default.
+      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
+      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
+      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
+      // decision columns and silently reverts it. Never null a non-null coach column unless this save
+      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
+      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
+      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
+      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
+      if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
+      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
+      {let _preserved=0;
+      jobRows.forEach((row,i)=>{
+        if(dedupedJobs[i]._coach_cleared)return;
+        const db=_dbCoachById.get(row.id);if(!db)return;
+        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
+        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
+      });
+      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
+      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
+      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
+      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
+      // already cleared. A stale copy may never move art_status BACKWARD through the review
+      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
+      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
+      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
+      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
+      // rep wants persisted. The three production-files stages share one rank: which of them a job
+      // sits in is a per-deco routing detail, not review progress.
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      let _artKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
+        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
+        const _stale=(j._version||0)<(db._version||0);
+        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
+      });
+      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
+      // Receipt-state regression guard (same SO-1131 incident — the stale save also wiped the job's
+      // received count 6→0 and flipped it back to Need to Order; 124 such regressions in the prior
+      // 30 days). A stale copy may not LOWER a job's fulfilled_units. Restored as a PAIR with
+      // item_status, which is derived from fulfilled_units — restoring one without the other would
+      // write a contradictory shape. Version-gated: a current tab's deliberate un-receive / receipt
+      // edit passes untouched, and the receiving flows re-derive both on their own saves anyway.
+      {let _rcptKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        const _stale=(j._version||0)<(db._version||0);
+        const _dbFul=Number(db.fulfilled_units)||0;
+        if(_stale&&('fulfilled_units'in row)&&(Number(row.fulfilled_units)||0)<_dbFul){
+          row.fulfilled_units=db.fulfilled_units;
+          if(('item_status'in row)&&db.item_status)row.item_status=db.item_status;
+          _rcptKept++;
+        }
+      });
+      if(_rcptKept)console.warn('[DB] Preserved',_rcptKept,'job receipt state(s) on',so.id,'that a stale save would have lowered (client job copy behind DB _version)');}
+      // Append-only history guard: art_messages / sent_history / rejections only ever GROW — no UI
+      // deletes an artist message, a coach-send record, or a rejection. A stale copy writing its
+      // shorter list permanently drops entries another session appended since this tab loaded
+      // (46 / 17 / 5 shrink-writes respectively in the 30 days before this guard) — unlike the
+      // status columns those never self-heal. On a stale copy, union DB + client entries (DB order
+      // first, client-only entries appended, so a fresh reply still lands at the end) instead of
+      // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
+      // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
+      {const _HIST_COLS=['art_messages','sent_history','rejections'];
+      // rejections key deliberately ignores timestamps: the coach portal writes the decision
+      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
+      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
+      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
+      // twice. by+reason identifies the logical decision across both writes.
+      const _histKey=(c,e)=>{
+        if(!e||typeof e!=='object')return JSON.stringify(e);
+        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
+        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
+      };
+      let _histKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        if(((j._version||0)>=(db._version||0)))return;// current copy — its list is authoritative
+        _HIST_COLS.forEach(c=>{
+          if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
+          const client=Array.isArray(row[c])?row[c]:[];
+          // DB order first; where the client holds its own copy of the same logical entry, the
+          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
+          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
+          // entries append at the end, so a fresh reply still lands last.
+          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
+          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
+          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
+          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
+        });
+      });
+      if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
+      // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
+      // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
+      // client sends on every save (_draft, priced_separately, price_override, split_group) — one
+      // more and the strip-all fallback fired, silently dropping split_open (which mis-orders
+      // split-family receipt apportioning, SO-1462) along with the coach/follow-up flags. Both
+      // halves of that are kept: the helper's budget is far above any real gap, AND this branch
+      // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
+      // other three now have a migration, so the retry should never fire here at all.
+      savePlan.job_upserts=jobRows;
+      afterCommit.push(()=>dedupedJobs.forEach((j,i)=>{
+        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
+        // protected first save promotes stale local content to the current version and a second save can
+        // regress art status, receipts, or append-only history with the guards now disarmed.
+        Object.assign(j,jobRows[i]);
+        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
+        if(j._art_moved)delete j._art_moved;
+        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
+        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
+        // were never rebased before, so after ONE save every tab read as "stale" forever — which
+        // would make the regression guard above block this tab's own later deliberate backward
+        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
+        // copy genuinely behind ANOTHER client's write is treated as stale.
+        const _db=_dbCoachById.get(j.id);
+        j._version=((_db?_db._version:j._version)||0)+1;
+      }));
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
@@ -2587,50 +2579,6 @@ const _dbSaveArtFilesInner = async (so) => {
   }});
 };
 const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesInner,true);
-// Art + jobs save for Art Dashboard actions (file uploads, prod-files confirmation, status moves,
-// artist assignment). Writes ONLY so_art_files and so_jobs rows — never the order header or its line
-// items — so an artist's click no longer deletes/re-inserts every item, decoration, pick and PO line,
-// and no longer bumps the order's _version under a rep's open editor (SO-2444, 2026-10-12: one seps
-// upload = 6 whole-order rewrites in 20s; the rep's next edit was rejected as stale). Each art and
-// job row keeps its own optimistic-version guards; job rows go through the same _prepareJobUpserts
-// protections as the full save. Upsert-only for jobs: removing a job still needs the full save.
-const _dbSaveArtJobsInner = async (so) => {
-  if(!supabase)return false;
-  await _ensureFreshSession();
-  return _dbSavingGuard(async()=>{try{
-    if(!Array.isArray(so.art_files)&&!Array.isArray(so.jobs))return false;
-    const token=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
-    if(token.error)throw new Error(token.error.message);
-    let resolved=[],art_deletes=[];
-    if(Array.isArray(so.art_files)){
-      const {data:dbArt,error:readError}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
-      if(readError)throw new Error(readError.message);
-      resolved=_resolveArtRows(so.art_files,dbArt,so.id);
-      const present=new Set(so.art_files.map(a=>a.id));
-      const known=_knownArtIdsFor('so_art_files',so);
-      art_deletes=so._artHydrated===false?[]:(dbArt||[]).filter(a=>known.has(a.id)&&!present.has(a.id)).map(a=>a.id);
-    }
-    const jobPrep=Array.isArray(so.jobs)&&so.jobs.length?await _prepareJobUpserts(so,so.jobs):{jobRows:[],adopt:()=>{}};
-    // No `items`/`firm_dates` keys at all (not even null): their mere presence makes the RPC demand the
-    // order's edit lease, which would refuse an artist's art/job save whenever a rep has the order open.
-    // Art and job rows are each guarded by their own _version, so they don't need the order-wide lease.
-    const plan={header:{id:so.id},write_header:false,is_new:false,
-      art_upserts:resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id})),
-      art_deletes,job_upserts:jobPrep.jobRows,job_deletes:[]};
-    const {data,error}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{p_so_id:so.id,p_expected_token:token.data,p_plan:plan}));
-    if(error)throw new Error(error.message);
-    if(data?.saved!==true)throw new Error('Database did not confirm the artwork save');
-    resolved.forEach(_adoptResolvedArtRow);
-    jobPrep.adopt();
-    if(plan.art_upserts.length)_markArtWritten('so_art_files',so.id,plan.art_upserts.map(r=>r.id));
-    return true;
-  }catch(error){
-    if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
-    if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
-    return false;
-  }});
-};
-const _dbSaveArtJobs = (so) => _saveDocument('sales_orders',so,_dbSaveArtJobsInner,true);
 const _invCols=['id','payment_revision','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
@@ -4223,7 +4171,6 @@ export {
   _dbSaveSO,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
-  _dbSaveArtJobs,
   _dbSaveInvoice,
   _dbNotify,
   _dataLossAlert,

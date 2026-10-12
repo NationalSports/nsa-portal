@@ -1,4 +1,4 @@
-import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from '../lib/batchQueueIntegrity';
+import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry, batchEntryQueuedAt } from '../lib/batchQueueIntegrity';
 
 // SO-2444 after the rejected save: five saved lines, queue entry for a sixth that never landed.
 const so = {
@@ -13,9 +13,9 @@ const so = {
 };
 const orphan = { id: 'BPO 1791781708588', so_id: 'SO-2444', po_id: 'PO 60700 CSMBB', created_at: '10/12/2026, 7:08:28 AM', items: [{ sku: 'AT104', color: 'Black/ White', line_id: '7c2f', item_idx: 5, qty: 2 }] };
 
-// Fixed clock, an hour after queueing: created_at is a local-time string, so Date.now()
-// would make these tests depend on the machine's timezone and the time of day.
-const NOW = { now: Date.parse(orphan.created_at) + 60 * 60 * 1000 };
+// Fixed clock, an hour after queueing (the id carries the queue time in epoch ms).
+const QUEUED_AT = 1791781708588; // 2026-10-12T05:08:28.588Z
+const NOW = { now: QUEUED_AT + 60 * 60 * 1000 };
 
 describe('batchEntryLinkState', () => {
   it('flags the SO-2444 entry whose line never reached the order', () => {
@@ -38,9 +38,19 @@ describe('batchEntryLinkState', () => {
     expect(batchEntryLinkState({ ...orphan, items: [{ sku: 'AT104', item_idx: 4 }] }, so, NOW)).toBe('ok');
   });
   it('gives a just-queued entry time for its order save to arrive', () => {
-    const queuedAt = Date.parse(orphan.created_at);
-    expect(batchEntryLinkState(orphan, so, { now: queuedAt + 30 * 1000 })).toBe('unverified');
-    expect(batchEntryLinkState(orphan, so, { now: queuedAt + 3 * 60 * 1000 })).toBe('missing_line');
+    expect(batchEntryLinkState(orphan, so, { now: QUEUED_AT + 30 * 1000 })).toBe('unverified');
+    expect(batchEntryLinkState(orphan, so, { now: QUEUED_AT + 3 * 60 * 1000 })).toBe('missing_line');
+  });
+  it('reads the queue time from the id, not the viewer-timezone created_at string', () => {
+    expect(batchEntryQueuedAt(orphan)).toBe(QUEUED_AT);
+    // A created_at hours away from the id (written in another timezone) changes nothing.
+    const otherZone = { ...orphan, created_at: '10/12/2026, 4:08:28 PM' };
+    expect(batchEntryLinkState(otherZone, so, { now: QUEUED_AT + 30 * 1000 })).toBe('unverified');
+    expect(batchEntryLinkState(otherZone, so, NOW)).toBe('missing_line');
+    expect(batchEntryQueuedAt({ id: 'legacy', created_at: '2026-10-12T05:08:28Z' })).toBe(Date.parse('2026-10-12T05:08:28Z'));
+  });
+  it('a clock far ahead of the entry never parks it in the grace window', () => {
+    expect(batchEntryLinkState(orphan, so, { now: QUEUED_AT - 9 * 60 * 60 * 1000 })).toBe('missing_line');
   });
   it('leaves All School allocations alone', () => {
     expect(batchEntryLinkState({ ...orphan, all_school_allocation_id: 'x' }, so, NOW)).toBe('ok');

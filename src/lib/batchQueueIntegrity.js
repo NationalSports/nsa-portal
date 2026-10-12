@@ -19,10 +19,20 @@ const linkedLines = so => (Array.isArray(so?.items) ? so.items : []);
 // The grace window covers another rep's order save still in flight (or not yet pushed here):
 // treating that entry as an orphan could get it removed just before its PO line lands.
 export const ORPHAN_GRACE_MS = 2 * 60 * 1000;
+// When the entry was queued. The id ("BPO 1791781708588") carries the creating tab's Date.now(),
+// which is timezone-free; created_at is a locale string ("10/12/2026, 7:08:28 AM") that parses in
+// the VIEWER's timezone, so a Pacific entry read in Vienna would look 9 hours old (and the reverse
+// would look like it's in the future, never leaving the grace window). created_at is the fallback.
+export function batchEntryQueuedAt(bp) {
+  const m = /(\d{12,})/.exec(String(bp?.id || ''));
+  if (m) return Number(m[1]);
+  const t = Date.parse(bp?.created_at || '');
+  return Number.isFinite(t) ? t : NaN;
+}
 export function batchEntryLinkState(bp, so, { now = Date.now() } = {}) {
   if (!bp || bp.all_school_allocation_id) return 'ok';
-  const created = Date.parse(bp.created_at || '');
-  const tooNew = Number.isFinite(created) && now - created < ORPHAN_GRACE_MS;
+  const created = batchEntryQueuedAt(bp);
+  const tooNew = Number.isFinite(created) && now - created < ORPHAN_GRACE_MS && now - created > -ORPHAN_GRACE_MS;
   if (!so || so.id !== bp.so_id || so._itemsHydrated === false) return 'unverified';
   const items = linkedLines(so);
   if (items.some(it => (it?.po_lines || []).some(pl => pl && pl.batch_queue_id === bp.id))) return 'ok';
