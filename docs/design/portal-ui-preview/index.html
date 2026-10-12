@@ -2663,6 +2663,7 @@ let route=&#x27;Dashboard&#x27;,history=[],selectedArt=0,modalCallback=null,toas
 function icons(){if(globalThis.lucide)lucide.createIcons();}
 function toast(message){toastBox.textContent=message;toastBox.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=&gt;toastBox.hidden=true,3200);}
 function modal(title,template,confirm,fn){root.querySelector(&#x27;#pp-modal-title&#x27;).textContent=title;const body=dialog.querySelector(&#x27;[data-modal-body]&#x27;);body.replaceChildren(clone(template));const ok=dialog.querySelector(&#x27;[data-modal-confirm]&#x27;);ok.textContent=confirm;ok.disabled=false;modalCallback=()=&gt;fn(body);dialog.showModal();icons();}
+dialog.querySelectorAll(&#x27;button[value=&quot;cancel&quot;]&#x27;).forEach(b=&gt;{b.type=&#x27;button&#x27;;b.onclick=()=&gt;dialog.close();});
 dialog.querySelector(&#x27;[data-modal-confirm]&#x27;).addEventListener(&#x27;click&#x27;,()=&gt;{if(!dialog.querySelector(&#x27;form&#x27;).reportValidity())return;dialog.close();if(modalCallback)modalCallback();});
 function setPage(page){root.querySelectorAll(&#x27;:scope &gt; [data-page]&#x27;).forEach(s=&gt;s.hidden=s.dataset.page!==page);}
 function persist(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{previewScreen:route},privateContent:{selectedArt}}).catch(()=&gt;{});}

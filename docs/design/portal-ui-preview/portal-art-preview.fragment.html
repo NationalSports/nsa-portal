@@ -875,6 +875,7 @@ let route='Dashboard',history=[],selectedArt=0,modalCallback=null,toastTimer,lis
 function icons(){if(globalThis.lucide)lucide.createIcons();}
 function toast(message){toastBox.textContent=message;toastBox.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toastBox.hidden=true,3200);}
 function modal(title,template,confirm,fn){root.querySelector('#pp-modal-title').textContent=title;const body=dialog.querySelector('[data-modal-body]');body.replaceChildren(clone(template));const ok=dialog.querySelector('[data-modal-confirm]');ok.textContent=confirm;ok.disabled=false;modalCallback=()=>fn(body);dialog.showModal();icons();}
+dialog.querySelectorAll('button[value="cancel"]').forEach(b=>{b.type='button';b.onclick=()=>dialog.close();});
 dialog.querySelector('[data-modal-confirm]').addEventListener('click',()=>{if(!dialog.querySelector('form').reportValidity())return;dialog.close();if(modalCallback)modalCallback();});
 function setPage(page){root.querySelectorAll(':scope > [data-page]').forEach(s=>s.hidden=s.dataset.page!==page);}
 function persist(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{previewScreen:route},privateContent:{selectedArt}}).catch(()=>{});}
