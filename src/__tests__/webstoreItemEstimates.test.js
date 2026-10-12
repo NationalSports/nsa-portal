@@ -26,8 +26,8 @@ test('partial supply or another size cannot promise a date; split sources use th
 test('a grouped SO line cannot reuse one allocation for several shopper lines', () => {
   expect(estimateItem(item, { ...source, sizes: { M: 5 } }, [pick], [], 4, now).ship_date).toBeNull();
 });
-test('unknown production is not zero; unknown arrival does not make a ship promise', () => {
-  expect(estimateItem(item, source, [pick], [], null, now)).toMatchObject({ ready_date: '2026-10-14', ship_date: null, production_days: null });
+test('seasonal production is the fallback; unknown arrival does not make a ship promise', () => {
+  expect(estimateItem(item, source, [pick], [], null, now)).toMatchObject({ ready_date: '2026-10-14', ship_date: '2026-10-21', production_days: 5 });
   expect(estimateItem(item, source, [], [{ ...po, expected_date: '' }], 4, now).ship_date).toBeNull();
 });
 test('stale dates are flagged, not rolled forward on every visit', () => {

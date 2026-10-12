@@ -17,7 +17,7 @@ export const validateAllSchoolSettings = (value) => {
   const s = normalizeAllSchoolSettings(value);
   if (!Number.isInteger(Number(s.target_ship_days)) || Number(s.target_ship_days) < 1 || Number(s.target_ship_days) > 90) return 'Shipment target must be between 1 and 90 days.';
   const pd = s.production.business_days;
-  if (pd != null && pd !== '' && (!Number.isInteger(Number(pd)) || Number(pd) < 0 || Number(pd) > 90)) return 'Production allowance must be 0–90 business days, or blank while unconfirmed.';
+  if (pd != null && pd !== '' && (!Number.isInteger(Number(pd)) || Number(pd) < 0 || Number(pd) > 90)) return 'Production allowance must be 0–90 business days, or blank for the seasonal allowance.';
   const seen = new Set(); const slugs = new Set();
   for (const p of s.programs) {
     if (!p.id || !p.name?.trim() || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug || '')) return 'Each sport needs a name and a valid URL slug.';

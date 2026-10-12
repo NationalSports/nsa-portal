@@ -8,7 +8,9 @@ export default function ItemShipEstimate({ estimate }) {
     {e.state !== 'delayed' && e.state !== 'ready' && e.arrival_date && <div>Estimated supplier arrival: {format(e.arrival_date)}</div>}
     {e.state !== 'delayed' && e.state !== 'ready' && e.ready_date && <div>Estimated stock ready: {format(e.ready_date)}</div>}
     {e.ship_date ? <div style={{ fontWeight: 700 }}>Estimated to ship: {format(e.ship_date)}</div> : e.ship_date === null && <div>Estimated ship date pending</div>}
-    {e.production_days === null && <div>Production timing to be confirmed</div>}
-    {e.production_days != null && <div>Production allowance: {e.production_days} business day{e.production_days === 1 ? '' : 's'}</div>}
+    {e.production_finish_date && <div>Estimated production finish: {format(e.production_finish_date)}</div>}
+    {e.estimate_basis === 'learned' && <div>Based on recent similar jobs and the current production queue{e.dispatch_pending ? '; shipment timing still being confirmed' : ''}.</div>}
+    {e.production_days === null && e.estimate_basis !== 'learned' && <div>Production timing to be confirmed</div>}
+    {e.production_days != null && <div>Production allowance: {e.production_min_days!=null && e.production_min_days!==e.production_days ? `${e.production_min_days}–${e.production_days}` : e.production_days} business day{e.production_days === 1 ? '' : 's'}</div>}
   </div>;
 }
