@@ -5,6 +5,7 @@ import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
 import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
+import { isArtJobsOnlyChange } from './lib/artJobsSaveRouting';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -576,6 +577,8 @@ import {
   _dbSaveSO,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
+  _dbSaveArtJobs,
+  _soTouchAvailable,
   _dbSaveInvoice,
   _dbNotify,
   _dataLossAlert,
@@ -7419,7 +7422,13 @@ export default function App(){
       sl._tracking_number=prev._tracking_number;sl._carrier=prev._carrier;sl._ship_date=prev._ship_date;
       sl._tracking_url=prev._tracking_url;sl._shipping_cost=prev._shipping_cost;
     }
-    setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
+    // Art/job-only change (Art Dashboard uploads, prod-files confirmation, status moves, artist
+    // assignment): persist just those rows and touch the header without a version bump, instead of
+    // rewriting the whole order (SO-2444 — one seps upload was 6 full rewrites and 6 version bumps
+    // under a rep's open tab). Anything else, a removed job, or a database without the touch RPC
+    // keeps the full save below.
+    if(_soTouchAvailable()&&isArtJobsOnlyChange(prev,sl))savArtJobs(sl);
+    else setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Team stores (OMG shadow + native webstore): auto-advance the linked parent
     // orders' tracking status from this SO's receiving + jobs (fire-and-forget;
@@ -7473,6 +7482,20 @@ export default function App(){
     const _artSaveP=_dbSaveArtFiles(merged);
     Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{(!_hasActiveDocumentSave(merged.id)&&_dbSavePendingIds.delete(merged.id))});
     return _artSaveP;
+  };
+  // Art + jobs light save, reached from savSO when a save changes nothing else (isArtJobsOnlyChange).
+  // Same contract as savArtFiles: update state and the diff snapshot together so the [sos] effect
+  // doesn't ALSO fire the full _dbSaveSO, guard the id against a poll merge while the write is in
+  // flight, and return the persistence promise.
+  const savArtJobs=(so)=>{
+    const merged=so.updated_at?so:{...so,updated_at:new Date().toLocaleString()};
+    setSOs(p=>{const ex=p.find(x=>x.id===merged.id);return ex?p.map(x=>x.id===merged.id?merged:x):[...p,merged]});
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===merged.id))_dbSnap.current.sos=snap.map(x=>x.id===merged.id?merged:x);
+    _dbSavePendingIds.add(merged.id);
+    const p=_dbSaveArtJobs(merged);
+    Promise.resolve(p).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{(!_hasActiveDocumentSave(merged.id)&&_dbSavePendingIds.delete(merged.id))});
+    return p;
   };
   // Logo detail (the transparent logo PNG shown beside each garment mock) from the Art Dashboard
   // dialogs: upload files[0], or remove removeUrl, then an art-only save. Returns false on failure.
