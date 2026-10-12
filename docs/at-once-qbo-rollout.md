@@ -32,14 +32,36 @@ Created and independently read back in National Sports Apparel LLC:
 
 The live existing runner settings were `background_enabled=true`,
 `writes_enabled=true`, `kill_switch=false`, `phase=hourly`.
-The new source snapshot and runner routing are part of PR #2501; they have NOT
-been deployed by this change. The live database does not yet contain the earlier
-24/7 migrations on this branch. Deploy the PR's migrations in order, including
-`20261012141544_at_once_qbo_revenue.sql`, before deploying
-`qbo-sales-background`. Its preflight explicitly requires snapshot version 1.
-Run the endpoint's read-only preflight and inspect the manifest before allowing
-the newly deployed runner's next scheduled write. Do not bulk rewrite historical
-invoices or turn on Stripe payout writes as part of this routing change.
+The accounting backend was deployed on 2026-10-12 as Edge Function version 21
+(JWT verification enabled). Applied migrations, matched by name to repo files:
+
+| Live migration version | Name |
+| --- | --- |
+| 20261012153046 | all_school_checkout_accounting |
+| 20261012153054 | stripe_payout_deposit_automation |
+| 20261012153058 | at_once_qbo_revenue |
+
+Only the accounting dependencies were deployed in this step. The other PR #2501
+purchasing, picking, numbering and fulfillment migrations remain pending.
+Automatic Stripe bank-deposit posting remains disabled.
+
+Read-only preflight run: `3c2aa0a7-c1aa-4f9c-b2d1-81b829673661`.
+Completed successfully at the API level (HTTP 200), with overall `needs_review`
+for five ordinary-sales exceptions: two existing invoice total differences
+(INV-63510, INV-63520), the explicit block on INV-63831, and payment-total
+mismatches on INV-63101 and INV-63372. None were modified by this read-only run.
+It examined 1,341 invoices and 777 payment rows; created zero customers, invoices,
+or payments. Configuration and postflight were verified. The original hourly
+write setting was restored after verification. QBO customer 2800 still has zero
+invoices and payments.
+
+Live snapshot version 1 verified. Both new service-only SQL entrypoints deny
+anonymous/authenticated execution. The payout ledger intentionally has RLS with
+no browser policies (service-role only).
+
+No native Club or All School checkout orders exist in production at deployment
+time, so real-order invoice/payment verification cannot be performed yet.
+No ordinary store order was substituted and no fake transaction was posted.
 
 ## Verification
 
