@@ -133,6 +133,8 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
+await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
+await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
@@ -227,6 +229,7 @@ const near = (actual, expected, label) => assert.ok(
       [sid,'SanMar','fake-school-order-1',[need],'max_wait',false,'separate',100000,'pgtest',shipTo])).rows[0].result;
     assert.ok(plan.purchase_order, `garment shortage should create a PO; got ${JSON.stringify(plan)}`);
     assert.equal(plan.purchase_order.origin,'auto');
+    assert.match(plan.purchase_order.po_number,/^XPO-[0-9]+$/);
     assert.equal((await db.query('select count(*)::int n from purchase_order_lines where po_id=$1',[plan.purchase_order.id])).rows[0].n,1);
     const token = '90000000-0000-0000-0000-000000000001';
     const claim = (await db.query('select claim_all_school_po_submission($1,$2) result',[plan.purchase_order.id,token])).rows[0].result;

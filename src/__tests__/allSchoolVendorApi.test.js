@@ -1,6 +1,6 @@
 const { createVendorPurchaseAdapter } = require('../../netlify/functions/_allSchoolVendorApi');
 const env = { INTERNAL_FUNCTION_SECRET: 'test-only', SANMAR_USERNAME: 'test', SANMAR_PASSWORD: 'test', SS_ACCOUNT_NUMBER: 'test', SS_API_KEY: 'test' };
-const po = { id: 'po-1', po_number: 'NSA 9999', vendor: 'S&S Activewear', all_school_store_id: 'store-1', submission_state: 'pending', ship_to: { companyName: 'NSA', address1: '123 Main', city: 'Orange', region: 'CA', postalCode: '92867', country: 'US' } };
+const po = { id: 'po-1', po_number: 'XPO-9999', vendor: 'S&S Activewear', all_school_store_id: 'store-1', submission_state: 'pending', ship_to: { companyName: 'NSA', address1: '123 Main', city: 'Orange', region: 'CA', postalCode: '92867', country: 'US' } };
 const source = (overrides = {}) => ({ so_id: 'so-1', so_item_id: 'item-1', sku: 'AT203', size: 'M', qty: 3, unit_cost_cents: 1500, meta: { color: 'Black', ss_sku: 'B123', sanmar_part_id: '12345' }, ...overrides });
 const reply = (data, statusCode = 200) => ({ statusCode, body: JSON.stringify(data) });
 const claim = header => ({ ...header, submission_state: 'submitting', submission_token: 'token-1' });
@@ -17,7 +17,7 @@ test('shared payload merges legitimate source needs and cannot submit before dur
   const ss = jest.fn(); const api = adapter(ss);
   const resolved = await api.resolveVendorPurchaseOrder({ purchaseOrder: po, lines: [source(), source({ so_item_id: 'item-2', qty: 2 })] });
   expect(resolved.payload.lines).toEqual([{ identifier: 'B123', qty: 5 }]);
-  expect(resolved.payload.poNumber).toBe('NSA 9999');
+  expect(resolved.payload.poNumber).toBe('XPO-9999');
   expect(resolved.payload.testOrder).toBe(false);
   expect(resolved.payload.rejectLineErrors).toBe(true);
   expect((await api.submitResolvedVendorPurchaseOrder({ purchaseOrder: po, resolved })).state).toBe('held');
@@ -38,7 +38,7 @@ test('S&S confirmation reads back external PO and reconciles warehouse-split qua
   const result = await api.submitResolvedVendorPurchaseOrder({ purchaseOrder: claim(po), resolved });
   expect(result.ok).toBe(true); expect(result.api_order_id).toBe('1,2'); expect(result.verified).toBe(true);
   expect(ss.mock.calls.map(([e]) => e.httpMethod)).toEqual(['POST', 'GET']);
-  expect(ss.mock.calls[1][0].queryStringParameters.path).toContain('NSA%209999');
+  expect(ss.mock.calls[1][0].queryStringParameters.path).toContain('XPO-9999');
 });
 
 test.each([{ readback: [] }, { readback: [{ orderNumber: '1', poNumber: po.po_number, lines: [{ sku: 'B123', qtyOrdered: 6 }] }] }, { readback: [{ orderNumber: '1', poNumber: 'OTHER', lines: [{ sku: 'B123', qtyOrdered: 3 }] }] }])('missing, oversized, and wrong PO readback is unknown without retry', async ({ readback }) => {

@@ -28,6 +28,8 @@ await db.exec(`insert into sales_orders(id,status) values('SO-5','need_order');i
 r=await plan('SO-5','own-house','evaluate');assert.equal(r.reason,'covered');await db.exec(`insert into so_item_pick_lines select id,'{"M":4}','pulled' from so_items where so_id='SO-5';update product_inventory set quantity=0;`);r=await plan('SO-5','own-house-pulled','evaluate');assert.equal(r.reason,'covered');assert.equal((await db.query("select qty_on_hand from teamshop_auto_po_needs where so_id='SO-5'")).rows[0].qty_on_hand,4);console.log('Own physically pulled stock remains covered without a second purchase');
 
 await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
+await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
+await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
 const sid2='10000000-0000-0000-0000-000000000002', club='10000000-0000-0000-0000-000000000003';
 await db.exec(`insert into webstores(id,slug,name,org_type,all_school_settings) values('${sid2}','school2','School 2','all_school','{"purchasing":{"enabled":true}}'),('${club}','club','Club','club','{"purchasing":{"enabled":true}}');update product_inventory set quantity=0;update teamshop_auto_po_settings set auto_submit_enabled=true where vendor='Momentec';`);
 for(const [so,store,vendor] of [['GLOBAL-A',sid,'SanMar'],['GLOBAL-B',sid2,'SanMar'],['GLOBAL-CLUB',club,'SanMar'],['GLOBAL-M',sid2,'Momentec']]) {
@@ -39,6 +41,7 @@ for(const [so,store,vendor] of [['GLOBAL-A',sid,'SanMar'],['GLOBAL-B',sid2,'SanM
 await seedSources();
 const globalIds=(await db.query("select id from teamshop_auto_po_needs where so_id like 'GLOBAL-%' and vendor='SanMar'")).rows.map(n=>n.id);
 const globalPlan=(await db.query('select plan_all_school_purchase($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) r',[sid,'SanMar','global-test',globalIds,'minimum',false,'separate',100000,'test',ship])).rows[0].r;
+assert.match(globalPlan.purchase_order.po_number,/^XPO-[0-9]+$/);
 assert.equal(globalPlan.purchase_order.totals_cents,20000);
 assert.deepEqual(globalPlan.lines.map(l=>l.so_id).sort(),['GLOBAL-A','GLOBAL-B']);
 assert.equal((await db.query("select po_id from teamshop_auto_po_needs where so_id='GLOBAL-CLUB'")).rows[0].po_id,null);
@@ -50,9 +53,14 @@ const mtIds=(await db.query("select id from teamshop_auto_po_needs where so_id='
 await db.exec("update webstore_orders set created_at=now()-interval '8 days' where so_id='GLOBAL-M'");
 const mtArgs=[sid2,'Momentec','momentec-test',mtIds,'max_wait',false,'separate',100000,'test',ship];
 const mtPlan=(await db.query('select plan_all_school_purchase($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) r',mtArgs)).rows[0].r;
+assert.match(mtPlan.purchase_order.po_number,/^XPO-[0-9]+$/);
+assert.notEqual(mtPlan.purchase_order.po_number,globalPlan.purchase_order.po_number);
 assert.equal(mtPlan.purchase_order.vendor,'Momentec');
 assert.equal((await db.query('select claim_all_school_po_submission($1,$2) r',[mtPlan.purchase_order.id,token])).rows[0].r.claimed,true);
 assert.equal((await db.query('select claim_all_school_vendor_request($1,$2,$3) r',[token,mtPlan.purchase_order.po_number,'Momentec'])).rows[0].r.claimed,true);
 assert.equal((await db.query('select claim_all_school_vendor_request($1,$2,$3) r',[token,mtPlan.purchase_order.po_number,'Momentec'])).rows[0].r.claimed,false);
 console.log('PASS shared $200 across schools, Club exclusion, replay, every-store disable check, Momentec claim and one-time send');
+const normalPo=(await db.query("select create_purchase_order('normal-prefix-test','{\"vendor\":\"SanMar\"}'::jsonb,'[]'::jsonb) r")).rows[0].r;
+assert.match(normalPo.purchase_order.po_number,/^NSA [0-9]+$/);
+console.log('PASS XPO prefix leaves ordinary purchase order numbering unchanged');
 await db.close();})().catch(e=>{console.error(e);process.exitCode=1});
