@@ -44,6 +44,7 @@ import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { normalizeOmgSize } from './lib/omgReport';
+import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -1898,13 +1899,6 @@ const _omgLineVal=(text,labelRe)=>{
   return 0;
 };
 // ① Dollar Report → revenue pieces collected from parents.
-const parseOmgDollar=(text)=>({
-  shipping:  _omgLineVal(text,/^\s*\t*Shipping\b/i)||_omgLineVal(text,/\bShipping\b/i),
-  processing:_omgLineVal(text,/Processing/i),
-  tax:       _omgLineVal(text,/Sales\s*Tax/i),
-  fundraise: _omgLineVal(text,/Fundrais/i),
-  grand:     _omgLineVal(text,/Grand\s*Total/i),
-});
 // ② Accounting Report → the fees NSA pays. The top summary box sometimes has
 // labels with no adjacent value (PDF printouts), so we fall back to the
 // "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.

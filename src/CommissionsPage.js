@@ -1,4 +1,4 @@
-import { omgCloseoutPlatformCost } from './lib/storeCloseout';
+import { omgCloseoutPlatformCost, omgCloseoutInvoiceMoney } from './lib/storeCloseout';
 import { decoPoEditTotals } from './lib/decoPoEdit';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -217,7 +217,8 @@ export default function CommissionsPage({adminReports=false}={}){
       if(dtl&&cost-_db0-manualPoCost>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0-manualPoCost});
       if(dtl)manualPoRows.forEach(row=>dtl.push({kind:'bucket',label:'Manual PO cost'+(row.po_id?' · '+row.po_id:'')+(row.payment_label?' · Paid by '+row.payment_label:''),rev:0,cost:row.amount}));
       // Shipping revenue (charged to customer)
-      const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+      const omgMoney=omgCloseoutInvoiceMoney(inv,so);
+      const shipRev=omgMoney?omgMoney.shipping:(so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value));
       // Outbound shipping cost from ShipStation — fallback to shipment records
       const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
@@ -229,29 +230,29 @@ export default function CommissionsPage({adminReports=false}={}){
       // WEBSTORE fundraise is already INSIDE item unit_sell (the batcher prices lines from
       // collected = product + fundraise, Webstores.js collectedForLine) and therefore inside
       // invRev — dropping the old fundraiseCost is the whole flip; adding it again here
-      // double-counts. OMG is the opposite: items are priced at retail and the auto-invoice
-      // never bills the fundraise, so it's added on top of invRev.
+      // double-counts. Legacy OMG invoices omit fundraising; new Close Store invoices
+      // contain its frozen net amount and must not add it to invoice revenue again.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
-      const fundraiseRev=safeNum(so._omg_fundraise||0);
+      const fundraiseRev=omgMoney?0:safeNum(so._omg_fundraise||0);
       // WEBSTORE batch checkout money (finalize_webstore_batch writes it onto the SO and
       // bills it on the batch invoice): the processing fee charged to buyers is revenue,
       // shipping charged at checkout is shipping revenue, Stripe's card fees are a real
       // cost. Sales tax stays out — invRev already drops inv.tax. Both sides must move
-      // together or `scale` (invRev ÷ SO revenue) drifts: the invoice now carries the fee,
-      // so the SO revenue it is compared against must too. Webstore only: an OMG store's
-      // auto-invoice bills product only, so its fee columns would skew the scale instead.
+      // together or `scale` (invRev ÷ SO revenue) drifts. New OMG closeouts use the
+      // net components frozen on their invoice; legacy product-only invoices retain
+      // their original treatment.
       const _wm=webstoreCheckoutMoney(so);
-      const storeProcRev=_wm.processing,storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
+      const storeProcRev=_wm.processing+(omgMoney?.processing||0),storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
       if(dtl){
         if(shipRev||shipCost)dtl.push({kind:'bucket',label:'Shipping (charged to customer vs cost)',rev:shipRev,cost:shipCost});
         if(inboundFreight)dtl.push({kind:'bucket',label:'Inbound freight (supplier bills)',rev:0,cost:inboundFreight});
-        if(fundraiseRev)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev,cost:0});
-        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
+        if(fundraiseRev||omgMoney?.fundraise)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev+(omgMoney?.fundraise||0),cost:0});
+        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:omgMoney?'OMG net processing fee charged to buyers':'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
         if(storeShipRev)dtl.push({kind:'bucket',label:'Webstore shipping charged at checkout',rev:storeShipRev,cost:0});
       }
       const omgPlatformCost=omgCloseoutPlatformCost(so);
       if(dtl&&omgPlatformCost)dtl.push({kind:'bucket',label:'OMG platform and card fees',rev:0,cost:omgPlatformCost});
-      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost+omgPlatformCost;
+      const totalRev=rev+shipRev+storeProcRev+storeShipRev+(omgMoney?.fundraise||0);const totalCost=cost+shipCost+inboundFreight+storeCardCost+omgPlatformCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};

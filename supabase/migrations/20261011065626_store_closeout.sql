@@ -325,6 +325,7 @@ declare
   v_omg public.omg_stores%rowtype;
   v_platform_cost numeric := 0;
   v_saved_total numeric;
+  v_processing numeric; v_tax numeric; v_shipping numeric; v_fundraise numeric;
   v_count integer; v_num bigint; v_funds numeric; v_paid numeric; v_apply numeric;
   v_ref text; v_ids uuid[]; v_result jsonb; v_lines jsonb; v_total numeric;
 begin
@@ -420,6 +421,19 @@ begin
       or abs(coalesce(s._omg_cc_fees,0)-coalesce(v_omg._omg_cc_fees,0))>0.005 then
       raise exception 'OMG report changed since SO creation. Reconcile SO collections and fees before closeout';
     end if;
+    v_processing := coalesce((to_jsonb(v_omg)->>'_omg_processing')::numeric,0);
+    v_tax := coalesce((to_jsonb(v_omg)->>'_omg_tax')::numeric,0);
+    v_shipping := coalesce((to_jsonb(v_omg)->>'_omg_shipping')::numeric,0);
+    v_fundraise := coalesce((to_jsonb(v_omg)->>'_omg_fundraise')::numeric,0);
+    if least(v_processing,v_tax,v_shipping,v_fundraise)<0 then
+      raise exception 'Negative OMG net charge requires accounting review';
+    end if;
+    if abs(coalesce(s._omg_processing,0)-v_processing)>0.005
+      or abs(coalesce(s._omg_tax,0)-v_tax)>0.005
+      or abs(coalesce(s._omg_shipping,0)-v_shipping)>0.005
+      or abs(coalesce((to_jsonb(s)->>'_omg_fundraise')::numeric,0)-v_fundraise)>0.005 then
+      raise exception 'OMG net charges changed since SO creation. Review the saved order and Dollar Report';
+    end if;
     v_platform_cost := coalesce(v_omg._omg_omg_fees,0)+coalesce(v_omg._omg_cc_fees,0)+coalesce(v_omg._omg_invoiced_fees,0);
     if v_platform_cost<0 or coalesce(v_omg._omg_omg_fees,0)<0 or coalesce(v_omg._omg_cc_fees,0)<0 or coalesce(v_omg._omg_invoiced_fees,0)<0 then
       raise exception 'OMG platform costs must be nonnegative';
@@ -448,17 +462,29 @@ begin
       if exists(select 1 from jsonb_array_elements(v_lines) l where coalesce((l->>'qty')::numeric,0)<=0 or coalesce((l->>'rate')::numeric,-1)<0 or abs(coalesce((l->>'amount')::numeric,0)-(l->>'qty')::numeric*(l->>'rate')::numeric)>0.005) then
         raise exception 'OMG invoice line quantities and prices do not reconcile';
       end if;
+      -- The browser reviews products; net checkout charges and tax are server-owned.
+      -- Subtract any draft shipping before using the report's shipping, so it is not doubled.
+      if coalesce((p_invoice->>'shipping')::numeric,0)<>0 and abs((p_invoice->>'shipping')::numeric-v_shipping)>0.005 then
+        raise exception 'OMG saved shipping differs from net report shipping';
+      end if;
+      v_total := round(v_total-coalesce((p_invoice->>'shipping')::numeric,0)+v_processing+v_tax+v_shipping+v_fundraise,2);
+      if abs(v_total-v_funds)>0.005 then
+        raise exception 'OMG gross collections differ from invoice total. Reconcile net report charges and refunds before closeout.';
+      end if;
+      select jsonb_agg(l||jsonb_build_object('_omg_closeout_component','product')) into v_lines from jsonb_array_elements(v_lines) l;
+      if v_processing>0 then v_lines:=v_lines||jsonb_build_array(jsonb_build_object('desc','OMG online processing fee (net of refunds)','_name','OMG online processing fee','qty',1,'rate',v_processing,'amount',v_processing,'_omg_closeout_component','processing'));end if;
+      if v_fundraise>0 then v_lines:=v_lines||jsonb_build_array(jsonb_build_object('desc','OMG fundraising (net of refunds)','_name','OMG fundraising','qty',1,'rate',v_fundraise,'amount',v_fundraise,'_omg_closeout_component','fundraise'));end if;
       perform pg_advisory_xact_lock(hashtext('nsa_invoices_id_mint'));
       select greatest(coalesce(max((regexp_match(id,'(\d+)'))[1]::bigint),0),1000)+1 into v_num from public.invoices;
       insert into public.invoices(id,customer_id,so_id,idempotency_key,type,inv_type,date,due_date,total,paid,status,memo,tax,tax_rate,tax_exempt,shipping,line_items,created_at,updated_at)
       values('INV-'||v_num,s.customer_id,s.id,'omg:'||s.omg_store_id,'invoice','full',to_char(current_date,'YYYY-MM-DD'),to_char(current_date,'YYYY-MM-DD'),
-        v_total,0,'open','Store closeout — '||coalesce(s.memo,s.id),0,0,true,coalesce((p_invoice->>'shipping')::numeric,0),v_lines,now(),now()) returning * into i;
+        v_total,0,'open','Store closeout — '||coalesce(s.memo,s.id),v_tax,0,(v_tax=0),v_shipping,v_lines,now(),now()) returning * into i;
       insert into public.invoice_items(invoice_id,sku,name,qty,unit_price,total,description)
         select i.id,l->>'_sku',l->>'_name',(l->>'qty')::numeric,(l->>'rate')::numeric,(l->>'amount')::numeric,l->>'desc' from jsonb_array_elements(v_lines) l;
     end if;
     -- A paid product-only invoice does not account for the rest of gross collections.
     -- Until tax/processing/fundraising allocation is reconciled, leave the store open.
-    if abs(v_funds-coalesce(i.total,0))>0.005 then
+    if abs(v_funds-coalesce(i.total,0))>0.005 or abs(coalesce(i.tax,0)-v_tax)>0.005 or abs(coalesce(i.shipping,0)-v_shipping)>0.005 then
       raise exception 'OMG gross collections differ from invoice total. Reconcile tax, processing, shipping, fundraising and refunds before closeout.';
     end if;
   end if;

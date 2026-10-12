@@ -17,6 +17,7 @@ create table sales_orders(id text primary key,customer_id text,source text,webst
 create function increment_version() returns trigger language plpgsql as $$begin new._version=old._version+1;return new;end$$;
 create trigger trg_sales_orders_version before update on sales_orders for each row execute function increment_version();
 create table omg_stores(id text primary key,_omg_acct_collected numeric,_omg_sale_code text,_omg_grand_total numeric default 100,_omg_omg_fees numeric default 0,_omg_cc_fees numeric default 0,_omg_invoiced_fees numeric default 0);
+alter table omg_stores add column _omg_processing numeric default 0,add column _omg_tax numeric default 0,add column _omg_shipping numeric default 0,add column _omg_fundraise numeric default 0;
 create table webstore_orders(id uuid primary key,store_id uuid,so_id text,backorder_of uuid,status text,payment_mode text,original_total numeric,total numeric,refunded_amt numeric,
   subtotal numeric,fundraise_amt numeric,discount_amt numeric,tax numeric,processing_fee numeric,shipping_fee numeric,cc_fee numeric);
 create table so_items(id serial primary key,so_id text,item_index int,sku text,name text,color text,unit_sell numeric,est_qty numeric,sizes jsonb);
@@ -154,6 +155,27 @@ const beforeGap=(await db.query('select count(*)::int n from invoices')).rows[0]
 await assert.rejects(close('GAP',null,true,true,{total:7020,shipping:0,line_items:[{qty:1,rate:7020,amount:7020}]}),/gross collections differ/);
 assert.equal((await db.query('select count(*)::int n from invoices')).rows[0].n,beforeGap);
 assert.equal((await db.query("select store_closed_at from sales_orders where id='GAP'")).rows[0].store_closed_at,null);
+// Corrected CS5XD report: net fee/tax belong on ONE new invoice, with gross funds.
+await db.exec("update omg_stores set _omg_processing=490.75,_omg_tax=569.02 where id='OMG-GAP';update sales_orders set _omg_processing=490.75,_omg_tax=569.02 where id='GAP'");
+const gross=await close('GAP',null,true,true,{total:7020,shipping:0,line_items:[{qty:1,rate:7020,amount:7020}]});
+assert.equal(Number(gross.invoice.total),8079.77);assert.equal(Number(gross.invoice.tax),569.02);assert.equal(Number(gross.invoice.paid),8079.77);
+assert.equal(gross.invoice.line_items.find(l=>l._omg_closeout_component==='processing').amount,490.75);
+assert.equal(gross.payments.length,1);assert((await close('GAP',0)).already_closed);
+
+// Historical paid product-only invoices stay held even after report refunds reconcile.
+await db.exec('reset role');
+await db.exec(`alter table invoices disable trigger guard_store_invoice;
+insert into omg_stores(id,_omg_acct_collected,_omg_sale_code,_omg_grand_total,_omg_processing,_omg_tax) values('OMG-LEGACY-GAP',8079.77,'LEGACY-GAP',8079.77,490.75,569.02);
+insert into sales_orders(id,customer_id,omg_store_id,_omg_acct_collected,_omg_processing,_omg_tax) values('LEGACY-GAP','C','OMG-LEGACY-GAP',8079.77,490.75,569.02);
+insert into invoices(id,so_id,customer_id,total,paid,status,tax,shipping) values('LEGACY-GAP-INV','LEGACY-GAP','C',7020,7020,'paid',0,0);
+insert into invoice_payments(invoice_id,amount,ref,method) values('LEGACY-GAP-INV',7020,'existing legacy collection','omg');
+alter table invoices enable trigger guard_store_invoice;`);
+await db.exec('set role service_role');
+await assert.rejects(close('LEGACY-GAP'),/gross collections differ/);
+const legacyGap=(await db.query("select total,paid from invoices where id='LEGACY-GAP-INV'")).rows[0];
+assert.equal(Number(legacyGap.total),7020);assert.equal(Number(legacyGap.paid),7020);
+assert.equal((await db.query("select count(*)::int n from invoice_payments where invoice_id='LEGACY-GAP-INV'")).rows[0].n,1);
+assert.equal((await db.query("select store_closed_at from sales_orders where id='LEGACY-GAP'")).rows[0].store_closed_at,null);
 await db.exec('set role authenticated');await assert.rejects(close('D'),/permission denied/);
 await assert.rejects(db.exec("update sales_orders set store_closed_at=now() where id='D'"),/Use Close Store/);
 console.log('Passed: deferred accounting, due date, unfinished jobs, stale version, cost/shipment confirmation, atomic close, repeated close/batch, legacy reuse, duplicate invoices, unapplied receipts, permissions and commission gate.');

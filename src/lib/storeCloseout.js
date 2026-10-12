@@ -11,3 +11,11 @@ export function omgCloseoutPlatformCost(so) {
   if (!so?.omg_store_id) return 0;
   return Math.max(0, Number(so.store_closeout_platform_cost ?? ((Number(so._omg_omg_fees)||0)+(Number(so._omg_cc_fees)||0))) || 0);
 }
+
+// Components stored on the authoritative invoice at Close Store. Legacy invoices
+// have no markers and retain their historical commission treatment.
+export function omgCloseoutInvoiceMoney(invoice, so) {
+  if (!so?.omg_store_id || !invoice?.line_items?.some(l=>l._omg_closeout_component==='product')) return null;
+  const sum=kind=>invoice.line_items.filter(l=>l._omg_closeout_component===kind).reduce((n,l)=>n+(Number(l.amount)||0),0);
+  return {processing:sum('processing'),fundraise:sum('fundraise'),shipping:Number(invoice.shipping)||0};
+}

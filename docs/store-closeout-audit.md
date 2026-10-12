@@ -80,32 +80,48 @@ SO-1694 currently has neither `omg_store_id` nor `webstore_id`, despite its OMG 
 
 The closeout guard now checks exported deletion history plus exported voided/soft-deleted invoices, not just currently active invoices. It stops rather than recreate exported revenue. This protects linked stores; it does not repair the broader legacy invoice-delete workflow or certify QBO-only records absent from portal history.
 
-### SO-2825: the remainder is still not a reconciled accounting allocation
+### SO-2825: Dollar Report resolves the difference
 
-The original shared OMG **Product Report** was fetched read-only through the report proxy. It contains 142 units and sums to exactly $7,020 paid, confirming the product import and INV-64319. Both portal and QBO record a $7,020 invoice/payment.
+The original Product Report contains 142 units and $7,020 paid, matching INV-64319 and its existing portal/QBO payment. The user supplied the original CS5XD Dollar Report PDF and Accounting Report screenshots on October 12.
 
-| Evidence | Amount |
-| --- | ---: |
-| Product report paid / invoice | $7,020.00 |
-| Imported Dollar and Accounting gross | $8,079.77 |
-| Gross less invoice | $1,059.77 |
-| Imported processing charged | $501.37 |
-| Imported tax | $580.80 |
-| Processing + tax | $1,082.17 |
-| Components exceeding reported gross | $22.40 |
-| OMG + card costs | $601.04 |
-| Reported gross less those costs | $7,478.73 |
+| Evidence | Charged | Refunded | Net |
+| --- | ---: | ---: | ---: |
+| Product base | $7,163.00 | $152.00 | $7,011.00 |
+| Product upcharge | $9.00 | $0.00 | $9.00 |
+| Processing | $501.37 | $10.62 | $490.75 |
+| Sales tax | $580.80 | $11.78 | $569.02 |
+| Total collected | $8,254.17 | $174.40 | $8,079.77 |
 
-Audit history shows the processing/tax/grand-total fields were entered together on October 5 at 20:51:23 UTC; Accounting collections followed at 20:51:51 UTC. The retained shared URL is the Product Report, not the original Dollar or Accounting report. No available evidence proves whether $22.40 is a discount, refund, timing difference, or import error, so no balancing entry is invented.
+The $1,059.77 remainder is exactly $490.75 net processing plus $569.02 net tax. The previously unexplained $22.40 is refunded processing ($10.62) and tax ($11.78). The prior parser took the first amount rather than subtracting refunds. The revised parser supports wrapped labels and charged/refunded columns, validates a supplied net column, and rejects ambiguous amounts.
 
-Only two imported deposit lines match CS5XD: September 29 ($184.74 gross, $171.77 net) and October 6 ($1,105.85 gross, $1,019.57 net). They cover $1,290.59 gross/$1,191.34 net, not the full reported lifetime collections; they cannot settle the missing allocation. Required next evidence: original Dollar/Accounting reports with discount/refund detail and the full settlement-to-ledger reconciliation.
+All six completed deposits shown in the Accounting Report sum to $8,079.77 gross, $306.99 OMG fees, $294.05 card fees and $7,478.73 net. This reconciles the two source reports; it does not establish how every settlement was posted to the bank ledger.
 
-The previous capped application allowed a product-only invoice to look fully closed while the remainder had no proven ledger allocation. The new guard requires gross/invoice equality to the cent and rejects this case atomically. Dollar/Accounting totals also now reconcile to the cent rather than allowing a difference under $1. This is a conservative hold, **not a completed implementation of gross OMG tax/fee allocation**.
+For new deferred invoices, Close Store now adds the reconciled net processing/fundraising lines and net shipping/tax once, applies gross collected funds once, and retains platform/card fees separately as costs. It rejects stale SO charge snapshots. Existing historical invoices are not rewritten: SO-2825's paid $7,020 invoice remains held for a separately reviewed accounting correction. No live invoice, payment, or journal was changed.
 
-### Updated replay and test results
+### Updated replay and test results (October 12)
 
-The same 75-order replay now safely blocks all 75 historical orders: 24 first fail the new gross/invoice hold, 18 unfinished jobs, 7 multiple invoices, 7 web invoice mismatch, 4 duplicate OMG SOs, 4 missing replay drafts, 3 demo/no checkout orders, 3 refunds/cancellations, 2 product/collection mismatch, 2 Dollar/Accounting mismatch and 1 stale report. Earlier failure reasons may be masked by the new earlier guard. Every rejected transaction leaves invoice/payment counts and amounts unchanged. The two webstore deferred-flow rehearsals still create one invoice/payment each and add zero on retry. SO-2825 is now represented by an explicit negative regression, not a successful closeout rehearsal.
+The 75-order replay was rerun with the current code and a supplemental read-only export of the four OMG net-charge fields on SOs and source reports. It contains 501 checkout orders, 74 historical invoices and 45 payments. All 75 historical orders safely remain blocked: 22 gross/invoice mismatches, 18 unfinished jobs, 7 multiple invoices, 7 web invoice mismatches, 4 duplicate OMG SOs, 4 missing replay drafts, 3 demo/no checkout orders, 3 refunds/cancellations, 2 product/collection mismatches, 2 Dollar/Accounting mismatches, 2 exported deleted invoices and 1 stale report. Every rejected transaction leaves invoice/payment counts and amounts unchanged. Two explicitly hypothetical webstore rehearsals still create one invoice/payment each ($319.03 and $405.91) with zero added on retry.
 
-Synthetic regression tests pass on PGlite and real PostgreSQL 17.6. Real independent connections additionally verify eight simultaneous closes produce one invoice/payment, one of two SOs sharing an OMG source reference rolls back, a concurrent child edit invalidates the cost review, and the actual Netlify handler reuses the result after a simulated lost response. Handler authentication is stubbed; this is local integration, not hosted staging.
+52 focused unit tests passed across report parsing, closeout eligibility, fee/tax arithmetic and QBO posting-plan construction. The SQL suite passes with the corrected CS5XD net report: one new invoice/payment at $8,079.77, $569.02 tax and $490.75 processing. A separate regression proves an existing paid $7,020 invoice remains unchanged and held for accounting review.
 
-No NSA staging project/branch or QBO sandbox is available through the connected tools: Supabase lists only the production NSA project (plus unrelated Residence), the NSA branch list contains only `main`, and QBO lists only National Sports Apparel LLC. No writes were made to any of them. Hosted browser → authenticated endpoint → Supabase → QBO sandbox testing remains blocked on isolated environment access. PR remains draft.
+### Supabase staging verification (October 12)
+
+Approved staging branch: `close-store-staging`, project `szlkkkbfnybydualeodv`, in the NSA organization. Approved compute cost is $0.01344/hour until removed, excluding tax.
+
+Automatic branch creation failed because the production migration history begins after the original schema: `20260325125325` applies a policy to missing `quote_request_items`. The branch initially contained only two tables. A read-only, schema-only pg_dump of production was used to restore the actual public schema and its three referenced private helper functions into staging. No production data, auth users, secrets, cron jobs or QBO credentials were copied. This is a manually restored test branch: its original creation workflow may still display MIGRATIONS_FAILED. Do not merge/rebase this branch or deploy its baseline to production; the reviewed PR migration is the release artifact.
+
+All 263 application tables have RLS enabled in staging. Browser/public grants were revoked, while service-role access is available for tests. The exact PR migration then applied successfully against the real tables, constraints and triggers.
+
+Verified in hosted Supabase with synthetic fixtures:
+
+- OMG: $8,079.77 invoice and one equal payment; $569.02 tax; $601.04 platform/card costs stored once. Repeat close adds no invoice/payment.
+- Webstore: batching defers the invoice; close creates a $115 invoice/payment including $5 tax and $8 shipping; repeat adds nothing.
+- The outside-store rep todo is due October 6 for a September 1 SO creation (35 days).
+- Missing cost confirmation, stale version and premature commission snapshot are rejected; the cost-confirmed closed store permits the snapshot.
+- Direct authenticated-role RPC calls are denied.
+- Eight independent Supabase database connections close one synthetic order concurrently: one invoice/payment, seven idempotent retries.
+- The actual Netlify Close Store handler, invoked locally, verifies a real temporary Supabase staff session and calls hosted PostgREST. Anonymous requests return 401; missing cost confirmation returns 400; first close and a simulated lost-response retry produce one invoice/payment. Authentication is not stubbed in this test.
+
+The temporary test user was signed out and removed. Staging retains four clearly labeled synthetic orders/invoices and four payments. Verified zero auth users, zero vault secrets, zero QBO tokens and no cron schema. No live accounting records were changed.
+
+Remaining verification limits: no browser-to-hosted-Netlify deployment test and no QuickBooks sandbox export were performed. Supabase staging is operational for database/API tests; no customer-facing staging site or public login was enabled.
