@@ -1,3 +1,4 @@
+import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
@@ -6325,7 +6326,7 @@ export default function App(){
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
   const[soView,setSOView]=useState('list');
-  const soStoreMetadata=useOrderStoreMetadata(sos,supabase,pg==='orders'&&soView==='list');
+  const soStoreMetadata=useOrderStoreMetadata(sos,supabase,true);
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const recoveryEditorRef=React.useRef(null);
@@ -8914,8 +8915,9 @@ export default function App(){
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
             const openFrom=pk.created_at||so.created_at;
-            const openDays=openFrom?Math.max(0,Math.floor((new Date()-new Date(openFrom))/(1000*60*60*24))):null;
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,
+            const openAgeDays=openFrom?Math.max(0,(Date.now()-new Date(openFrom).getTime())/864e5):null;
+            const openDays=Number.isFinite(openAgeDays)?Math.floor(openAgeDays):null;
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,openAgeDays,quickPull:isQuickPull(so,soStoreMetadata.stores),
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
@@ -9051,6 +9053,7 @@ export default function App(){
         m._subTasks.push(sub);
         if(!m._skus.includes(t.sku))m._skus.push(t.sku);
         if(t.urgent)m.urgent=true;
+        m.openAgeDays=Math.max(m.openAgeDays||0,t.openAgeDays||0);m.openDays=Math.floor(m.openAgeDays);
         if(t.noDeco===false)m.noDeco=false;// any deco item makes the whole IF non-no-deco
       } else {
         const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
@@ -9059,7 +9062,7 @@ export default function App(){
       }
     });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    dedupPull.sort(compareWarehousePulls);shipTasks.sort(sortU);decoTasks.sort(sortU);
     return{pullTasks:dedupPull,shipTasks,decoTasks,deliverTasks};
   };
 
@@ -20478,8 +20481,8 @@ export default function App(){
           seen[key]=g;out.push(g);
         }
       });
-      // Sort: urgent (due-soon) pinned on top, then oldest-first by days open.
-      out.sort((a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(b.openDays||0)-(a.openDays||0)});
+      // Aging protection first, then 24/7 Quick Pulls in the same queue.
+      out.sort(compareWarehousePulls);
       return out;
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
@@ -21647,6 +21650,7 @@ export default function App(){
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
+        <div style={{fontSize:12,color:'#475569',marginBottom:10}}>Pulls waiting more than 5 days come first, then 24/7 Quick Pulls. Confirm each physical pull before production.</div>
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         (()=>{
         // Bulk reject. Selection is intersected with the VISIBLE rows, so changing the search
@@ -21683,7 +21687,7 @@ export default function App(){
             onClick={t.pickId?_rowNav({pg:'item_fulfillment',if:t.pickId},()=>openIF(t.pickId)):()=>setWhViewIF(t)}>
             <td style={{textAlign:'center'}} onClick={e=>e.stopPropagation()}>{t.pickId?<input type="checkbox" checked={whSelIFs.has(t.pickId)} onChange={e=>toggle(t.pickId,e.target.checked)}/>:null}</td>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
-            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}{t.quickPull&&<div style={{fontSize:10,color:'#0f766e',fontWeight:800}}>24/7 · Quick Pull</div>}{t.openAgeDays>5&&<div style={{fontSize:10,color:'#b45309'}}>Waiting over 5 days</div>}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
