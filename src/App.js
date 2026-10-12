@@ -21914,6 +21914,13 @@ export default function App(){
                     onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>whOpenPackSlip(grp,grpRows)}>🖨️ Pack Slip</button>
+                  {/* Push-through for when this card's data is wrong: the full Ship / Override tool,
+                      already opened on this card's order (or its customer when the card spans orders). */}
+                  <button title="Something wrong with this card? Ship any line on the order, buy a label, and mark jobs shipped by hand"
+                    className="btn btn-sm" style={{fontSize:10,background:'white',color:'#b45309',border:'1px solid #f59e0b',padding:'4px 10px',fontWeight:700,marginLeft:'auto'}}
+                    onClick={()=>{const sids=[...grp.soIds];const so1=grp.soMap[sids[0]];
+                      if(sids.length===1)openManualShipForSO(so1);
+                      else{const c2=cust.find(cc=>cc.id===so1?.customer_id);setManualShipModal({custSearch:'',custFilter:c2||null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}}}>⚡ Override</button>
                 </div>
                 </>}
               </div>
@@ -22126,6 +22133,35 @@ export default function App(){
           <div className="modal-body" style={{padding:16}}>
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
             {(()=>{const soShipCosts=[...shipModal.grp.soIds].map(sid=>{const so2=shipModal.soMap[sid];if(!so2)return null;const c2=cust.find(cc=>cc.id===so2.customer_id);let rev=0;safeItems(so2).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;rev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const dp2=dP(d,q2,safeArt(so2),q2);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);rev+=eq*dp2.sell})});const ship=so2.shipping_type==='pct'?rev*(so2.shipping_value||0)/100:(so2.shipping_value||0);return{id:sid,ship,type:so2.shipping_type,value:so2.shipping_value}}).filter(Boolean);const totalShip=soShipCosts.reduce((a,s)=>a+s.ship,0);return totalShip>0?<div style={{fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:12,padding:'4px 8px',background:'#eff6ff',borderRadius:4}}>Shipping on order: ${totalShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}{soShipCosts.length===1&&soShipCosts[0].type==='pct'?' ('+soShipCosts[0].value+'% of order)':''}</div>:null})()}
+
+            {/* Escape hatch: the card's list comes from job/shipment records. When those are off (a box
+                recorded but voided, a job snapshot that drifted, a line with no job) the warehouse must
+                still be able to pack what is physically on the table — so let them pull in any line on
+                the order. Unshipped lines first; already-recorded lines only on a second, explicit click. */}
+            {(()=>{
+              const have=new Set((shipModal.availableItems||[]).map(ai=>ai.soId+'|'+ai.itemIdx));
+              const soEntries=Object.entries(shipModal.soMap||{});
+              const extraUnshipped=[];const extraAll=[];
+              soEntries.forEach(([sid,so2])=>{
+                const un=unshippedOrderItems(so2);const unIdx=new Set(un.map(r=>r.itemIdx));
+                un.forEach(r=>{if(!have.has(sid+'|'+r.itemIdx))extraUnshipped.push({sku:r.sku,name:r.name,color:r.color||'',sizes:{...r.sizes},soId:sid,itemIdx:r.itemIdx})});
+                safeItems(so2).forEach((it2,ix)=>{
+                  if(have.has(sid+'|'+ix)||unIdx.has(ix))return;
+                  const sz={};Object.entries(safeSizes(it2)).forEach(([k,v])=>{if(safeNum(v)>0)sz[k]=safeNum(v)});
+                  if(Object.keys(sz).length)extraAll.push({sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:sz,soId:sid,itemIdx:ix,_recordedShipped:true});
+                });
+              });
+              if(!extraUnshipped.length&&!extraAll.length)return null;
+              const add=(rows,msg)=>{setShipModal(m=>({...m,availableItems:[...(m.availableItems||[]),...rows],_overrideUsed:true}));nf(msg)};
+              const empty=(shipModal.availableItems||[]).length===0;
+              return<div style={{marginBottom:12,padding:'8px 10px',background:empty?'#fffbeb':'#f8fafc',border:'1px dashed '+(empty?'#f59e0b':'#cbd5e1'),borderRadius:6,fontSize:11,color:'#475569',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span>{empty?'⚠️ Nothing is listed for this card, but you can still ship what you have.':'Packing something that isn\'t listed below?'}</span>
+                {extraUnshipped.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>add(extraUnshipped,'Added '+extraUnshipped.length+' unshipped line'+(extraUnshipped.length!==1?'s':'')+' from the order')}>+ Add other unshipped lines from the order ({extraUnshipped.length})</button>}
+                {extraAll.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'white',color:'#92400e',border:'1px solid #f59e0b',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>{if(window.confirm('These lines are already recorded as shipped on the order. Only add them if the garments are physically here and going out in this box — the rep will see a second shipment for them.\n\nAdd them?'))add(extraAll,'Added '+extraAll.length+' line'+(extraAll.length!==1?'s':'')+' already recorded as shipped')}}>+ Lines already recorded shipped ({extraAll.length})</button>}
+              </div>;
+            })()}
 
             {/* Boxes */}
             {shipModal.boxes.map((box,bi)=>{
@@ -22441,7 +22477,9 @@ export default function App(){
                     shipping_cost:box.shipping_cost||0,
                     weight:box.weight||5,
                     items:(box.items||[]).map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
-                    notes:box.notes||'',
+                    // Flag boxes packed with lines the card didn't list, so the office can see the data was off.
+                    notes:(box.notes||'')+(shipModal._overrideUsed?((box.notes?' · ':'')+'Warehouse override: lines added from the order'):''),
+                    ...(shipModal._overrideUsed?{warehouse_override:true}:{}),
                     created_by:cu?.id||'',
                     created_at:new Date().toLocaleString()
                   }));
