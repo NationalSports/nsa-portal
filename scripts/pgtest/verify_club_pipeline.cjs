@@ -189,7 +189,7 @@ try {
     await db.exec(`alter table so_items add column recipe_snapshot jsonb;
       alter table webstore_transfers add column decoration_type text, add column production_file jsonb,
         add column width_in numeric, add column height_in numeric;`);
-    await db.exec(read('supabase/migrations/20261013043303_at_once_frozen_art_variants.sql'));
+    await db.exec(read('supabase/migrations/20261013045551_at_once_frozen_art_variants.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);

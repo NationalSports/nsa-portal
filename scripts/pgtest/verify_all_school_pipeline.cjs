@@ -135,7 +135,7 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
-    await db.exec(read('supabase/migrations/20261013044845_at_once_variant_placement.sql'));
+    await db.exec(read('supabase/migrations/20261013045559_at_once_variant_placement.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
