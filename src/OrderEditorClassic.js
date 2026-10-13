@@ -1,3 +1,4 @@
+import { substitutionPrice, preserveCustomerPrice } from './lib/storeSubstitution';
 import { isStoreSalesOrder } from './lib/storeCloseout';
 import { decoPoCost } from './lib/decoPoCost';
 import { inventoryPickCosts } from './lib/inventoryCosts';
@@ -2962,7 +2963,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   };
   const _copySzStr=newSz=>Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0])).map(([sz,v])=>safeNum(v)+'/'+sz).join(' ');
   const _insertCopiedItem=(items,i,clone)=>{const next=[...safeItems({items})];next.splice(i+1,0,clone);return next};
-  const _applyCopyPrice=(clone,source,copyPrice)=>{if(!copyPrice)return clone;if(copyPrice.mode==='product'){if(clone.sku===source.sku){const p=products.find(x=>(source.product_id&&x.id===source.product_id)||(x.sku===source.sku&&(!source.color||x.color===source.color)))||products.find(x=>x.sku===source.sku);if(p){const au=isAU(p.brand||clone.brand);const fw=(p.category||'').toLowerCase()==='footwear'||!!clone.is_footwear;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.unit_sell=au?rQ(safeNum(p.retail_price)*(1-auDisc(fw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}}}}else{clone.unit_sell=safeNum(source.unit_sell);if(source._sizeSells)clone._sizeSells=JSON.parse(JSON.stringify(source._sizeSells));else delete clone._sizeSells}return clone};
+  const _applyCopyPrice=(clone,source,copyPrice)=>{if(!copyPrice)return clone;if(copyPrice.mode==='product'){if(clone.sku===source.sku){const p=products.find(x=>(source.product_id&&x.id===source.product_id)||(x.sku===source.sku&&(!source.color||x.color===source.color)))||products.find(x=>x.sku===source.sku);if(p){const au=isAU(p.brand||clone.brand);const fw=(p.category||'').toLowerCase()==='footwear'||!!clone.is_footwear;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.unit_sell=au?rQ(safeNum(p.retail_price)*(1-auDisc(fw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}}}}else{preserveCustomerPrice(clone,source)}return clone};
   const _moveUnfulfilledPreview=(i,targetSizes,targetLabel)=>{const it=safeItems(o)[i];if(!it)return null;
     if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's IFs/POs haven't finished loading. Reload before moving unfulfilled quantities.",'error');return null}
     if(it.qty_only&&!Object.keys(safeSizes(it)).length){nf('Move unfulfilled needs a size breakdown. Use Change SKU for this quantity-only line.','error');return null}
@@ -2976,7 +2977,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     setO(e=>{const items=safeItems(e);const src=items[i];if(!src)return e;const live=unfulfilledSizes(src).open;const moving={};Object.keys(requested||{}).forEach(sz=>{const q=Math.min(safeNum(requested[sz]),safeNum(live[sz]));if(q>0)moving[sz]=q});if(!Object.keys(moving).length)return e;
       const moved={...clone,sizes:moving,available_sizes:[...new Set([...(clone.available_sizes||[]),...Object.keys(moving)])].sort((a,b)=>szRank(a)-szRank(b)),pick_lines:[],po_lines:[]};
       const srcSizes={...safeSizes(src)};Object.entries(moving).forEach(([sz,q])=>{srcSizes[sz]=Math.max(0,safeNum(srcSizes[sz])-q)});const srcNext={...src,sizes:srcSizes};
-      const matchIdx=items.findIndex((it,ix)=>ix!==i&&String(it.sku||'').toLowerCase()===String(moved.sku||'').toLowerCase()&&String(it.color||'').toLowerCase()===String(moved.color||'').toLowerCase()&&_moveDecoKey(it)===_moveDecoKey(moved));
+      const matchIdx=items.findIndex((it,ix)=>!isStoreSalesOrder(e)&&ix!==i&&String(it.sku||'').toLowerCase()===String(moved.sku||'').toLowerCase()&&String(it.color||'').toLowerCase()===String(moved.color||'').toLowerCase()&&_moveDecoKey(it)===_moveDecoKey(moved));
       const sourceEmpty=Object.values(srcSizes).every(v=>safeNum(v)<=0)&&(!src.qty_only||safeNum(src.est_qty)<=0);let nextItems=[...items];let nextJobs=e.jobs;let tombs=e._deletedItemKeys||[];let destIdx=null;let removedSource=false;
       if(matchIdx>=0){merged=true;const target=items[matchIdx];const sums={...safeSizes(target)};Object.entries(moving).forEach(([sz,q])=>{sums[sz]=safeNum(sums[sz])+q});nextItems[matchIdx]={...target,...moved,sizes:sums,available_sizes:[...new Set([...(target.available_sizes||[]),...(moved.available_sizes||[]),...Object.keys(sums)])].sort((a,b)=>szRank(a)-szRank(b)),pick_lines:safePicks(target),po_lines:safePOs(target)};nextItems[i]=srcNext;destIdx=matchIdx;
         if(sourceEmpty){const _ri=ii=>ii>i?ii-1:ii;removedSource=true;destIdx=_ri(matchIdx);nextItems=nextItems.filter((_,ix)=>ix!==i);nextJobs=safeJobs(e).map(j=>({...j,items:(j.items||[]).filter(gi=>gi.item_idx!==i).map(gi=>({...gi,item_idx:_ri(gi.item_idx)}))}));tombs=_stampRekeyTomb(e,src)}
@@ -2986,7 +2987,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     return{merged,replaced};
   };
   const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{copyPrice=substitutionPrice(o,moveOpen,copyPrice);const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -3020,6 +3021,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
   const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{
+    copyPrice=substitutionPrice(o,moveOpen,copyPrice);
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -3080,6 +3082,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // Change the SKU/product on an existing item in place (keeps decorations; size and price behavior is selectable).
   // Only allowed when no PO/IF has been created on the item.
   const changeItemSku=(i,p,newSz,copyPrice)=>{
+    copyPrice=substitutionPrice(o,true,copyPrice);
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
     // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
@@ -3122,6 +3125,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // Change SKU in place to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors
   // copyIWithVendorResult but updates the existing item rather than appending a clone.
   const changeItemWithVendorResult=(i,style,color,source,newSz,copyPrice)=>{
+    copyPrice=substitutionPrice(o,true,copyPrice);
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
     // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
@@ -16676,7 +16680,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const szOn=canNewSz&&!!copySkuModal.szOn;
         const newSz=szOn?(copySkuModal.sz||{}):null;
         const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
-        const priceMode=copySkuModal.priceMode||'keep';
+        const storeSubstitution=isStoreSalesOrder(o)&&(isReplace||isMove);
+        const priceMode=substitutionPrice(o,isReplace||isMove,{mode:copySkuModal.priceMode||'keep'}).mode;
         const copyPrice={mode:priceMode};
         const pendingMove=copySkuModal.pendingMove||null;
         const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p,newSz,copyPrice):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice,isMove);
@@ -16721,9 +16726,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>}
             {(isCopy||isMove||isReplace)&&<div style={{marginBottom:10,padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}>
               <div style={{fontSize:11,fontWeight:800,color:'#334155',marginBottom:7}}>Customer price</div>
+              {storeSubstitution&&<p style={{fontSize:12,color:'#166534'}}>Stock substitution: the agreed customer price, including size prices, stays unchanged. Replacement costs affect margin and commissions.</p>}
               <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
                 <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price-classic" checked={priceMode==='keep'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'keep'}))}/> Keep at ${safeNum(srcIt.unit_sell).toFixed(2)}</label>
-                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price-classic" checked={priceMode==='product'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'product'}))}/> Change to updated product price</label>
+                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price-classic" disabled={storeSubstitution} checked={priceMode==='product'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'product'}))}/> Change to updated product price</label>
               </div>
             </div>}
             {/* New sizes — works with either copy mode: type only the sizes the copy needs. */}

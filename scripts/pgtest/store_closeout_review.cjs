@@ -48,6 +48,15 @@ module.exports=async db=>{
  result=(await db.query("select review_store_closeout('REVIEW','rep','close',$1,$2,$3) r",[r.version,{...partial,nextCheck:'2020-01-01',confirmations:{shipped:true,costs:true,outside:checked}},{total:100,shipping:0,line_items:[{qty:1,rate:100,amount:100}]}])).rows[0].r;
  assert.equal(result.ok,true);assert.equal(result.invoice.total,100);
  result=await perform('close',{token:'old'},0);assert.equal(result.already_closed,true);
+ // Equal-price partial stock substitution: existing collected money still settles once.
+ await db.exec("insert into omg_stores(id,_omg_acct_collected,_omg_sale_code) values('SUBSTITUTE',100,'SUBSTITUTE');insert into sales_orders(id,customer_id,omg_store_id) values('SUBSTITUTE','C','SUBSTITUTE');insert into so_items(so_id,item_index,sku,unit_sell,est_qty,sizes) values('SUBSTITUTE',0,'OLD',25,4,'{\"M\":4}')");
+ await db.exec("update so_items set est_qty=2,sizes='{\"M\":2}' where so_id='SUBSTITUTE';insert into so_items(so_id,item_index,sku,unit_sell,est_qty,sizes) values('SUBSTITUTE',1,'REPLACEMENT',25,2,'{\"M\":2}')");
+ const sub=(await db.query("select store_closeout_status('SUBSTITUTE') r")).rows[0].r;
+ const subReview={token:sub.token,confirmations:{shipped:true,costs:true,outside:{direct:{shipped:true,costs:true,evidence:'Replacement delivered; final higher vendor cost recorded'}}}};
+ const subDraft={total:100,shipping:0,line_items:[{qty:2,rate:25,amount:50,desc:'Original'},{qty:2,rate:25,amount:50,desc:'Replacement'}]};
+ const subClose=async()=> (await db.query("select review_store_closeout('SUBSTITUTE','rep','close',$1,$2,$3) r",[sub.version,subReview,subDraft])).rows[0].r;
+ let settled=await subClose();assert.equal(Number(settled.invoice.total)-Number(settled.invoice.paid),0);assert.equal(settled.payments.length,1);
+ settled=await subClose();assert.equal(settled.already_closed,true);assert.equal(settled.payments.length,1);
  await db.exec('set role authenticated');await assert.rejects(status(),/permission denied/);
  console.log('Passed: server review lists blocking jobs, mixed vendors, deduplicated decorator POs, direct shipment, outside-art exclusion, stale review and authorization.');
 };
