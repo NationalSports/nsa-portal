@@ -3612,6 +3612,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
+  // Take the shipping charge off a card order (shipping_fee → 0, total lowered by
+  // the same amount) so it can be refunded through the same review-and-send step
+  // as a cancelled item. The money itself only moves on "Send & refund".
+  const removeOrderShipping = useCallback(async (order) => {
+    const { data, error } = await supabase.rpc('remove_webstore_order_shipping', { p_order_id: order.id });
+    if (error || !data || data.ok === false) {
+      const code = (error && error.message) || (data && data.error) || 'unknown error';
+      const msg = code === 'no_shipping_charge' ? 'This order has no shipping charge.'
+        : code === 'exceeds_refundable' ? 'Shipping is more than what is left to refund on this order.' : code;
+      flash('Could not refund shipping: ' + msg);
+      return { error: msg };
+    }
+    await loadDetail(sel);
+    return { ok: true, owed: Number(data.owed) || 0 };
+  }, [sel, flash, loadDetail]);
+
   const createBundle = useCallback(async ({ name, price, fundraise, image_url, components, category }) => {
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, category: category || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
@@ -4449,7 +4465,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
-          onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
+          onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder} onRemoveOrderShipping={removeOrderShipping}
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
@@ -6649,7 +6665,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   );
 }
 
-function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onRemoveOrderShipping, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [catalogFocusId, setCatalogFocusId] = useState(null);
   useEffect(() => { if (tab !== 'catalog') setCatalogFocusId(null); }, [tab]);
   const [portalCopied, setPortalCopied] = useState(false);
@@ -6891,7 +6907,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && schoolMockAmbiguous && <div role="status" style={{ padding: 12, background: '#fef3c7', color: '#92400e', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>This school has different sport designs on the same blank and color. Use each offering’s Catalog art editor for mockups; the shared mock builder cannot distinguish these designs.</div>}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} onRemoveOrderShipping={onRemoveOrderShipping} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab onRefreshInventory={onRefreshInventory} artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -14144,7 +14160,7 @@ function webstoreShortGate(items, what) {
   return true;
 }
 
-function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [], labelAllRequested = false, onLabelAllHandled }) {
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, onRemoveOrderShipping, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [], labelAllRequested = false, onLabelAllHandled }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -14598,7 +14614,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </tbody>
         </table>
       </div></div>
-      {editId && (() => { const o = orders.find((x) => x.id === editId); if (!o) return null; return <OrderManageModal order={o} items={itemsByOrder[o.id] || []} availSizes={availSizes} nameByPid={nameByPid} storeName={store && store.name} onSave={onSaveOrderEdits} onRefund={onRefundOrder} onClose={() => setEditId(null)} />; })()}
+      {editId && (() => { const o = orders.find((x) => x.id === editId); if (!o) return null; return <OrderManageModal order={o} items={itemsByOrder[o.id] || []} availSizes={availSizes} nameByPid={nameByPid} storeName={store && store.name} onSave={onSaveOrderEdits} onRefund={onRefundOrder} onRemoveShipping={onRemoveOrderShipping} onClose={() => setEditId(null)} />; })()}
     </>
   );
 }
@@ -14629,7 +14645,7 @@ function BuyerContact({ order, style }) {
   );
 }
 
-export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
+export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onRemoveShipping, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
   const initRows = editable.map((i) => {
     const removed = /^(cancelled|canceled)$/i.test(String(i.line_status || '')) || Number(i.qty) <= 0;
@@ -14785,6 +14801,24 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   // was never refunded) stays on screen, and closing with money owed asks first.
   const outstanding = owedOnFile > 0.005 ? owedOnFile : savedOwed;
   const startRefund = () => { setRefundAmt(outstanding.toFixed(2)); setComposeOpen(true); };
+  // Shipping refund: the shipping charge comes off the order first (like a
+  // cancelled item), then the same review-and-send step returns the money. If the
+  // review is dismissed, the order stays flagged "Refund owed" like any cancel.
+  const shippingCharged = Number(order.shipping_fee) || 0;
+  const canRefundShipping = !!onRemoveShipping && !!order.stripe_pi_id && shippingCharged > 0.005 && !fullyRefunded;
+  const refundShipping = async () => {
+    if (!window.confirm(`Take the ${money(shippingCharged)} shipping charge off this order and refund it?\n\nYou'll review the email to the buyer before any money moves.`)) return;
+    setBusy(true);
+    const r = await onRemoveShipping(order);
+    setBusy(false);
+    if (!r || !r.ok) return;
+    const prior = outstanding;
+    const next = _round2(prior + r.owed);
+    setSavedOwed(next);
+    setRefundAmt(next.toFixed(2));
+    if (prior <= 0.005) setRefundMsg(`Hi ${_firstName} — we've refunded the ${money(r.owed)} shipping charge on your order.`);
+    setComposeOpen(true);
+  };
   const tryClose = () => {
     if (outstanding > 0.005 && !window.confirm(`${money(outstanding)} is still owed back to ${order.buyer_name || order.buyer_email || 'this buyer'}.\n\nClose without refunding? The order will stay flagged "Refund owed".`)) return;
     onClose();
@@ -14815,7 +14849,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             <div role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', background: '#fef2f2', border: '2px solid #fca5a5', borderRadius: 10, padding: '12px 14px', marginBottom: 16 }}>
               <div style={{ fontSize: 13, color: '#7f1d1d', lineHeight: 1.45 }}>
                 <div style={{ fontWeight: 800, fontSize: 14 }}>Refund owed: {money(outstanding)}</div>
-                Items were removed from this paid order, but the buyer’s card hasn’t been refunded yet.
+                Items or shipping were taken off this paid order, but the buyer’s card hasn’t been refunded yet.
               </div>
               <button className="btn btn-primary" disabled={busy} onClick={startRefund} style={{ background: '#b91c1c', borderColor: '#b91c1c', whiteSpace: 'nowrap' }}>Refund {money(outstanding)} now</button>
             </div>
@@ -14879,7 +14913,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             <div style={sectionLabel}>Refund</div>
             {outstanding > 0.005 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 13 }}>
-                <span>Items saved. <b>{money(outstanding)}</b> is still owed back — issue the refund below.</span>
+                <span>Changes saved. <b>{money(outstanding)}</b> is still owed back — issue the refund below.</span>
               </div>
             )}
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
@@ -14898,6 +14932,12 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                   </label>;
                 })}
                 {!Object.values(selectedRefundItems).some((q) => Number(q) > 0) && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 5 }}>No item selected — this will be recorded as an order-level refund.</div>}
+              </div>
+            )}
+            {canRefundShipping && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', border: '1px solid #e2e8f0', background: '#f8fafc', borderRadius: 8, padding: '9px 12px', marginBottom: 12, fontSize: 12.5, color: '#334155' }}>
+                <span>Shipping charged: <b>{money(shippingCharged)}</b></span>
+                <button className="btn btn-sm btn-secondary" disabled={busy} onClick={refundShipping}>Refund shipping ({money(shippingCharged)})</button>
               </div>
             )}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

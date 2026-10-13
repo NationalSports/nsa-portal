@@ -156,3 +156,41 @@ describe('a cancel that was never refunded stays in front of the rep', () => {
     confirm.mockRestore();
   });
 });
+
+describe('refunding shipping', () => {
+  const shippedOrder = { ...baseOrder, total: 42, original_total: 42, shipping_fee: 12, subtotal: 30 };
+
+  test('takes shipping off the order, then opens the refund review with the shipping amount', async () => {
+    const onRemoveShipping = jest.fn(async () => ({ ok: true, owed: 12 }));
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    await act(async () => {
+      render(<OrderManageModal order={shippedOrder} items={[baseItem]} availSizes={{}} nameByPid={{}} storeName="Test Store"
+        onSave={jest.fn()} onRefund={jest.fn()} onRemoveShipping={onRemoveShipping} onClose={jest.fn()} />);
+    });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refund shipping ($12.00)' })); });
+    expect(onRemoveShipping).toHaveBeenCalledWith(expect.objectContaining({ id: 'order-1' }));
+    expect(screen.getByRole('button', { name: /Send & refund \$12\.00/ })).toBeTruthy();
+    expect(screen.getByDisplayValue(/refunded the \$12\.00 shipping charge/)).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  test('backing out of the confirm changes nothing', async () => {
+    const onRemoveShipping = jest.fn();
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    await act(async () => {
+      render(<OrderManageModal order={shippedOrder} items={[baseItem]} availSizes={{}} nameByPid={{}} storeName="Test Store"
+        onSave={jest.fn()} onRefund={jest.fn()} onRemoveShipping={onRemoveShipping} onClose={jest.fn()} />);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Refund shipping ($12.00)' }));
+    expect(onRemoveShipping).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  test('no shipping button without a card charge or without shipping', async () => {
+    await act(async () => {
+      render(<OrderManageModal order={{ ...shippedOrder, stripe_pi_id: null, payment_mode: 'unpaid' }} items={[baseItem]} availSizes={{}} nameByPid={{}}
+        onSave={jest.fn()} onRefund={jest.fn()} onRemoveShipping={jest.fn()} onClose={jest.fn()} />);
+    });
+    expect(screen.queryByRole('button', { name: /Refund shipping/ })).toBeNull();
+  });
+});
