@@ -96,3 +96,24 @@ test.each([3, 2])('Momentec resolves exact SKU and verifies accepted quantity %s
   if(quantity!==3) expect(result.state).toBe('unknown');
   expect(mt.mock.calls.filter(([e])=>e.queryStringParameters.service==='order')).toHaveLength(1);
 });
+
+test.each([false, true])('arrival lookup after confirmed S&S purchase is best effort (fails=%s)', async fails => {
+  const orders = [
+    { orderNumber: '1', poNumber: po.po_number, warehouseAbbr: 'NV', lines: [{ sku: 'B123', qtyOrdered: 1 }] },
+    { orderNumber: '2', poNumber: po.po_number, warehouseAbbr: 'KS', lines: [{ sku: 'B123', qtyOrdered: 2 }] },
+  ];
+  const ss = jest.fn(async event => {
+    if (event.queryStringParameters.path.startsWith('/DaysInTransit/')) {
+      if (fails) throw new Error('offline');
+      return reply([{ warehouses: [{ warehouseAbbr: 'NV', daysInTransit: 1 }, { warehouseAbbr: 'KS', daysInTransit: 3 }] }]);
+    }
+    return reply(event.httpMethod === 'POST' ? orders.map(({ lines, ...header }) => header) : orders);
+  });
+  const api = adapter(ss), resolved = await api.resolveVendorPurchaseOrder({ purchaseOrder: po, lines: [source()] });
+  const result = await api.submitResolvedVendorPurchaseOrder({ purchaseOrder: claim(po), resolved });
+  expect(result.ok).toBe(true); expect(result.verified).toBe(true);
+  expect(ss.mock.calls.filter(([e]) => e.httpMethod === 'POST')).toHaveLength(1);
+  expect(ss.mock.calls[2][0].queryStringParameters.path).toBe('/DaysInTransit/92867');
+  if (fails) expect(result.vendor_lines[0].estimated_arrival).toBeUndefined();
+  else expect(result.vendor_lines[0].estimated_arrival).toBe(require('../lib/businessDates.shared').addBusinessDays(new Date(), 3));
+});

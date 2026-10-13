@@ -1,3 +1,4 @@
+const { addBusinessDays } = require('../../src/lib/businessDates.shared');
 // Server-only adapter. The purchasing worker owns the durable claim/state machine;
 // this module will send once only after that worker returns a claimed PO header.
 // An ambiguous response is always unknown, never a signal to retry or send email.
@@ -159,8 +160,26 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, momentecHandler
       if (!ids.every(id => orders.some(row => orderNumber(row) === id)) || !reconciliation.verified || !exactVendorLineQuantities(resolved.vendor_lines, orders, l => l.sku)) {
         return unknown('S&S acceptance could not be verified in full; reconcile this PO before any reorder', { api_order_id: ids.join(','), vendor_lines: resolved.vendor_lines });
       }
+      // Arrival metadata is best-effort AFTER acceptance. A lookup failure must
+      // never turn a confirmed purchase into an unknown outcome or a retry.
+      let vendorLines = resolved.vendor_lines;
+      try {
+        const zip = String(resolved.payload.shippingAddress?.zip || '').slice(0, 5);
+        if (/^\d{5}$/.test(zip) && orders.some(o => o.warehouseAbbr || o.WarehouseAbbr)) {
+          const response = await invoke(ss, { path: `/DaysInTransit/${zip}` }, undefined, 'GET');
+          const row = (Array.isArray(response) ? response : [response]).find(Boolean) || {};
+          const transit = Object.fromEntries((row.warehouses || row.Warehouses || []).map(w => [String(w.warehouseAbbr || w.WarehouseAbbr || '').toUpperCase(), w.daysInTransit ?? w.DaysInTransit]));
+          vendorLines = vendorLines.map(line => {
+            const shipments = orders.filter(o => (o.lines || o.Lines || []).some(l => String(l.sku || l.Sku || '').toUpperCase() === String(line.sku).toUpperCase()));
+            const warehouses = shipments.map(o => String(o.warehouseAbbr || o.WarehouseAbbr || '').toUpperCase());
+            const days = warehouses.map(w => transit[w] == null || transit[w] === '' ? null : Number(transit[w]));
+            const arrival = days.length && days.every(d => Number.isInteger(d) && d >= 0) ? addBusinessDays(new Date(), Math.max(...days)) : null;
+            return { ...line, estimated_arrival: arrival };
+          });
+        }
+      } catch (_) { /* keep the confirmed order without an arrival forecast */ }
       return { ok: true, api_order_id: ids.join(','), raw: { orderNumbers: ids, confirmation: 'supplier-readback' },
-        vendor_lines: resolved.vendor_lines, verified: true, confirmation: 'supplier-readback' };
+        vendor_lines: vendorLines, verified: true, confirmation: 'supplier-readback' };
     } catch (_) { return unknown('The supplier submission outcome is unknown; verify the external PO reference before any reorder'); }
   }
   async function submitVendorPurchaseOrder(args) {

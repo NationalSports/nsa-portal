@@ -1,3 +1,4 @@
+import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -11838,7 +11839,7 @@ export default function App(){
     // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
     // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
     // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
-    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||''}))}:null;
+    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||'',estimated_arrival:l.estimated_arrival||null}))}:null;
     const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
     // GRANULARITY (owner 2026-07-23): stamp each PO line with only ITS item's vendor keys —
     // stamping the whole batch's list on every line let a vendor number alias to the wrong
@@ -14330,6 +14331,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      <FulfillmentPlanning onOpenJob={p=>{const so=sos.find(s=>s.id===p.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOTab('jobs');setPg('orders')}}} />
       {/* Linked/shared-screen jobs no longer surface as banners here — they travel together in the
           list and board (clusterLinked keeps siblings adjacent) and carry a 🔗 badge + colored
           left border on each row, so the run-together signal lives inline with the jobs. */}
@@ -21550,6 +21552,7 @@ export default function App(){
                   <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
                   <input type="date" id="wh-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
                 </div>
+                {soPOLines.length>0&&<DockArrivalButton key={poId} buildLines={()=>soPOLines.flatMap((pl,idx)=>poItems[idx].szKeys.map(size=>({so_id:pl.soId,item_index:pl.itemIdx,po_id:pl.poLine.po_id,size,qty:Number(document.getElementById('wh-rcv-'+idx+'-'+size)?.value)||0})).filter(line=>line.qty>0))} />}
                 <button className="btn btn-primary" disabled={whReceiving} style={{background:whReceiving?'#86efac':'#22c55e',borderColor:'#22c55e',padding:'8px 20px',marginLeft:'auto',fontSize:13,fontWeight:800,opacity:whReceiving?0.6:1}} onClick={()=>{
                   if(whReceiving)return;
                   // Batch-read all receive input values upfront to avoid repeated DOM queries

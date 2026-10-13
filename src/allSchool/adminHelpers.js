@@ -4,7 +4,7 @@ export const allSchoolDefaults = () => ({
   promo_eyebrow: 'For the whole school', promo_heading: 'Wear your pride.',
   promo_description: 'Students, families, staff, and alumni. Your school favorites belong everywhere.',
   promo_button_label: 'Shop school spirit', promo_destination: 'spirit', promo_art_text: 'School Spirit.',
-  production: { auto_release_enabled: false },
+  production: { auto_release_enabled: false, business_days: null },
   purchasing: { enabled: false, mode: 'minimum_weekly', minimum_cents: 20000, weekday: 3, time: '09:00', timezone: 'America/Los_Angeles', combine_regular: true, no_batch_policy: 'separate', max_wait_days: 7, max_run_cents: 100000 },
   shipping: { mode: 'flat', package_weight_oz: 2, length_in: 12, width_in: 10, height_in: 3, service_code: 'ups_ground', origin_code: 'OR', fallback: 'block' },
   dtf: { supplier_id: null, auto_send: false },
@@ -16,6 +16,8 @@ export const normalizeAllSchoolSettings = (value) => {
 export const validateAllSchoolSettings = (value) => {
   const s = normalizeAllSchoolSettings(value);
   if (!Number.isInteger(Number(s.target_ship_days)) || Number(s.target_ship_days) < 1 || Number(s.target_ship_days) > 90) return 'Shipment target must be between 1 and 90 days.';
+  const pd = s.production.business_days;
+  if (pd != null && pd !== '' && (!Number.isInteger(Number(pd)) || Number(pd) < 0 || Number(pd) > 90)) return 'Production allowance must be 0–90 business days, or blank for the seasonal allowance.';
   const seen = new Set(); const slugs = new Set();
   for (const p of s.programs) {
     if (!p.id || !p.name?.trim() || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug || '')) return 'Each sport needs a name and a valid URL slug.';
