@@ -175,9 +175,6 @@ try {
     `);
     await db.exec(read('supabase/migrations/20261008193918_keep_sales_order_ids_sequential.sql'));
     await db.exec(read('supabase/migrations/20261011063832_at_once_fulfillment_completion.sql'));
-    await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
-    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
-    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
     await db.exec(`alter table webstore_orders add column tax numeric default 0,
       add column shipping_fee numeric default 0,add column processing_fee numeric default 0,
       add column cc_fee numeric default 0,add column stripe_pi_id text,add column tax_state text,
@@ -186,6 +183,13 @@ try {
       add column _omg_shipping numeric default 0,add column _omg_cc_fees numeric default 0;
       create function public.qbo_sales_source_snapshot(timestamptz) returns jsonb language sql as $$select '{"existing_wrapper":true}'::jsonb$$;`);
     await db.exec(read('supabase/migrations/20261012141544_at_once_qbo_revenue.sql'));
+    await db.exec(read('supabase/migrations/20261012051835_at_once_247_sales_order_numbering.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(read('supabase/migrations/20261012054600_at_once_use_store_order_number.sql'));
+    await db.exec(`alter table so_items add column recipe_snapshot jsonb;
+      alter table webstore_transfers add column decoration_type text, add column production_file jsonb,
+        add column width_in numeric, add column height_in numeric;`);
+    await db.exec(read('supabase/migrations/20261013043303_at_once_frozen_art_variants.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
@@ -425,6 +429,32 @@ try {
       fs.writeFileSync(path.resolve(process.env.AT_ONCE_SNAPSHOT_FILE), JSON.stringify(snapshots, null, 2));
     }
     console.log('PASS transfer pull idempotence and verification gate; job advances through packing; shipment trigger closes SO');
+    // Two paid artwork versions on the SAME blank must not merge or consult changed catalog art.
+    const frozenOrder='a2000000-0000-0000-0000-000000000002';
+    await db.query(`insert into webstore_orders(id,store_id,status,order_number,buyer_name,buyer_email,subtotal,fundraise_amt,discount_amt,total,stripe_pi_id,tax,shipping_fee,processing_fee)
+      values($1,$2,'paid',1010043,'Variant test','fake@example.invalid',50,0,0,50,'pi_fake_variants',0,0,0)`,[frozenOrder,sid]);
+    for (const [idx,code] of ['dtf-black-knockout','dtf-white-knockout'].entries()) {
+      await db.query(`insert into webstore_transfers(id,store_id,code,label,kind,on_hand,unit_cost,decoration_type) values(gen_random_uuid(),$1,$2,$2,'design',5,1.25,'dtf')`,[sid,code]);
+      const recipe={version:2,webstore_product_id:webProductId,decorations:[{art_id:'crest',type:'dtf',transfer_code:code,placement:'full_front',art_url:code+'.png'}],transfer_codes:[code],takes_name:false,takes_number:false,transfer_inventory:[{code,kind:'design',label:code,decoration_type:'dtf',unit_cost:1.25,production_file:{name:code+'.ai'}}]};
+      await db.query(`insert into webstore_order_items(id,order_id,product_id,sku,name,color,size,qty,unit_price,unit_fundraise,line_status,production_recipe) values(gen_random_uuid(),$1,$2,'PG-TEE','Variant test','Navy','M',1,25,0,'pending',$3)`,[frozenOrder,productId,recipe]);
+    }
+    const frozenSo=(await db.query('select create_club_sales_order($1) result',[frozenOrder])).rows[0].result.so_id;
+    const frozenItems=(await db.query('select id,recipe_snapshot,source_webstore_item_ids from so_items where so_id=$1',[frozenSo])).rows;
+    assert.equal(frozenItems.length,2,'different paid artwork versions remain separate');
+    assert.ok(frozenItems.every(i=>i.recipe_snapshot.version===2 && i.source_webstore_item_ids.length===1));
+    const frozenDecos=(await db.query('select d.type,d.transfer_code from so_item_decorations d join so_items i on i.id=d.so_item_id where i.so_id=$1 order by d.transfer_code',[frozenSo])).rows;
+    assert.deepEqual(frozenDecos,[{type:'dtf',transfer_code:'dtf-black-knockout'},{type:'dtf',transfer_code:'dtf-white-knockout'}],'one exact decoration per frozen variant; no duplicate generic logo');
+    await db.query('select pull_webstore_transfers($1,$2,$3)',[sid,[frozenSo],[{code:'dtf-black-knockout',qty:1},{code:'dtf-white-knockout',qty:1}]]);
+    await db.query('select pull_webstore_transfers($1,$2,$3)',[sid,[frozenSo],[{code:'dtf-black-knockout',qty:1},{code:'dtf-white-knockout',qty:1}]]);
+    const frozenJobs=(await db.query('select id,key,art_status from so_jobs where so_id=$1',[frozenSo])).rows;
+    assert.equal(new Set(frozenJobs.map(j=>j.key)).size,2);
+    assert.ok(frozenJobs.every(j=>j.art_status==='art_complete'));
+    await db.query("update so_jobs set item_status='items_received' where so_id=$1",[frozenSo]);
+    for(const j of frozenJobs) await db.query("select advance_job_stage($1,$2,'release','pgtest')",[frozenSo,j.id]);
+    const counts=(await db.query("select code,on_hand from webstore_transfers where code like 'dtf-%' order by code")).rows;
+    assert.deepEqual(counts.map(r=>Number(r.on_hand)),[4,4],'each color-version consumes only its own inventory');
+    assert.equal((await db.query('select create_club_sales_order($1) result',[frozenOrder])).rows[0].result.so_id,frozenSo,'replay reuses existing SO');
+    console.log('PASS frozen Club color versions: distinct jobs, exact inventory pulls, no generic duplicate, idempotent conversion');
   } catch (error) {
     // expected negative release is asserted separately below; this catch is
     // deliberately only a safety net for the overall transaction cleanup.

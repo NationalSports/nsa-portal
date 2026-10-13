@@ -36,7 +36,7 @@ it('shows each logo choice once with its own colors and keeps unrelated items se
 });
 it('links a screen-print choice to its approved art folder instead of DTF stock', () => {
   const source = [{ id: 'blue', kind: 'single', product_id: 'blank', sku: 'HOODIE', image_url: 'old.png', transfer_codes: ['OLD'] }];
-  const art = { id: 'serra-arch', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
+  const art = { id: 'serra-arch', web_logo_url: 'arch.png', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
   const [copy] = logoDesignCopies(source, 'store', 'listing', 'design', 'Serra arch', null, art);
   expect(copy.active).toBe(false);
   expect(copy.image_url).toBeNull();

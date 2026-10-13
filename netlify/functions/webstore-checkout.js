@@ -1,4 +1,5 @@
 const { loadItemEstimates } = require('./_webstoreItemEstimates');
+const { artworkSetup, isAtOnceStore } = require('../../src/allSchool/atOnceArtwork.shared');
 const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
 // Server-side storefront checkout — the browser never decides a price again.
 //
@@ -329,7 +330,7 @@ async function priceCart(sb, store, cart) {
   let recipeCatalog = wprods || [];
   let recipeTransfers = [];
   let recipeArts = [];
-  if (store.org_type === 'all_school') {
+  if (isAtOnceStore(store)) {
     const result = await sb.from('webstore_transfers').select('*').eq('store_id', store.id);
     if (result.error) return { error: 'Could not verify transfer production details. Please try again.' };
     recipeTransfers = result.data || [];
@@ -342,12 +343,12 @@ async function priceCart(sb, store, cart) {
         const parent = await sb.from('customers').select('art_files').eq('id', row.parent_id).limit(1);
         if (parent.error) return { error: 'Could not verify the school artwork library. Please try again.' };
         const parentArts = (parent.data || [])[0]?.art_files;
-        recipeArts = [...recipeArts, ...(Array.isArray(parentArts) ? parentArts : [])];
+        recipeArts = [...(Array.isArray(parentArts) ? parentArts : []), ...recipeArts];
       }
     }
   }
-  if (store.org_type === 'all_school') recipeArts = schoolArtwork([...(store.store_art || []), ...recipeArts]);
-  if (store.org_type === 'all_school' && bundleItems.length) {
+  if (isAtOnceStore(store)) recipeArts = schoolArtwork([...(store.store_art || []), ...recipeArts]);
+  if (isAtOnceStore(store) && bundleItems.length) {
     const componentIds = [...new Set(bundleItems.map((c) => c.product_id).filter(Boolean))];
     if (componentIds.length) {
       const result = await sb.from('webstore_products').select('*').eq('store_id', store.id).in('product_id', componentIds).limit(1001);
@@ -357,6 +358,12 @@ async function priceCart(sb, store, cart) {
     }
   }
 
+  if (isAtOnceStore(store)) {
+    const ids = [...new Set(recipeCatalog.map(p => p.product_id).filter(Boolean))];
+    const colors = ids.length ? await sb.from('products').select('id,color').in('id', ids) : {data:[]};
+    if (colors.error) return {error:'Could not verify garment colors. Please try again.'};
+    for (const p of recipeCatalog) p.color = (colors.data || []).find(c => c.id === p.product_id)?.color || '';
+  }
   const lines = [];
   let subtotal = 0, fundraise = 0, feeBase = 0;
   for (const l of cart) {
@@ -389,7 +396,7 @@ async function priceCart(sb, store, cart) {
         // holds the whole package price at qty 1.
         const cq = Math.max(1, parseInt(c.qty, 10) || 1);
         let recipe;
-        if (store.org_type === 'all_school') {
+        if (isAtOnceStore(store)) {
           const matches = [...new Map(recipeCatalog.filter((p) => p.product_id === c.product_id).map((p) => [p.id, p])).values()];
           const catalogItem = c.webstore_product_id ? matches.find((p) => p.id === c.webstore_product_id) : matches.length === 1 ? matches[0] : null;
           if (!catalogItem) return null;
@@ -402,7 +409,7 @@ async function priceCart(sb, store, cart) {
             componentDefinition.num_transfer_size = c.num_transfer_size; componentDefinition.num_transfer_color = c.num_transfer_color;
             componentDefinition.num_transfer_sets = [`${c.num_transfer_size || ''}|${c.num_transfer_color || ''}`];
           }
-          recipe = productionRecipe(componentDefinition, recipeTransfers, recipeArts);
+          recipe = productionRecipe(componentDefinition, recipeTransfers, recipeArts, store);
           if (pname && personalizationNameError(catalogItem, cc.player_name)) return { recipe_error: personalizationNameError(catalogItem, cc.player_name) };
         }
         return { webstore_product_id: c.webstore_product_id || (recipe && recipe.webstore_product_id) || null, product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: recipe ? recipe.display_name || c.name || c.sku : cc.name || null, image: recipe ? recipe.image_url || null : cc.image || null, qty: cq, ...(recipe ? { production_recipe: recipe } : {}) };
@@ -414,7 +421,7 @@ async function priceCart(sb, store, cart) {
       subtotal += r2(unitPrice + nameExtra + addOns.extra);
       fundraise += fundAmt;
       feeBase += r2(unitPrice + addOns.extra);
-      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), option_extra: addOns.extra, option_selections: addOns.selections, line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
+      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), option_extra: addOns.extra, option_selections: addOns.selections, line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url, ...(isAtOnceStore(store) ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts, store) } : {}) });
     } else {
       const qty = Math.min(100, Math.max(1, parseInt(l.qty, 10) || 1));
       if (store.org_type === 'all_school' && wp.takes_name) {
@@ -431,10 +438,10 @@ async function priceCart(sb, store, cart) {
       subtotal += r2((unit + nameExtra) * qty);
       fundraise += r2(fundAmt * qty);
       feeBase += r2(unit * qty);
-      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: [wp.variant_label, wp.school_design_label].filter(Boolean).join(' · ') || null, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: isAtOnceStore(store) ? wp.color : l.color ? String(l.color).slice(0, 60) : null, variant_label: [wp.variant_label, wp.school_design_label].filter(Boolean).join(' · ') || null, image: wp.image_url, ...(isAtOnceStore(store) ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts, store) } : {}) });
     }
   }
-  if (store.org_type === 'all_school') {
+  if (isAtOnceStore(store)) {
     const error = lines.flatMap((line) => line.kind === 'bundle' ? line.components.map((c) => c.production_recipe) : [line.production_recipe]).find((recipe) => recipe?.setup_error)?.setup_error;
     if (error) return { error };
   }
@@ -668,10 +675,12 @@ function personalizationNameError(wp, value) {
   return null;
 }
 
-function productionRecipe(wp, transfers = [], arts = []) {
+function productionRecipe(wp, transfers = [], arts = [], store = null) {
   arts = schoolArtwork(arts);
   wp = resolveSchoolSetup(wp, transfers, arts);
-  const setupError = methodSetupError(wp, transfers, arts);
+  const checked = isAtOnceStore(store) ? artworkSetup(wp, transfers, arts) : {item:wp,error:''};
+  wp = checked.item;
+  const setupError = checked.error || (store?.org_type === 'club' ? '' : methodSetupError(wp, transfers, arts));
   const keys = ['product_id', 'sku', 'display_name', 'color', 'variant_label', 'school_design_label', 'transfer_code', 'num_transfer_size', 'num_transfer_color', 'name_upcharge', 'image_url', 'image_back_url', 'weight_oz'];
   const transferKeys = ['id', 'kind', 'code', 'name', 'label', 'image_url', 'color', 'size', 'tsize', 'digit', 'production_file', 'dimensions', 'type', 'decoration_type', 'supplier', 'supplier_id', 'application', 'application_method', 'application_instructions', 'unit_cost', 'artwork_version', 'art_file_id', 'width_in', 'height_in', 'prod_files'];
   const designCodes = new Set([...(Array.isArray(wp.transfer_codes) ? wp.transfer_codes : []), wp.transfer_code].filter(Boolean));
@@ -680,7 +689,7 @@ function productionRecipe(wp, transfers = [], arts = []) {
     || (wp.takes_number && t.kind === 'number' && numberSets.includes(`${t.tsize || t.size || ''}|${t.color || ''}`)))
     .map((t) => Object.fromEntries(transferKeys.filter((key) => t[key] != null).map((key) => [key, t[key]])));
   return JSON.parse(JSON.stringify({
-    version: 1, webstore_product_id: wp.id,
+    version: isAtOnceStore(store) ? 2 : 1, webstore_product_id: wp.id,
     setup_error: setupError || null,
     mock_approval: { approved: !setupError, approved_at: null, approved_by: null, basis: 'method_readiness' },
     ...Object.fromEntries(keys.map((key) => [key, wp[key] == null ? null : wp[key]])),
@@ -1003,7 +1012,7 @@ async function placeOrder(sb, body) {
   // the actual player. It never drives decoration — that's the item's takes_name.
   const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
   // No order_id yet — the transaction (or legacy path) injects it.
-  const items = buildOrderItems(priced.lines, orderPlayer, undefined, store.org_type === 'all_school');
+  const items = buildOrderItems(priced.lines, orderPlayer, undefined, isAtOnceStore(store));
 
   // A number is one-per-player across the store. Within one checkout the same
   // number legitimately repeats across a single player's bundle components

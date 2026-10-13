@@ -1,3 +1,4 @@
+import { validProductionFile, sameFile } from '../allSchool/atOnceArtwork.shared';
 import { frozenPurchasedMocks } from './frozenMockData';
 import { resolveWebstoreReportLines, reportBlockingIssues } from '../lib/soPlayerReport';
 import { resolveSizeSkuSource } from '../lib/sizeSkuOverrides';
@@ -64,7 +65,14 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       const garment = { id, legacyIds: id === legacyId ? [] : [legacyId], soId: so.id, sku: text(item.sku), name: text(item.name || item.custom_desc || item.sku), color: text(item.color), sizes, units, image: item.recipe_snapshot ? safeUrl(item.recipe_snapshot.image_url) : safeUrl(item.image_front_url), ...(item.recipe_snapshot ? {frozenMocks} : {}), decorationIds: [], undecorated: !!item.no_deco };
       if (!item.no_deco && !decos.length) addIssue(`${so.id} ${item.sku}: confirm blank garment or assign decoration`);
       decos.forEach((d, di) => {
-        const art = arr(so.art_files).find(a => a.id === (d.art_file_id || (item.recipe_snapshot ? slots.find(slot => slot.di === di)?.artFile?.id : null)) && !a.archived);
+        const recipe = item.recipe_snapshot;
+        const frozenStock = recipe?.version === 2 && frozenApproved ? arr(recipe.transfer_inventory).find(t => t.code === d.transfer_code && t.decoration_type === 'dtf') : null;
+        const placed = frozenStock && arr(recipe.decorations).find(p => p.transfer_code === frozenStock.code);
+        const variant = placed && arr(arr(recipe.art_files).find(a => a.id === (placed.art_id || placed.art_file_id))?.dtf_variants).find(v => v.id === placed.dtf_variant_id);
+        const reviewedStock = variant?.reviewed === true && validProductionFile(frozenStock?.production_file) && sameFile(variant.production_file,frozenStock.production_file) && Number(frozenStock.width_in)>0 && Number(frozenStock.height_in)>0;
+        // Physical DTF stock carries its frozen print specification. The private .ai
+        // goes to the supplier; shared production packets show its stock identity.
+        const art = reviewedStock ? {id:variant.id,name:`${frozenStock.label || frozenStock.code} · ${frozenStock.code}`,status:'approved',deco_type:'dtf',art_size:`${frozenStock.width_in} × ${frozenStock.height_in} in`,ink_colors:`See approved Weblogo · Knockout: ${variant.knockout_color}`,prod_files:[]} : arr(so.art_files).find(a => a.id === (d.art_file_id || (recipe ? slots.find(slot => slot.di === di)?.artFile?.id : null)) && !a.archived);
         const mocks = files(slots.filter(s => s.di === di).flatMap(s => slotMockFiles(s, slots, item)));
         const cw = arr(art?.color_ways).find(c => c.id === d.color_way_id);
         const cwB = arr(art?.color_ways).find(c => c.id === d.color_way_id_b);
@@ -119,7 +127,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
           if (!specs.dimensions) missingSpecs.push('dimensions');
           if (methodKey === 'embroidery' ? !specs.threadColors : !specs.pantoneColors) missingSpecs.push(methodKey === 'embroidery' ? 'thread colors' : 'colors');
           if (methodKey === 'embroidery' && !specs.stitches) missingSpecs.push('stitch count');
-          if (!files(art?.prod_files).length) missingSpecs.push('production files');
+          if (!reviewedStock && !files(art?.prod_files).length) missingSpecs.push('production files');
         }
         const uniqueMissingSpecs = [...new Set(missingSpecs)];
         const specReady = uniqueMissingSpecs.length === 0;
