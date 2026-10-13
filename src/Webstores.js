@@ -84,6 +84,44 @@ const { DEFAULT_SHIP_FROM_CODE, shipFromCode, shipFromLabel, shipStationShipFrom
 const shipFromColumnMissing = (error) => !!error && /ship_from_code/.test(error.message || '');
 const withoutShipFrom = (row) => { const { ship_from_code, ...rest } = row; return rest; };
 
+const comparableStoreValue = (value) => {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.map(comparableStoreValue);
+  if (typeof value === 'object') return Object.keys(value).sort().reduce((out, key) => {
+    out[key] = comparableStoreValue(value[key]);
+    return out;
+  }, {});
+  return value;
+};
+
+export const storeValueEqual = (left, right) => (
+  JSON.stringify(comparableStoreValue(left)) === JSON.stringify(comparableStoreValue(right))
+);
+
+export const storeFieldEqual = (key, left, right) => {
+  if (/_at$/.test(key) && left && right) {
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime)) return leftTime === rightTime;
+  }
+  return storeValueEqual(left, right);
+};
+
+export const webstoreSaveConflicts = (original, latest, patch) => Object.keys(patch || {})
+  .filter((key) => !storeFieldEqual(key, original?.[key], latest?.[key]));
+
+export const webstoreDirtyPatch = (original, payload, dirtyFields) => [...dirtyFields]
+  .reduce((patch, key) => {
+    if (!storeFieldEqual(key, original?.[key], payload?.[key])) patch[key] = payload[key];
+    return patch;
+  }, {});
+
+const webstoreChangedElsewhere = (original, latest) => {
+  const keys = new Set([...Object.keys(original || {}), ...Object.keys(latest || {})]);
+  keys.delete('updated_at');
+  return [...keys].some((key) => !storeValueEqual(original?.[key], latest?.[key]));
+};
+
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
@@ -1989,19 +2027,40 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Store closed — staff notification is queued for the hourly retry'); }
   }, [flash]);
 
-  const saveStore = useCallback(async (form, existingId) => {
+  const saveStore = useCallback(async (form, existingId, originalStore) => {
     if (existingId) {
-      const prevStore = stores.find((s) => s.id === existingId);
-      const reopenPatch = reopenPatchForCloseDate(prevStore, form.close_at);
+      const { data: latest, error: loadError } = await supabase.from('webstores').select('*').eq('id', existingId).single();
+      if (loadError || !latest) return { error: loadError || { message: 'Store could not be reloaded before saving.' } };
+      const conflicts = webstoreSaveConflicts(originalStore, latest, form);
+      if (conflicts.length) {
+        return { error: { code: 'WEBSTORE_STALE', message: `This store changed elsewhere while you were editing (${conflicts.join(', ')}). Your changes were not saved. Reopen settings and try again.` } };
+      }
+      const closeDateChanged = Object.prototype.hasOwnProperty.call(form, 'close_at');
+      const reopenPatch = closeDateChanged ? reopenPatchForCloseDate(latest, form.close_at) : {};
       const reopenedByDate = reopenPatch.status === 'open';
       const patch = { ...form, ...reopenPatch, updated_at: new Date().toISOString() };
-      let { data, error } = await supabase.from('webstores').update(patch).eq('id', existingId).select().single();
-      if (shipFromColumnMissing(error)) ({ data, error } = await supabase.from('webstores').update(withoutShipFrom(patch)).eq('id', existingId).select().single());
+      if (Object.keys(form).length === 0) {
+        setStores((prev) => prev.map((s) => (s.id === existingId ? latest : s)));
+        if (sel?.id === existingId) setSel(latest);
+        flash(webstoreChangedElsewhere(originalStore, latest) ? 'No settings changed — reloaded changes made elsewhere' : 'No settings changed');
+        return { data: latest };
+      }
+      const runUpdate = (nextPatch) => {
+        let query = supabase.from('webstores').update(nextPatch).eq('id', existingId);
+        if (latest.updated_at) query = query.eq('updated_at', latest.updated_at);
+        return query.select().single();
+      };
+      let { data, error } = await runUpdate(patch);
+      if (shipFromColumnMissing(error)) ({ data, error } = await runUpdate(withoutShipFrom(patch)));
+      if (error && latest.updated_at && (error.code === 'PGRST116' || /0 rows|multiple \(or no\) rows|JSON object requested|cannot coerce/i.test(error.message || ''))) {
+        return { error: { code: 'WEBSTORE_STALE', message: 'This store changed again while it was being saved. Your changes were not saved. Reopen settings and try again.' } };
+      }
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
-      if (!reopenedByDate && prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
-      flash(reopenedByDate ? 'Store saved — reopened for shoppers' : 'Store saved'); return { data };
+      if (!reopenedByDate && latest.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
+      const merged = webstoreChangedElsewhere(originalStore, latest);
+      flash(reopenedByDate ? 'Store saved — reopened for shoppers' : merged ? 'Store saved — merged with changes made elsewhere' : 'Store saved'); return { data };
     }
     // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
     // with an existing store (e.g. re-importing the same OMG report, or two similarly-named teams)
@@ -4448,7 +4507,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCancel={() => { setPendingStartTpl(null); if (tplAfterEdit) { setTplAfterEdit(null); flash('Store saved as a draft — bring the template\'s items in any time via Add items → Add template'); } setEditing(null); omgResetStaged(); }}
           onSave={async (form) => {
             const isNew = editing === 'new';
-            const r = await saveStore(form, isNew ? null : editing.id);
+            const r = await saveStore(form, isNew ? null : editing.id, isNew ? null : editing);
             if (r.error) return r;
             setEditing(null);
             // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
@@ -5889,6 +5948,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     close_at: store ? dateOnly(store.close_at) : initialOverrides?.org_type === 'all_school' ? '' : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()),
     close_time: store ? ptTimeInput(store.close_at) : ptTimeInput(initialOverrides?.close_at),
   }));
+  const dirtyFields = useRef(new Set());
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
@@ -5934,8 +5994,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
   // column is set on an existing store; defaults to percent.
   const [fundMode, setFundMode] = useState(Number(store?.fundraise_flat) > 0 ? 'flat' : 'pct');
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const setName = (v) => { setNameTouched(true); setF((p) => ({ ...p, name: v, slug: slugTouched ? p.slug : slugify(v) })); };
+  const change = (patch) => {
+    Object.keys(patch).forEach((key) => dirtyFields.current.add(key));
+    setF((p) => ({ ...p, ...patch }));
+  };
+  const set = (k, v) => change({ [k]: v });
+  const setName = (v) => { setNameTouched(true); change({ name: v, slug: slugTouched ? f.slug : slugify(v) }); };
   // Auto-name the store from the customer's readable NAME (not its tag). The team
   // (child) record already carries the sport, so "Dana Hills Football" → "Dana Hills
   // Football Team Store"; a parent org → "<name> <noun> Store".
@@ -5955,28 +6019,39 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     const autoName = storeNameFor(id, noun);
     const resolvedRep = (c && c.primary_rep_id) || (parent && parent.primary_rep_id) || f.rep_id;
     const primCsr = primaryCsrForRep(resolvedRep);
-    setF((p) => ({
-      ...p, customer_id: id,
-      rep_id: resolvedRep || p.rep_id,
-      csr_id: primCsr || p.csr_id,
-      primary_color: ph(0) || p.primary_color, accent_color: ph(1) || p.accent_color,
-      name: nameTouched ? p.name : (autoName || p.name),
-      slug: nameTouched || slugTouched ? p.slug : (autoName ? slugify(autoName) : p.slug),
-    }));
+    change({
+      customer_id: id,
+      rep_id: resolvedRep || f.rep_id,
+      csr_id: primCsr || f.csr_id,
+      primary_color: ph(0) || f.primary_color, accent_color: ph(1) || f.accent_color,
+      name: nameTouched ? f.name : (autoName || f.name),
+      slug: nameTouched || slugTouched ? f.slug : (autoName ? slugify(autoName) : f.slug),
+    });
   };
   // Switching team/club re-labels the auto-name too (OLu Football Team Store → Club Store).
   const switchOrg = (t) => {
     setOrgType(t);
+    dirtyFields.current.add('org_type');
+    if (t !== 'club') dirtyFields.current.add('number_enabled');
     if (t !== 'all_school' && page === 'operations') setPage('setup');
     if (t === 'all_school' && orgType !== 'all_school') {
       setFundMode('pct');
-      setF((p) => ({ ...p, close_at: '', delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, fundraise_flat: 0, fundraise_round: false, all_school_settings: normalizeAllSchoolSettings(p.all_school_settings) }));
+      change({ close_at: '', delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, fundraise_flat: 0, fundraise_round: false, all_school_settings: normalizeAllSchoolSettings(f.all_school_settings) });
     }
     if (!nameTouched && f.customer_id) {
       const nn = t === 'all_school' ? 'School' : t === 'club' ? 'Club' : 'Team';
       const autoName = storeNameFor(f.customer_id, nn);
-      if (autoName) setF((p) => ({ ...p, name: autoName, slug: slugTouched ? p.slug : slugify(autoName) }));
+      if (autoName) change({ name: autoName, slug: slugTouched ? f.slug : slugify(autoName) });
     }
+  };
+  const changeFundMode = (mode) => {
+    setFundMode(mode);
+    dirtyFields.current.add('fundraise_pct');
+    dirtyFields.current.add('fundraise_flat');
+  };
+  const changeFundraising = (enabled) => {
+    set('fundraise_enabled', enabled);
+    if (!enabled) ['fundraise_pct', 'fundraise_flat', 'fundraise_round', 'fundraise_goal'].forEach((key) => dirtyFields.current.add(key));
   };
   // Build a fresh hero blurb from the store's own details — coach-approved, the
   // chosen delivery method and post-close delivery window. Varies each click.
@@ -6078,7 +6153,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; payload.fundraise_goal = 0; }
     else if (fundMode === 'pct') payload.fundraise_flat = 0;
     else payload.fundraise_pct = 0;
-    const r = await onSave(payload);
+    const savePayload = store ? webstoreDirtyPatch(store, payload, dirtyFields.current) : payload;
+    const r = await onSave(savePayload);
     setBusy(false);
     if (r?.error) setError(r.error.message || 'Save failed.');
   };
@@ -6124,7 +6200,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         {store?.store_code && <Row label="Store # (auto-assigned — use it to look this store up)"><div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: '.06em', color: '#191919', padding: '6px 0' }}>{store.store_code}</div></Row>}
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; setF((p) => ({ ...p, rep_id: rid, csr_id: primaryCsrForRep(rid) || '' })); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; change({ rep_id: rid, csr_id: primaryCsrForRep(rid) || '' }); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
           <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{csrOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
@@ -6189,12 +6265,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
 
       <Section title="Fundraising">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Add fundraising on top of every item's price for the whole store. You can still set a specific amount on any single item in the Catalog — an item's own amount always wins.</div>
-        <Toggle label="Add fundraising to this store" checked={f.fundraise_enabled} onChange={(v) => set('fundraise_enabled', v)} />
+        <Toggle label="Add fundraising to this store" checked={f.fundraise_enabled} onChange={changeFundraising} />
         {f.fundraise_enabled && <div style={{ marginTop: 2, marginBottom: 4 }}>
           <Row label="Fundraise by">
             <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }}>
               {[['pct', '% of item price'], ['flat', '$ per item']].map(([m, lbl]) => (
-                <button key={m} type="button" onClick={() => setFundMode(m)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: fundMode === m ? '#fff' : 'transparent', color: fundMode === m ? '#191919' : '#6A7180', boxShadow: fundMode === m ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+                <button key={m} type="button" onClick={() => changeFundMode(m)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: fundMode === m ? '#fff' : 'transparent', color: fundMode === m ? '#191919' : '#6A7180', boxShadow: fundMode === m ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
               ))}
             </div>
           </Row>
@@ -6232,7 +6308,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></Row>}
         <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2, marginBottom: 8 }}>Shown to families on the storefront, cart, and checkout.</div>
-        {f.delivery_mode === 'ship_home' && <WebstoreShippingSettings store={f} onChange={patch => setF(prev => ({ ...prev, ...patch }))} />}
+        {f.delivery_mode === 'ship_home' && <WebstoreShippingSettings store={f} onChange={change} />}
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
           <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
