@@ -21,6 +21,7 @@ import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
 import { RosterOrdersCoach } from './RosterOrders';
 import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from './lib/a11y';
+import * as WEBSTORE_BRANDING from './lib/webstoreBranding';
 // Lazy so the uniform designer (and its jsPDF/canvas deps) only loads when opened.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 
@@ -106,7 +107,7 @@ const _cpTrackHref = (carrier, tracking) => {
 // Cardinal/Silver aren't in those catalog files (no garment filter needs them
 // yet) but match the Cardinal/Silver hexes already used for thread-color pickers
 // elsewhere (OrderEditor.js, CustDetail.js).
-const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Silver: '#C0C0C0', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Cardinal: '#8C1515', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#3B1464', Pink: '#EC4899', Brown: '#7C4A21' };
+const CP_HEX = WEBSTORE_BRANDING.SCHOOL_COLOR_HEX;
 // Darkest-first: which team color makes the best deep banner background (white
 // text stays readable). Light/neutral families are intentionally excluded.
 const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Cardinal', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
