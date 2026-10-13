@@ -390,6 +390,8 @@ const _syncDbMaxIds=async()=>{if(!supabase)return;try{
 }catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
 const nextSOId=sos=>nextSalesOrderId(sos,_dbMaxIds.so);
+// Every new SO takes its number from here (DB counter; local max+1 only if the RPC is unreachable).
+const mintSOId=sos=>_dbMintSalesOrderId(nextSOId(sos));
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 // Deep-clone art_files with FRESH ids for a copied estimate/SO. Copies must never share art_file
 // ids with their source: shared ids let one order's art bleed into another and break art-id-keyed
@@ -667,6 +669,7 @@ import {
   _bgSyncInc,
   _bgSyncDec,
   _truncatedTables,
+  _dbMintSalesOrderId,
 } from './lib/dbEngine';
 
 // The proxy already explains an OMG outage in words ("their report service did not
@@ -2582,7 +2585,7 @@ export default function App(){
     const badSOs=soList.filter(s=>!(/^(?:(?:SO|247)-\d+|\d+)$/).test(s.id));
     if(badSOs.length>0){
       needsMigrate=true;
-      const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));
+      const validNums=soList.map(s=>salesOrderSequenceNumber(s.id));
       let nextNum=Math.max(_soSeq,...validNums,0)+1;
       badSOs.forEach(s=>{const oldId=s.id;s.id='SO-'+nextNum;idMap[oldId]='SO-'+nextNum;nextNum++});
       _soSeq=nextNum;
@@ -7071,7 +7074,7 @@ export default function App(){
     return credit;
   };
   const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,expected_date,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
-    const id=nextSOId(sos);
+    const id=await mintSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:expected_date||'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
@@ -7637,9 +7640,9 @@ export default function App(){
   // customer from inside the editor — same default shape as a freshly converted SO.
   // Need-by date: no default. The rep enters the customer's real in-hands date before the order
   // exists — a made-up "today + 28 days" filled the dashboard with fake deadlines and fake "overdue"s.
-  const newSOFn=(c,needBy)=>{if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}const mk=c?.catalog_markup||1.65;
+  const newSOFn=async(c,needBy)=>{if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}const mk=c?.catalog_markup||1.65;
     const defExp=needBy;
-    const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
+    const so={id:await mintSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
     setESO(so);setESOC(c||null);setPg('orders');return so};
   // Re-fetch an estimate's items + decorations from the DB and rebuild the items
   // array exactly as the main loader does (the estimates map above), so converting
@@ -7785,7 +7788,7 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const so={id:await mintSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Pending shipping is offered to the rep in the editor, never auto-attached (see savSO).
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     // Do not publish the new SO to the editor or diff-save effect until its
@@ -7905,7 +7908,7 @@ export default function App(){
       const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
       if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
       return clone}),_artIdMap);
-    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
+    const ns={id:await mintSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
   // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
@@ -18777,7 +18780,6 @@ export default function App(){
               if(!force&&sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               if(!s.rep_id){nf('Assign a sales rep to this store first — use the rep dropdown next to the customer at the top.','error');return}
-              const generatedId=nextSOId(sos);
               // Every product must be assigned an art group or explicitly marked
               // "No Deco" (shoes, socks, equipment) before it can become an SO.
               const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
@@ -18861,6 +18863,7 @@ export default function App(){
                 const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
                 _shadowWs=ws||null;
               }catch(e){console.warn('[OMG] shadow store lookup failed:',e.message)}}
+              const generatedId=await mintSOId(sos);
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
@@ -32085,7 +32088,7 @@ export default function App(){
                 // fails to load (stale deploy → 404 → lazyRetry reload), the import data is already
                 // safe in the database and the user can find it on the list view after re-login.
                 if(imp.docType==='so'){
-                  const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
+                  const newSO={id:await mintSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
                     created_by:cu.id,created_at:now,updated_at:now,
                     expected_date:'',production_notes:nsRef+(imp.linkedSoId?' | Linked: '+imp.linkedSoId:''),
                     shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
@@ -32129,7 +32132,7 @@ export default function App(){
                       nf('✅ PO imported and linked to '+imp.linkedSoId);
                     }
                   } else {
-                    const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:poMemo,status:'need_order',
+                    const newSO={id:await mintSOId(sos),customer_id:imp.custId,memo:poMemo,status:'need_order',
                       created_by:cu.id,created_at:now,updated_at:now,
                       expected_date:'',production_notes:nsRef+' — Purchase Order import',
                       shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,

@@ -107,6 +107,45 @@ describe('_dbSaveSOInner — document-identity guard on id collision', () => {
     expect(writes[0].args[0].updated_at).not.toBe('incumbent-ts');
   });
 
+  test('re-mint ignores test and date-like ids (SO-TEST-SAVE-20261008 must not become SO-20261009)', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    delete __mockState.mintId; // counter RPC unavailable -> local fallback
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'incumbent-ts', deco_pos: null, created_at: '10/13/2026, 6:06:44 AM' }, error: null },
+        // string-desc scan: test and date-like ids sort above the real ones
+        { data: [{ id: 'SO-TEST-SAVE-20261008' }, { id: 'SO-20261018' }, { id: 'SO-2911' }, { id: 'SO-2910' }], error: null },
+        { error: null },
+      ],
+      ...emptyChildren(),
+    };
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const so = { id: 'SO-2911', memo: 'x', created_at: '10/13/2026, 6:06:52 AM', items: [] };
+    await _dbSaveSO(so);
+    expect(so.id).toBe('SO-2912');
+  });
+
+  test('re-mint takes its number from the DB counter when available', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.mintId = 'SO-2915';
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'incumbent-ts', deco_pos: null, created_at: '10/13/2026, 6:06:44 AM' }, error: null },
+        { data: [{ id: 'SO-2911' }], error: null },
+        { error: null },
+      ],
+      ...emptyChildren(),
+    };
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const so = { id: 'SO-2911', memo: 'x', created_at: '10/13/2026, 6:06:52 AM', items: [] };
+    await _dbSaveSO(so);
+    delete __mockState.mintId;
+    expect(so.id).toBe('SO-2915');
+    expect(__mockState.calls.some(c => c.table === 'RPC' && c.method === 'next_sales_order_id')).toBe(true);
+  });
+
   test('already-saved order whose id is now held by another order blocks rather than overwriting', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;

@@ -28,6 +28,7 @@ import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unacc
 import { isOutsideArtJob, wantsOutsideArt } from './outsideArt';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
+import { salesOrderSequenceNumber } from './salesOrderIds';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
 import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
 import { resilientAuthStorage } from './authStorage';
@@ -1477,7 +1478,29 @@ const _refreshMaxId=async(table,prefix)=>{
   const{data}=await supabase.from(table).select('id').like('id',prefix+'%').order('id',{ascending:false}).limit(1000);
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
-const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
+// SO numbers only count canonical SO-#### ids. The generic first-digit-run scan above read the saved
+// test row SO-TEST-SAVE-20261008 as 20261008, so every collision re-mint from 2026-10-08 produced
+// SO-20261009, -10, -11 ... (ten orders before it was caught).
+const _refreshSoMaxId=async()=>{
+  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%').order('id',{ascending:false}).limit(1000);
+  return(data||[]).reduce((mx,r)=>Math.max(mx,salesOrderSequenceNumber(r.id)),0);
+};
+// The one place a new SO-#### number comes from: the DB counter (next_sales_order_id → app_counters
+// 'sales_order', row-locked, never below the highest canonical SO), so two reps creating at the same
+// moment can't get the same number. Falls back to the caller's local max+1 only when the RPC is
+// unreachable — the save-time identity guard below still catches a collision on that path.
+const _dbMintSalesOrderId=async(fallbackId)=>{
+  if(!supabase)return fallbackId;
+  try{
+    const{data,error}=await Promise.race([
+      supabase.rpc('next_sales_order_id'),
+      new Promise(res=>setTimeout(()=>res({data:null,error:{message:'next_sales_order_id timed out'}}),5000))
+    ]);
+    if(!error&&salesOrderSequenceNumber(data))return data;
+    console.warn('[DB] next_sales_order_id failed — using local SO number',fallbackId,error?.message||data);
+  }catch(e){console.warn('[DB] next_sales_order_id threw — using local SO number',fallbackId,e)}
+  return fallbackId;
+};
 // Map an in-memory PO line to its so_item_po_lines row shape. Extracted so the full-SO save (below)
 // and the durable create-time write (_dbPersistNewPoLine) build the row IDENTICALLY — a lesson from
 // this codebase's hand-synced-duplicate history: two copies of this column mapping WILL drift.
@@ -1687,7 +1710,7 @@ const _dbSaveSOInner = async (so) => {
         // number was taken while the tab sat idle. Claim a free number instead of overwriting the incumbent.
         // Safe to renumber here precisely because it has no children under the old id yet.
         const freshMax=await _refreshSoMaxId();
-        so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        so.id=soRowInitial.id=await _dbMintSalesOrderId('SO-'+(Math.max(freshMax,salesOrderSequenceNumber(oldId))+1));
         soRowInitial.updated_at=finalUpdatedAt;// drop the incumbent's timestamp copied above — it isn't ours
         _isNewSO=true;_remintedFrom=oldId;
         console.warn('[DB] SO',oldId,'is held by a different order (created',existingSO.created_at,'vs ours',so.created_at,') — re-minted to',so.id);
@@ -4300,6 +4323,7 @@ export {
   _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
+  _dbMintSalesOrderId,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
   _dbSaveArtJobs,
