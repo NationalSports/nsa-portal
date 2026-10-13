@@ -119,3 +119,11 @@ test('production setup approval is checked again immediately before supplier sen
  const send=jest.fn();const result=await sendBatch(admin,batch,{enabled:true,send});
  expect(result.error).toMatch(/unapproved/);expect(send).not.toHaveBeenCalled();expect(admin.updates[0].value.status).toBe('blocked');
 });
+
+test('supplier manifest identifies the exact garment knockout and distinct print attachments', async()=>{
+ const variants=['Black','White'].map((color,i)=>({...manifest,job_id:'J-'+(i+1),artwork:{...manifest.artwork,path:color+'.ai',at_once_variant:{id:color+'-v1',garment_color:color,knockout_color:color+' removed'}}}));
+ const csv=manifestCsv(variants);
+ expect(csv).toContain('DTF garment color');expect(csv).toContain('Black removed');expect(csv).toContain('White removed');
+ const payload=await batchPayload(storageAdmin(),{...batch,manifest:variants});
+ expect(payload.attachment).toHaveLength(3);
+});
