@@ -38,6 +38,7 @@
     "three": "^0.185.1",
     "topojson-client": "^3.1.0",
     "us-atlas": "^3.0.1",
+    "web-push": "^3.6.7",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zipcodes": "^8.0.0"
   },

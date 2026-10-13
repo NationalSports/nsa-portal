@@ -1,0 +1,60 @@
+.customer-email{max-width:1120px;margin:0 auto;padding:32px 4px 32px;color:#172b4d}
+.customer-email-heading{display:flex;justify-content:space-between;margin:4px 0 20px}
+.customer-email-eyebrow{font-size:11px;letter-spacing:1.4px;font-weight:800;color:#2563eb}
+.customer-email-heading h2{font-size:28px;letter-spacing:-.7px;margin:6px 0}
+.customer-email-heading p{margin:0;color:#64748b;font-size:14px}
+.customer-email-status{padding:12px 16px;background:#edf4ff;border:1px solid #dce8fb;border-radius:10px;color:#36567a;font-size:13px;margin-bottom:16px;line-height:1.5}
+.customer-email-tools{display:flex;gap:12px;margin-bottom:14px}
+.customer-email-tools input,.customer-email-tools select{border:1px solid #cbd5e1;border-radius:9px;padding:11px 13px;background:white;font-size:14px;color:#334155}
+.customer-email-tools input{flex:1;min-width:0}
+.customer-email-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.customer-email-tabs .btn{padding:9px 14px;border-radius:20px}
+.customer-email-card{border:1px solid #e1e7ef!important;border-radius:14px!important;box-shadow:0 2px 5px #12243b06;margin-bottom:14px!important}
+.customer-email-card>.card-body{padding:20px!important;gap:10px!important}
+.customer-email-card>.card-body>div:first-child{font-size:15px}
+.customer-email-card>.card-body>div:nth-child(2){font-size:16px!important;line-height:1.4}
+.customer-email-card>.card-body>div:nth-child(3){font-size:14px!important;line-height:1.6}
+.customer-email-followups{border-top:1px solid #eef2f6;padding-top:12px;margin-top:2px}
+.customer-email-followups summary{cursor:pointer;color:#275ea8;font-size:13px;font-weight:700;padding:3px 0}
+.customer-email-followups summary:focus-visible{outline:2px solid #2563eb;outline-offset:3px}
+.customer-email-followups>div>span{width:100%;padding:9px 12px!important;line-height:1.5;flex-wrap:wrap}
+.customer-email-followups button{margin-left:auto;min-height:30px}
+.customer-email-actions{justify-content:flex-end;flex-wrap:wrap;padding-top:8px}
+.customer-email-actions a{margin-right:auto}
+@media(max-width:600px){.customer-email-tools{flex-direction:column}.customer-email-card>.card-body{padding:15px!important}.customer-email-heading h2{font-size:24px}.customer-email-tabs .btn{padding:8px 11px}.customer-email-actions .btn{min-height:36px}}
+
+.customer-email .btn{font-size:12px;min-height:34px;padding:7px 12px}
+.customer-email-reply{background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:18px;margin-top:10px}
+.customer-email-reply-title,.customer-email-reply-buttons{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.customer-email-reply-address{font-size:13px;line-height:1.8;margin-bottom:12px;overflow-wrap:anywhere}
+.customer-email-reply textarea{display:block;width:100%;box-sizing:border-box;min-height:160px;border:1px solid #94a3b8;border-radius:8px;padding:12px;margin:8px 0;font:14px/1.6 Arial,sans-serif;resize:vertical}
+.customer-email-reply pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:13px/1.5 Arial,sans-serif;background:white;padding:12px}
+.customer-email-reply details{margin-bottom:14px}
+.customer-email-signature{font-size:12px;color:#475569;margin:14px 0}
+.customer-email-signature iframe{display:block;background:white;border:1px solid #e2e8f0;border-radius:8px;width:100%;height:190px;margin-top:8px}
+.customer-email-reply small{color:#64748b;line-height:1.5}
+
+.email-work{border:1px solid #cbdced;background:#f7faff;border-radius:12px;padding:16px;margin-top:12px;color:#24364b}
+.email-work-heading{display:flex;justify-content:space-between;gap:14px;align-items:center}.email-work small{display:block;color:#617287;font-size:12px;margin-top:5px}.email-work-heading strong{font-size:14px}.email-work-line{background:white;border:1px solid #dbe4ee;border-radius:10px;padding:16px;margin:12px 0}.email-work-line label{display:block;font-size:12px;font-weight:600;margin:12px 0 4px}.email-work-line input{display:block;width:100%;border:1px solid #bccada;border-radius:6px;padding:8px;font:inherit;background:white;color:#1e293b;box-sizing:border-box}.email-work-inputs{display:grid;grid-template-columns:140px 1fr;gap:14px}.email-work-line blockquote{margin:8px 0;border-left:3px solid #c8d8eb;padding-left:10px;font-size:12px;color:#66758a}.email-work-stock{background:#f3f6fa;border-radius:7px;padding:10px;font-size:12px;line-height:1.7}.email-work-missing{background:#fff8e9;border:1px solid #f0d9a6;border-radius:8px;padding:12px;font-size:13px}.email-work-missing ul{margin:6px 0;padding-left:20px}.email-work-buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.email-work-error{color:#b91c1c}.email-work-notice{background:#e8f0fd;border-radius:6px;padding:10px;font-size:12px}@media(max-width:600px){.email-work-inputs{grid-template-columns:1fr}.email-work-heading{align-items:flex-start;flex-direction:column}}
+.email-work-catalog{display:flex;gap:8px;align-items:center;margin:8px 0}.email-work-catalog input{flex:1}.email-work-catalog button{flex-shrink:0}
+
+.email-work-revision table{width:100%;border-collapse:collapse;background:white;border-radius:8px;font-size:13px}.email-work-revision th,.email-work-revision td{padding:10px;border-bottom:1px solid #dbe4ee;text-align:right}.email-work-revision th:first-child{text-align:left}.email-work-revision tbody tr:last-child{font-weight:700;color:#192853}
+
+/* Keep the mailbox identity, freshness and primary action together. */
+.customer-email{max-width:1240px;padding-top:32px}
+.customer-email-heading{margin-bottom:18px}
+.customer-email-connection{border:1px solid #cbdced!important;background:#f7faff!important;border-radius:12px!important;box-shadow:none!important}
+.customer-email-connection>.card-body{padding:18px!important}
+.customer-email-stale{color:#925d11;margin-top:5px}
+.customer-email-status{background:transparent;border:0;padding:0 2px 12px;margin-bottom:6px;color:#53657c}
+.customer-email-tools{position:sticky;top:60px;z-index:2;background:#f4f6fa;padding:10px 0}
+.customer-email-card>.card-body{padding:18px 22px!important;gap:8px!important}
+.customer-email-card .email-work{margin-top:6px}
+.customer-email .email-work-error{padding:12px 16px;border:1px solid #fecaca;background:#fff1f2;border-radius:9px;font-size:13px;line-height:1.5}
+.customer-email .btn:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
+@media(max-width:600px){.customer-email{padding:32px 0 20px}.customer-email-connection>.card-body{padding:14px!important}.customer-email-tools{position:static}.customer-email-heading p{line-height:1.5}}
+.customer-email-prepared{border:1px solid #cbdced;border-radius:9px;background:#f7faff}
+.customer-email-prepared>summary{cursor:pointer;padding:12px 14px;font-size:13px;font-weight:700;color:#214f85}
+.customer-email-prepared[open]>summary{border-bottom:1px solid #dce7f4}
+.customer-email-prepared>.email-work{border:0;margin:0}
+.customer-email-prepared>summary:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}

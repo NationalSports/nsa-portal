@@ -277,7 +277,34 @@ async function reconcileInvoiceFromIntent(admin, pi, { apply = true, observedAt 
   });
   if (error) throw new Error('Invoice payment could not be saved: ' + error.message);
   if (!data) throw new Error('Invoice payment reconciliation returned no result');
+  // NSA Connect: tell the rep, only when this call actually applied the payment (a replay
+  // returns already:true). pushPaymentReceived never throws and is keyed on the intent.
+  const paidIds = Array.isArray(data.reconciled) ? data.reconciled : [];
+  if (apply && paidIds.length && !data.already) {
+    const amount = data.applied != null ? Number(data.applied) : (pi.amount_received || 0) / 100;
+    await pushPaymentReceived(admin, paidIds, amount, pi.id, !!data.partial);
+  }
   return data;
+}
+
+// Tell the account's rep (NSA Connect push) that a customer paid online. Never throws;
+// keyed on the intent so the portal finalize + webhook backstop notify once.
+async function pushPaymentReceived(admin, invoiceIds, amount, intentId, partial) {
+  try {
+    const { safePush, repForCustomer } = require('./_push');
+    const { data: invs } = await admin.from('invoices').select('id,customer_id,so_id,created_by').in('id', invoiceIds);
+    const first = (invs || [])[0];
+    if (!first) return;
+    const rep = await repForCustomer(admin, first.customer_id, first.created_by);
+    const { data: c } = await admin.from('customers').select('name').eq('id', first.customer_id).maybeSingle();
+    const amt = '$' + (Number(amount) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    await safePush(admin, [rep], {
+      title: '💵 Payment received · ' + amt,
+      body: ((c && c.name) ? c.name + ' paid ' : 'Paid ') + (partial ? 'part of ' : '') + invoiceIds.join(', ') + ' online.',
+      url: '/?inv=' + encodeURIComponent(first.id),
+      tag: 'paid-' + first.id,
+    }, { onceKey: 'paid:' + intentId });
+  } catch (e) { console.warn('[push] payment notice skipped:', e.message); }
 }
 
 // Sync an order's webstore_order_items to `lineItems` WITHOUT destroying fulfillment state.

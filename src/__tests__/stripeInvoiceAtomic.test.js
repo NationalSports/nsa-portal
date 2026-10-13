@@ -32,3 +32,15 @@ test('test-mode or foreign currency cannot affect live invoices',async()=>{
  await expect(reconcileInvoiceFromIntent(admin,{...pi,currency:'eur'})).rejects.toThrow('live USD');
  expect(admin.rpc).not.toHaveBeenCalled();
 });
+test('the rep is notified (NSA Connect) only when this call applied the payment',async()=>{
+ const lookups=[];
+ const from=(t)=>{lookups.push(t);const q={select:()=>q,in:()=>Promise.resolve({data:[]}),eq:()=>q,maybeSingle:async()=>({data:null})};return q;};
+ const fresh={rpc:jest.fn().mockResolvedValue({data:{reconciled:['INV-1'],applied:100}}),from};
+ await reconcileInvoiceFromIntent(fresh,pi);
+ expect(lookups).toEqual(['invoices']);// pushPaymentReceived looked up the invoice to find its rep
+ lookups.length=0;
+ const replay={rpc:jest.fn().mockResolvedValue({data:{reconciled:['INV-1'],already:true}}),from};
+ await reconcileInvoiceFromIntent(replay,pi);
+ await reconcileInvoiceFromIntent({rpc:jest.fn().mockResolvedValue({data:{reconciled:['INV-1']}}),from},pi,{apply:false});
+ expect(lookups).toEqual([]);
+});
