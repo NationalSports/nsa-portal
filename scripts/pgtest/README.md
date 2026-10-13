@@ -27,6 +27,14 @@ Harnesses:
   dedup, staff-only reads). Self-contained — builds its own fixture and applies the
   migration itself; run it on an empty scratch DB from the repo root. Ends with
   `ALL_SO_SHIPPING_LABEL_SCENARIOS_PASSED`.
+- `staff_only_reads_scenarios.sql` — migration
+  `20261013120000_staff_only_business_reads` (orders, customers, staff, vendors
+  and settings readable by staff only: anon gets permission denied, a signed-in
+  coach reads only their own team + parent, staff keep the QuickBooks / admin
+  carve-outs on app_state, deactivated staff read nothing, catalog search and the
+  login roster still work signed out, and a leftover public policy aborts the
+  migration). Self-contained like the label harness; ends with
+  `ALL_STAFF_ONLY_READ_SCENARIOS_PASSED`.
 
 ## place_webstore_order (00171)
 
