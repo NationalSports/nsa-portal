@@ -1,6 +1,7 @@
 -- Scenarios for migration 20261013120000_staff_only_business_reads.sql. Self-contained: builds the
--- 35 tables with their production read/write policies (pg_policies, 2026-10-13), applies the
--- migration, and checks what each kind of caller can read afterwards. SCRATCH DATABASE ONLY.
+-- 35 tables with their production read/write policies (pg_policies, 2026-10-13), checks the
+-- migration refuses to run before 20261013110000 (staff checks once per query), applies both in
+-- order, and checks what each kind of caller can read afterwards. SCRATCH DATABASE ONLY.
 --
 --   psql -h /tmp/pgtest -p 54999 -U postgres -v ON_ERROR_STOP=1 -f scripts/pgtest/staff_only_reads_scenarios.sql
 --
@@ -119,14 +120,24 @@ insert into public.vendors values ('v-ss','S&S','ss_activewear','x'), ('v-local'
 insert into public.products (id, vendor_id, sku, name) values ('p-ss','v-ss','SS1','Api Tee'), ('p-local','v-local','LOC1','Local Tee');
 insert into public.app_state values ('company_info','{}'), ('qb_config','{"token":"x"}');
 
--- ── Apply the migration ──
+create or replace function pg_temp.expect(ok boolean, what text) returns void language plpgsql as $$
+begin if not ok then raise exception 'SCENARIO FAILED: %', what; end if; raise notice 'ok: %', what; end $$;
+create or replace function pg_temp.explain_lines(q text) returns setof text language plpgsql as $$
+declare l text; begin for l in execute 'explain (costs off) ' || q loop return next l; end loop; end $$;
+
+-- ── Order guard: refused until the staff checks run once per query (20261013110000) ──
+\set ON_ERROR_STOP 0
+\echo -- expected failure: staff-only reads: apply 20261013110000_rls_staff_check_once_per_query first
+\i supabase/migrations/20261013120000_staff_only_business_reads.sql
+\set ON_ERROR_STOP 1
+select pg_temp.expect(exists (select 1 from pg_policies where policyname = 'sales_orders_read'), 'lockdown refused (and changed nothing) before the once-per-query migration');
+
+-- ── Apply the migrations, in order ──
+\i supabase/migrations/20261013110000_rls_staff_check_once_per_query.sql
 \i supabase/migrations/20261013120000_staff_only_business_reads.sql
 
 -- Re-running is harmless (drop if exists / create or replace).
 \i supabase/migrations/20261013120000_staff_only_business_reads.sql
-
-create or replace function pg_temp.expect(ok boolean, what text) returns void language plpgsql as $$
-begin if not ok then raise exception 'SCENARIO FAILED: %', what; end if; raise notice 'ok: %', what; end $$;
 
 -- 1. Anonymous visitor: private tables refuse outright; the login roster and catalog search work.
 set role anon;
@@ -166,6 +177,9 @@ select pg_temp.expect((select count(*) from public.vendors) = 2, 'staff read ven
 select pg_temp.expect((select array_agg(id) from public.app_state) = array['company_info'], 'non-accounting staff still cannot read qb_config');
 select set_config('test.auth_uid', '22222222-2222-2222-2222-222222222222', false);
 select pg_temp.expect((select count(*) from public.app_state) = 2, 'accounting staff still read qb_config');
+create temporary table staff_plan as select l from pg_temp.explain_lines('select id from public.sales_orders') l;
+select pg_temp.expect((select string_agg(l, ' ') from staff_plan) ~ 'InitPlan' and (select string_agg(l, ' ') from staff_plan) !~ 'Filter: is_team_member\(\)',
+  'staff read checks membership once per query, not per row');
 
 -- 4. Deactivated staff: nothing.
 select set_config('test.auth_uid', '33333333-3333-3333-3333-333333333333', false);

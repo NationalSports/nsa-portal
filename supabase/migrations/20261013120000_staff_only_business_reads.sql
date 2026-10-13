@@ -18,6 +18,11 @@
 -- the SELECT privilege, so a read fails loudly (42501, which the app treats as "no access")
 -- instead of quietly returning no rows.
 --
+-- APPLY 20261013110000_rls_staff_check_once_per_query FIRST. While the public `using (true)`
+-- policy exists Postgres skips the staff check entirely; once it is gone a bare is_team_member()
+-- runs for every row and staff reads of the order book get many times slower. This migration
+-- refuses to run while a bare call remains on any of its tables.
+--
 -- Deliberately NOT in this migration (still public, follow-ups): the product catalog
 -- (products, product_inventory, variants, groups — the storefronts, Team Shop and Live Look
 -- read it), the roster tables (the coach portal's roster screen reads/writes them directly),
@@ -25,6 +30,26 @@
 -- tables that still accept anonymous writes.
 
 begin;
+
+-- 0. Staff checks must already run once per query (see the header), or this makes staff reads slow.
+do $$
+declare bad text;
+begin
+  select string_agg(tablename || '.' || policyname, ', ') into bad from pg_policies
+   where schemaname = 'public'
+     and tablename in ('sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines',
+       'so_jobs','so_art_files','so_firm_dates','estimates','estimate_items','estimate_item_decorations',
+       'estimate_art_files','invoices','invoice_items','invoice_payments','customers','customer_contacts',
+       'customer_credits','customer_credit_usage','customer_promo_programs','customer_promo_periods',
+       'customer_promo_usage','team_members','app_state','vendors','deco_vendors','deco_vendor_pricing',
+       'assigned_todos','todo_comments','dismissed_todos','dismissed_notifs','issues','rep_csr_assignments',
+       'omg_stores','omg_store_products')
+     and (coalesce(qual, '') || ' ' || coalesce(with_check, ''))
+         ~ '(?<!SELECT )\m(is_team_member|is_admin_member|is_quickbooks_member|is_admin_or_gm|current_user_role)\(\)';
+  if bad is not null then
+    raise exception 'staff-only reads: apply 20261013110000_rls_staff_check_once_per_query first (bare staff checks in %)', bad;
+  end if;
+end $$;
 
 -- 1. Drop exactly the public read policy on each table (named, so a rename can't no-op this).
 do $$

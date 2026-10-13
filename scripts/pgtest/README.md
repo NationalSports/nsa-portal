@@ -35,6 +35,15 @@ Harnesses:
   login roster still work signed out, and a leftover public policy aborts the
   migration). Self-contained like the label harness; ends with
   `ALL_STAFF_ONLY_READ_SCENARIOS_PASSED`.
+- `rls_check_once_scenarios.sql` — migration
+  `20261013110000_rls_staff_check_once_per_query` (RLS staff checks wrapped as
+  `(SELECT is_team_member())` so they run once per query, not per row: every
+  caller — anon, coach, rep, admin, accounting, gm, deactivated — reads, inserts
+  and updates exactly what they did before across every production policy shape;
+  the plan uses an InitPlan; already-wrapped and helper-free policies are
+  untouched; re-running is a no-op; a 50k-row staff read gets faster).
+  Self-contained; ends with `ALL_RLS_CHECK_ONCE_SCENARIOS_PASSED`. Apply this
+  migration before `20261013120000` — that one refuses to run otherwise.
 
 ## place_webstore_order (00171)
 
