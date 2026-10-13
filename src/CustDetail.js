@@ -1482,8 +1482,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const live=_liveCust();if(!live){_custGone();return}
       const libRec=(live.art_files||[]).find(_libMatch)||{};
       const newId='caf'+Date.now();
+      // Unique name across the library and this customer's orders — two "X (copy)" rows would
+      // collapse into one card and match each other's writes.
+      const taken=new Set([...(live.art_files||[]),..._liveSOs().flatMap(so=>so.art_files||[])].map(a=>(a&&a.name||'').trim().toLowerCase()));
+      const base=((art.name||'Artwork').trim())+' (copy';let name=base+')';for(let n=2;taken.has(name.toLowerCase());n++)name=base+' '+n+')';
       const copy={...libRec,..._libSeed({status:art.status||'waiting_for_art',location:art.location||'',web_logos:webLogos,web_logo_url:art.web_logo_url||''}),
-        id:newId,name:((art.name||'Artwork').trim())+' (copy)',uploaded:new Date().toLocaleDateString()};
+        id:newId,name,uploaded:new Date().toLocaleDateString()};
       if(!addLibArt(copy))return;
       const _bag=list=>(list||[]).filter(Boolean).map(f=>({file:f,url:urlOf(f),src:'Program Library'}));
       setCustArtDetail({...copy,_src:'library',_usedOnSOs:[],_allMockups:_bag(copy.mockup_files),_allProd:_bag(copy.prod_files)});
