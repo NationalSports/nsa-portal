@@ -1,6 +1,7 @@
 const { loadItemEstimates } = require('./_webstoreItemEstimates');
 const { artworkSetup, isAtOnceStore } = require('../../src/allSchool/atOnceArtwork.shared');
 const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
+const { effectiveWebstoreColors } = require('../../src/lib/webstoreBranding');
 // Server-side storefront checkout — the browser never decides a price again.
 //
 // Actions (POST, public by design — shoppers have no accounts):
@@ -202,18 +203,25 @@ async function publicStorefront(sb, body) {
   const row = (stores || [])[0];
   const store = publicStoreRow(row);
   if (!store || store.status === 'archived') return bad(404, 'Store not found');
-  // Resolve the current school/team logo on each load, without copying it into
-  // the store override or exposing customer records to the public client.
-  if (!store.logo_url && row.customer_id) {
-    const customer = await sb.from('customers').select('logo_url,parent_id').eq('id', row.customer_id).limit(1);
+  // Resolve current school/team branding on each load, without copying it into
+  // store overrides or exposing customer records to the public client.
+  if (row.customer_id && (!store.logo_url || !store.primary_color || !store.accent_color)) {
+    const customer = await sb.from('customers').select('logo_url,parent_id,school_colors').eq('id', row.customer_id).limit(1);
     if (customer.error) throw customer.error;
     const linked = (customer.data || [])[0];
-    store.logo_url = linked?.logo_url || '';
-    if (!store.logo_url && linked?.parent_id) {
-      const parent = await sb.from('customers').select('logo_url').eq('id', linked.parent_id).limit(1);
-      if (parent.error) throw parent.error;
-      store.logo_url = (parent.data || [])[0]?.logo_url || '';
+    let parent = null;
+    const needsParentLogo = !store.logo_url && !linked?.logo_url;
+    const needsParentColors = (!store.primary_color || !store.accent_color)
+      && (!Array.isArray(linked?.school_colors) || !linked.school_colors.length);
+    if (linked?.parent_id && (needsParentLogo || needsParentColors)) {
+      const parentResult = await sb.from('customers').select('logo_url,school_colors').eq('id', linked.parent_id).limit(1);
+      if (parentResult.error) throw parentResult.error;
+      parent = (parentResult.data || [])[0] || null;
     }
+    if (!store.logo_url) store.logo_url = linked?.logo_url || parent?.logo_url || '';
+    const colors = effectiveWebstoreColors(store, linked, parent);
+    store.primary_color = colors.primary;
+    store.accent_color = colors.accent;
   }
   let products = await drainView(
     () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),

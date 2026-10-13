@@ -61,6 +61,7 @@ import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFun
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
+import * as WEBSTORE_BRANDING from './lib/webstoreBranding';
 
 // The proxy already explains an OMG outage in words ("their report service did not
 // respond"); a bare status code tells staff nothing they can act on. Fall back to the
@@ -5865,7 +5866,7 @@ const BLANK = {
   size_upcharge_enabled: true,
   public_listed: true,
   decoration_mode: 'in_house',
-  theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
+  theme: 'classic', primary_color: null, accent_color: null, logo_url: '', banner_url: '', hero_blurb: '',
   featured_product_ids: null,
 };
 // The yyyy-mm-dd a <input type=date> expects, read on the PT clock. Slicing the
@@ -5928,7 +5929,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || initialOverrides?.org_type || 'team');
   const brandingCustomer = cust.find((customer) => customer.id === f.customer_id);
-  const inheritedLogo = brandingCustomer?.logo_url || cust.find((customer) => customer.id === brandingCustomer?.parent_id)?.logo_url || '';
+  const brandingParent = cust.find((customer) => customer.id === brandingCustomer?.parent_id);
+  const inheritedLogo = brandingCustomer?.logo_url || brandingParent?.logo_url || '';
+  const inheritedColors = WEBSTORE_BRANDING.customerSchoolColorTheme(brandingCustomer, brandingParent);
   const noun = orgType === 'all_school' ? 'School' : orgType === 'club' ? 'Club' : 'Team';
   const lead = orgType === 'all_school' ? 'School contact' : orgType === 'club' ? 'Director' : 'Coach';
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
@@ -5945,13 +5948,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     const base = (c.name || c.alpha_tag || '').trim();
     return base ? `${base} ${nounArg} Store` : '';
   };
-  // Linking a customer also pulls its (or its parent's) rep + pantone colors and,
-  // unless the name's been hand-edited, names the store.
+  // Linking a customer also pulls its (or its parent's) rep and, unless the
+  // name's been hand-edited, names the store. Branding colors remain nullable
+  // store overrides; the linked customer's school colors are shown below.
   const applyCustomer = (id) => {
     const c = cust.find((x) => x.id === id);
     const parent = c && c.parent_id ? cust.find((x) => x.id === c.parent_id) : null;
-    const pcs = (c && c.pantone_colors && c.pantone_colors.length ? c.pantone_colors : (parent && parent.pantone_colors)) || [];
-    const ph = (i) => { const pc = pcs[i]; return pc ? (pantoneHex(pc.code) || pc.hex || '') : ''; };
     const autoName = storeNameFor(id, noun);
     const resolvedRep = (c && c.primary_rep_id) || (parent && parent.primary_rep_id) || f.rep_id;
     const primCsr = primaryCsrForRep(resolvedRep);
@@ -5959,7 +5961,6 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       ...p, customer_id: id,
       rep_id: resolvedRep || p.rep_id,
       csr_id: primCsr || p.csr_id,
-      primary_color: ph(0) || p.primary_color, accent_color: ph(1) || p.accent_color,
       name: nameTouched ? p.name : (autoName || p.name),
       slug: nameTouched || slugTouched ? p.slug : (autoName ? slugify(autoName) : p.slug),
     }));
@@ -6265,9 +6266,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-          <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />
-          <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback="#e11d2a" />
+          <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback={inheritedColors.primary || '#0b1f3a'} inherited={!!inheritedColors.primary} />
+          <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback={inheritedColors.accent || '#e11d2a'} inherited={!!inheritedColors.accent} />
         </div>
+        {(inheritedColors.primary || inheritedColors.accent) && <div style={{ fontSize: 12, color: '#64748b', marginTop: -8, marginBottom: 12 }}>Defaults to the linked school/team colors. Enter a color to override it for this store.</div>}
         <ImageUpload value={f.logo_url || null} fallback={inheritedLogo} fallbackLabel="Using the school/team logo. Upload an image to override it for this store." onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Store logo (header and hero)" />
         {f.logo_url && <button type="button" className="btn btn-sm" onClick={() => set('logo_url', '')}>Use school/team logo</button>}
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Defaults to the linked school/team’s main logo and follows updates to that logo.</div>
@@ -6386,14 +6388,14 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   );
 }
 
-function ColorField({ label, value, onChange, fallback }) {
+function ColorField({ label, value, onChange, fallback, inherited = false }) {
   const v = value || fallback;
   return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>
+      <label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}{!value && inherited ? ' · school default' : ''}</label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback} onChange={(e) => onChange(e.target.value)} style={{ width: 44, height: 38, padding: 0, border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', background: 'none' }} />
-        <input className="form-input" style={{ width: 120 }} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={fallback} />
+        <input className="form-input" style={{ width: 120 }} value={v} onChange={(e) => onChange(e.target.value)} />
       </div>
     </div>
   );

@@ -50,7 +50,10 @@ test('public storefront includes only display-safe promotion settings', async ()
 });
 
 test('explicit store override wins and clearing it restores inheritance', async () => {
-  const sb = database({ ...store, logo_url: 'override.png' }, [{ id: 'team', logo_url: 'school.png' }]);
+  const sb = database(
+    { ...store, logo_url: 'override.png', primary_color: '#010203', accent_color: '#040506' },
+    [{ id: 'team', logo_url: 'school.png', school_colors: ['Navy', 'Red'] }],
+  );
   expect(JSON.parse((await publicStorefront(sb, { slug: 'school' })).body).store.logo_url).toBe('override.png');
   expect(sb.calls.some(call => call.table === 'customers')).toBe(false);
 });
@@ -59,4 +62,33 @@ test('team with no logo inherits its parent school; missing logos retain initial
   const sb = database(store, [{ id: 'team', parent_id: 'school' }, { id: 'school', logo_url: 'parent.png' }]);
   expect(JSON.parse((await publicStorefront(sb, { slug: 'school' })).body).store.logo_url).toBe('parent.png');
   expect(JSON.parse((await publicStorefront(database(store, []), { slug: 'school' })).body).store.logo_url).toBe('');
+});
+
+test('storefront inherits named school colors while store-level colors still win', async () => {
+  const customer = { id: 'team', school_colors: ['White', 'Grey', 'Navy', 'Red'] };
+  const inherited = JSON.parse((await publicStorefront(
+    database({ ...store, primary_color: null, accent_color: null }, [customer]),
+    { slug: 'school' },
+  )).body).store;
+  expect(inherited.primary_color).toBe('#1B2A4A');
+  expect(inherited.accent_color).toBe('#BA0C2F');
+
+  const overridden = JSON.parse((await publicStorefront(
+    database({ ...store, primary_color: '#112233', accent_color: '#cf1723' }, [customer]),
+    { slug: 'school' },
+  )).body).store;
+  expect(overridden.primary_color).toBe('#112233');
+  expect(overridden.accent_color).toBe('#cf1723');
+});
+
+test('a partial store override is combined with the missing customer default', async () => {
+  const result = JSON.parse((await publicStorefront(
+    database(
+      { ...store, primary_color: null, accent_color: '#cf1723' },
+      [{ id: 'team', school_colors: ['White', 'Grey', 'Navy', 'Red'] }],
+    ),
+    { slug: 'school' },
+  )).body).store;
+  expect(result.primary_color).toBe('#1B2A4A');
+  expect(result.accent_color).toBe('#cf1723');
 });
