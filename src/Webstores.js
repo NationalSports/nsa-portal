@@ -61,6 +61,7 @@ import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFun
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
+import { allocateComboPrice, cleanSizeList, comboConfig, comboConfigError, comboSizeOptions, isComboItem, isComboSizeOption, withComboConfig } from './lib/webstoreItemOptions.shared';
 
 // The proxy already explains an OMG outage in words ("their report service did not
 // respond"); a bare status code tells staff nothing they can act on. Fall back to the
@@ -8087,10 +8088,76 @@ function OptionsEditor({ value, onChange }) {
   );
 }
 
+export function ComboSizeEditor({ item, options, catalog = [], stockByWp = {}, costByPid = {}, defaultSizes = [], price, onChange, onEnabled, onEditItem }) {
+  const combo = isComboItem(options);
+  const config = comboConfig(options) || { pieces: { top: {}, bottom: {} } };
+  const pieces = config.pieces || {};
+  const definitions = comboSizeOptions(options);
+  const labelsFor = (purpose) => (definitions.find((option) => option.purpose === purpose)?.choices || []).map((choice) => choice.label);
+  const [topText, setTopText] = useState(() => labelsFor('combo_top_size').join(', '));
+  const [bottomText, setBottomText] = useState(() => labelsFor('combo_bottom_size').join(', '));
+  const parse = (value) => cleanSizeList(String(value || '').split(','));
+  const candidates = (catalog || []).filter((row) => row.kind === 'single' && row.id !== item.id && !isComboItem(row.options));
+  const rowFor = (role) => candidates.find((row) => row.id === pieces[role]?.webstore_product_id);
+  const costs = { top: Number(costByPid[rowFor('top')?.product_id]) || 0, bottom: Number(costByPid[rowFor('bottom')?.product_id]) || 0 };
+  const allocation = allocateComboPrice(price, config, costs);
+  const configError = comboConfigError(options, price, costs);
+  const setConfig = (next) => onChange(withComboConfig(options, true, next));
+  const setPiece = (role, patch) => setConfig({ ...config, pieces: { ...pieces, [role]: { ...(pieces[role] || {}), ...patch } } });
+  const applySizes = (role, value) => setPiece(role, { sizes: parse(value) });
+  const toggle = (enabled) => {
+    onEnabled(enabled);
+    if (!enabled) { onChange(withComboConfig(options, false)); return; }
+    const defaults = cleanSizeList(defaultSizes);
+    const top = topText || defaults.join(', ');
+    const bottom = bottomText || defaults.join(', ');
+    setTopText(top); setBottomText(bottom);
+    onChange(withComboConfig(options, true, { pieces: { top: { sizes: parse(top), price_share: null }, bottom: { sizes: parse(bottom), price_share: null } } }));
+  };
+  const pieceEditor = (role, label, text, setText) => {
+    const selected = rowFor(role);
+    const share = pieces[role]?.price_share;
+    return <div style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, background: '#fff' }}>
+      <div style={{ fontWeight: 800, fontSize: 12, textTransform: 'uppercase', color: '#334155', marginBottom: 8 }}>{label}</div>
+      <Row label={`${label} store item`}>
+        <select aria-label={`${label} combo item`} className="form-input" value={pieces[role]?.webstore_product_id || ''} onChange={(event) => setPiece(role, { webstore_product_id: event.target.value || null })}>
+          <option value="">Choose an item…</option>
+          {candidates.map((row) => <option key={row.id} value={row.id}>{row.display_name || stockByWp[row.id]?.name || row.sku} · {row.sku || 'no SKU'}</option>)}
+        </select>
+      </Row>
+      <Row label={`${label} sizes (comma-separated)`}><input aria-label={`Combo ${role} sizes`} className="form-input" value={text} onChange={(event) => setText(event.target.value)} onBlur={() => applySizes(role, text)} placeholder="S, M, L, XL" /></Row>
+      <Row label={`${label} price share (optional)`}><div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span>$</span><input aria-label={`${label} combo price share`} className="form-input" type="number" min="0" step="0.01" value={share == null ? '' : share} onChange={(event) => setPiece(role, { price_share: event.target.value === '' ? null : Number(event.target.value) })} placeholder="auto" /></div></Row>
+      {selected && <div style={{ fontSize: 11.5, color: '#64748b' }}>
+        SKU <b>{selected.sku || '—'}</b> · {(selected.decorations || []).length} decoration{(selected.decorations || []).length === 1 ? '' : 's'}
+        {onEditItem && <button type="button" onClick={() => onEditItem(selected.id)} style={{ marginLeft: 8, color: '#2563eb', border: 'none', background: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>Edit item &amp; decoration</button>}
+      </div>}
+    </div>;
+  };
+  return (
+    <ItemSection title="Top + bottom combo" hint="· one item and price; shopper chooses each size separately">
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+        <input type="checkbox" checked={combo} onChange={(event) => toggle(event.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: '#2563eb' }} />
+        <span>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>Sell this listing as a combo item</span>
+          <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>Use for a set such as a sweat suit. This is not a bundle and remains one order line at one price.</div>
+        </span>
+      </label>
+      {combo && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 10, marginTop: 12 }}>
+        {pieceEditor('top', 'Top', topText, setTopText)}
+        {pieceEditor('bottom', 'Bottom', bottomText, setBottomText)}
+        <div style={{ gridColumn: '1 / -1', color: configError ? '#b91c1c' : '#166534', background: configError ? '#fef2f2' : '#f0fdf4', border: `1px solid ${configError ? '#fecaca' : '#bbf7d0'}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}>
+          {configError || `Sales Order split: Top ${money(allocation.top)} · Bottom ${money(allocation.bottom)}. Blank shares use the two products’ blank-cost ratio.`}
+        </div>
+        <div style={{ gridColumn: '1 / -1', color: '#64748b', fontSize: 12 }}>Each linked item keeps its own SKU and decoration setup. Checkout creates two normal order lines so purchasing and production handle them independently.</div>
+      </div>}
+    </ItemSection>
+  );
+}
+
 // Drop blank options / empty choices so we never store half-filled add-ons.
 const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => {
-    const kind = ['addon', 'number', 'text', 'choice'].includes(o.kind) ? o.kind : 'text';
+    const kind = ['addon', 'number', 'text', 'choice', 'combo'].includes(o.kind) ? o.kind : 'text';
     return { ...o, kind, label: (o.label || '').trim(), upcharge: Number(o.upcharge) || 0, choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) };
   })
   .filter((o) => o.label && (o.kind !== 'choice' || o.choices.length));
@@ -8371,6 +8438,9 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // goalkeepers. Drives per-player bifurcation of the storefront.
   const [audience, setAudience] = useState(item.roster_audience || 'all');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
+  const comboItem = isComboItem(options);
+  const regularOptions = options.filter((option) => !isComboSizeOption(option) && option.kind !== 'combo');
+  const setRegularOptions = (next) => setOptions([...next, ...(comboConfig(options) ? [comboConfig(options)] : []), ...comboSizeOptions(options)]);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
@@ -8644,6 +8714,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     // rep can see on the card — not just the webstore_products fields below.
     if (!isBundle && item.product_id && onUpdateProductMeta) await saveSku();
     const cleanOptions = cleanItemOptions(options);
+    if (isComboItem(cleanOptions)) {
+      const cfg = comboConfig(cleanOptions);
+      const topRow = (catalog || []).find((row) => row.id === cfg?.pieces?.top?.webstore_product_id);
+      const bottomRow = (catalog || []).find((row) => row.id === cfg?.pieces?.bottom?.webstore_product_id);
+      const error = comboConfigError(cleanOptions, price, {
+        top: Number(costByPid[topRow?.product_id]) || 0,
+        bottom: Number(costByPid[bottomRow?.product_id]) || 0,
+      });
+      if (error) { window.alert('Combo setup: ' + error); return; }
+    }
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, deco_cost_estimate: Number(decoCostEst) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
@@ -8672,7 +8752,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       const _sameAsScale = _off.length === allSizes.length && allSizes.every((s) => _off.includes(s));
       fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
       // Inventory tracking only matters for stock-backed items; persist the choice there.
-      if (inventoryBacked) fields.track_inventory = !!trackInv;
+      if (inventoryBacked) fields.track_inventory = comboItem ? false : !!trackInv;
       // Size-level SKU overrides: only persist when there's something set.
       const overrideColor = stockByWp[item.id]?.color || item.color || '';
       fields.size_skus = Object.fromEntries(Object.entries(sizeSkus).flatMap(([sz, raw]) => {
@@ -8969,7 +9049,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'sizes' && !isBundle && <React.Fragment>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
+        {!comboItem && <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Size style</span>
             <select className="form-input" value={sizePresetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) applySizePreset(p); }} style={{ minWidth: 190, fontSize: 13 }}>
@@ -8989,14 +9069,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           </div>
           {offeredSizes.length > 0 && sizeList.some((s) => !offeredSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {sizeList.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
           {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
-        </ItemSection>
+        </ItemSection>}
+        <ComboSizeEditor item={item} options={options} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} defaultSizes={offeredSizes.length ? offeredSizes : sizeList} price={price} onChange={setOptions} onEnabled={(enabled) => { if (enabled) setTrackInv(false); }} onEditItem={onEditItem} />
         {inventoryBacked && (
           <ItemSection title="Inventory tracking" hint="· turn off for custom / made-to-order items">
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-              <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: comboItem ? 'not-allowed' : 'pointer', opacity: comboItem ? 0.65 : 1 }}>
+              <input type="checkbox" checked={comboItem ? false : trackInv} disabled={comboItem} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: comboItem ? 'not-allowed' : 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
               <span>
                 <span style={{ fontWeight: 700, fontSize: 13, color: '#191919' }}>Follow vendor &amp; in-house stock</span>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{trackInv
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{comboItem
+                  ? 'Off — combo top/bottom selections are made-to-order and do not map to one garment inventory size.'
+                  : trackInv
                   ? 'On — a size stops selling when it runs out of stock (and shows as sold out).'
                   : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
               </span>
@@ -9037,7 +9120,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         </div>
         <div>
         <ItemSection title="Add-on options" hint="· shopper-selected extras, e.g. embroidered name or collar color">
-          <OptionsEditor value={options} onChange={setOptions} />
+          <OptionsEditor value={regularOptions} onChange={setRegularOptions} />
         </ItemSection>
         </div>
       </div>

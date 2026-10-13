@@ -14,6 +14,7 @@ import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _sc
 import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
+import { isComboItem } from '../lib/webstoreItemOptions.shared';
 import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from '../lib/a11y';
 import { AllSchoolHeader, AllSchoolIntro, AllSchoolBrowse, schoolProductMatches, schoolOrderShipmentDate, schoolVariantGroupKey } from '../allSchool/AllSchoolStorefront';
 
@@ -268,7 +269,7 @@ function lookOverride() {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
-const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && String(o.label || '').trim()) : [];
+const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && o.kind !== 'combo' && String(o.label || '').trim()) : [];
 const optionKey = (o, i) => String(o.id || `option-${i}`);
 const optionHasValue = (o, value) => o.kind === 'addon' ? value === true : String(value == null ? '' : value).trim() !== '';
 const optionSelections = (defs, values) => defs.reduce((out, o, i) => {
@@ -1845,18 +1846,19 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const addOnDefs = optionDefsOf(p);
+  const comboItem = isComboItem(p.options);
   const addOnExtra = optionsExtra(addOnDefs, addOnValues);
   const selectedAddOns = optionSelections(addOnDefs, addOnValues);
   const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0) + addOnExtra;
-  const needSize = isFitGroup ? true : sizesArr.length > 0;
+  const needSize = !comboItem && (isFitGroup ? true : sizesArr.length > 0);
   // A product that inherently has sizes (a real size scale, or a rep-added
   // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
   // not restocking. Its size list is empty, so needSize is false — without this guard
   // the button would enable and add it with size=null (unfulfillable). Block it; the
   // server rejects the same case (checkSizesRequired) as defense in depth.
   const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
-  const soldOutNoSize = inherentlySized && sizesArr.length === 0;
+  const soldOutNoSize = !comboItem && inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number && store.org_type !== 'all_school';
   const isPersonalized = !!p.takes_number || !!p.takes_name || selectedAddOns.length > 0;
   const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
@@ -1936,9 +1938,9 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
             </div>
           </div>}
 
-          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
+          {!comboItem && !isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
-          <div ref={sizeSection} tabIndex={-1} style={{ scrollMarginTop: 160 }}>
+          {!comboItem && <div ref={sizeSection} tabIndex={-1} style={{ scrollMarginTop: 160 }}>
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
               <div style={label}>Select fit &amp; size</div>
@@ -1963,7 +1965,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(p, sizes)}</div>
           </div>)}
 
-          </div>
+          </div>}
 
           {(p.takes_number || p.takes_name) && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>

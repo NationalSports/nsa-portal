@@ -183,6 +183,96 @@ describe('priceAddOnSelections', () => {
   });
 });
 
+describe('combo top and bottom sizes', () => {
+  const comboOptions = [
+    { id: 'combo-config', label: 'Combo pieces', kind: 'combo', pieces: {
+      top: { webstore_product_id: 'top-wp', sizes: ['M'], price_share: 80 },
+      bottom: { webstore_product_id: 'bottom-wp', sizes: ['L'], price_share: 60 },
+    } },
+    { id: 'combo-top-size', label: 'Top size', kind: 'choice', purpose: 'combo_top_size', required: true, choices: [{ label: 'M', upcharge: 0 }] },
+    { id: 'combo-bottom-size', label: 'Bottom size', kind: 'choice', purpose: 'combo_bottom_size', required: true, choices: [{ label: 'L', upcharge: 0 }] },
+  ];
+  const wp = { id: 'combo-1', product_id: 'product-1', sku: 'SUIT', kind: 'single', active: true, retail_price: 140, display_name: 'Custom Sweat Suit', options: comboOptions };
+  const topWp = { id: 'top-wp', store_id: 'store-1', kind: 'single', product_id: 'top-product', sku: 'TOP', display_name: 'Sweatshirt', decorations: [{ kind: 'art', art_id: 'top-logo' }] };
+  const bottomWp = { id: 'bottom-wp', store_id: 'store-1', kind: 'single', product_id: 'bottom-product', sku: 'BOTTOM', display_name: 'Sweatpants', decorations: [{ kind: 'art', art_id: 'leg-logo' }] };
+  const sb = fakeSb({
+    webstore_products: { data: [wp, topWp, bottomWp], error: null },
+    products: { data: [
+      { id: 'top-product', sku: 'TOP', name: 'Sweatshirt', color: 'Navy', nsa_cost: 30 },
+      { id: 'bottom-product', sku: 'BOTTOM', name: 'Sweatpants', color: 'Navy', nsa_cost: 20 },
+    ], error: null },
+    webstore_storefront_products: { data: [{ webstore_product_id: wp.id, size_upcharges: {} }], error: null },
+  });
+
+  test('server requires both selections and builds two independently sized normal lines', async () => {
+    const missing = await checkout.priceCart(sb, { id: 'store-1' }, [{
+      webstore_product_id: wp.id,
+      option_selections: [{ id: 'combo-top-size', value: 'M' }],
+    }]);
+    expect(missing.error).toMatch(/Bottom size/);
+
+    const priced = await checkout.priceCart(sb, { id: 'store-1' }, [{
+      webstore_product_id: wp.id,
+      option_selections: [{ id: 'combo-top-size', value: 'M' }, { id: 'combo-bottom-size', value: 'L' }],
+    }]);
+    expect(priced.error).toBeUndefined();
+    expect(priced.lines[0]).toMatchObject({ kind: 'combo', line_total: 140 });
+    expect(priced.lines[0].pieces).toMatchObject([
+      { role: 'top', product_id: 'top-product', sku: 'TOP', size: 'M', unit_price: 80 },
+      { role: 'bottom', product_id: 'bottom-product', sku: 'BOTTOM', size: 'L', unit_price: 60 },
+    ]);
+    expect(priced.lines[0].option_selections.map((selection) => selection.purpose))
+      .toEqual(['combo_top_size', 'combo_bottom_size']);
+
+    const saved = checkout.buildOrderItems(priced.lines, null);
+    expect(saved).toHaveLength(2);
+    expect(saved).toMatchObject([
+      { product_id: 'top-product', sku: 'TOP', size: 'M', unit_price: 80, variant_label: 'Combo top', production_recipe: { decorations: [{ art_id: 'top-logo' }] } },
+      { product_id: 'bottom-product', sku: 'BOTTOM', size: 'L', unit_price: 60, variant_label: 'Combo bottom', production_recipe: { decorations: [{ art_id: 'leg-logo' }] } },
+    ]);
+    expect(saved.reduce((sum, line) => sum + line.unit_price, 0)).toBe(140);
+  });
+
+  test('combo pieces enter normal per-product inventory validation', async () => {
+    const result = await checkout.checkStock(fakeSb({
+      'rpc:get_webstore_checkout_inventory': { data: [
+        { webstore_product_id: 'top-wp', product_id: 'top-product', name: 'Sweatshirt', track_inventory: false, inventory_source: 'manual' },
+        { webstore_product_id: 'bottom-wp', product_id: 'bottom-product', name: 'Sweatpants', track_inventory: false, inventory_source: 'manual' },
+      ], error: null },
+    }), { id: 'store-1' }, [{
+      kind: 'combo', pieces: [
+        { wp: topWp, product_id: 'top-product', size: 'M' },
+        { wp: bottomWp, product_id: 'bottom-product', size: 'L' },
+      ],
+    }]);
+    expect(result).toEqual({ error: null, holds: [] });
+  });
+
+  test('blank shares use blank-cost ratio and preserve the exact combo total', async () => {
+    const automatic = {
+      ...wp,
+      options: comboOptions.map((option) => option.kind === 'combo'
+        ? { ...option, pieces: { top: { ...option.pieces.top, price_share: null }, bottom: { ...option.pieces.bottom, price_share: null } } }
+        : option),
+    };
+    const automaticSb = fakeSb({
+      webstore_products: { data: [automatic, topWp, bottomWp], error: null },
+      products: { data: [
+        { id: 'top-product', sku: 'TOP', name: 'Sweatshirt', nsa_cost: 30 },
+        { id: 'bottom-product', sku: 'BOTTOM', name: 'Sweatpants', nsa_cost: 20 },
+      ], error: null },
+      webstore_storefront_products: { data: [{ webstore_product_id: wp.id, size_upcharges: {} }], error: null },
+    });
+    const priced = await checkout.priceCart(automaticSb, { id: 'store-1' }, [{
+      webstore_product_id: wp.id,
+      option_selections: [{ id: 'combo-top-size', value: 'M' }, { id: 'combo-bottom-size', value: 'L' }],
+    }]);
+
+    expect(priced.lines[0].pieces.map((piece) => piece.unit_price)).toEqual([84, 56]);
+    expect(priced.lines[0].pieces.reduce((sum, piece) => sum + piece.unit_price, 0)).toBe(140);
+  });
+});
+
 describe('couponDiscount — percent only', () => {
   test('applies to cart + shipping by default', () => {
     expect(checkout.couponDiscount({ kind: 'percent', value: 10 }, 100, 5)).toBe(10.5);

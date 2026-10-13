@@ -1,6 +1,7 @@
 const { loadItemEstimates } = require('./_webstoreItemEstimates');
 const { artworkSetup, isAtOnceStore } = require('../../src/allSchool/atOnceArtwork.shared');
 const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
+const { allocateComboPrice, comboConfig, comboConfigError, isComboItem } = require('../../src/lib/webstoreItemOptions.shared');
 // Server-side storefront checkout — the browser never decides a price again.
 //
 // Actions (POST, public by design — shoppers have no accounts):
@@ -250,7 +251,7 @@ async function publicStorefront(sb, body) {
 // Validate shopper-entered add-ons against the product's server-side definition.
 // The browser sends only option ids + answers; labels and dollars are rebuilt here.
 function priceAddOnSelections(definitions, submitted) {
-  const defs = Array.isArray(definitions) ? definitions.filter((o) => o && String(o.label || '').trim()) : [];
+  const defs = Array.isArray(definitions) ? definitions.filter((o) => o && o.kind !== 'combo' && String(o.label || '').trim()) : [];
   const picks = Array.isArray(submitted) ? submitted : [];
   if (!defs.length) return picks.length ? { error: 'This item no longer has those add-on options — please re-add it.' } : { selections: [], extra: 0 };
   const byId = new Map();
@@ -283,11 +284,21 @@ function priceAddOnSelections(definitions, submitted) {
       if (v) { value = v.slice(0, 120); upcharge = r2(o.upcharge); }
     }
     if (o.required && value == null) return { error: `Please complete ${label}.` };
-    if (value != null) { extra = r2(extra + upcharge); selections.push({ id, label, kind, value, upcharge }); }
+    if (value != null) {
+      extra = r2(extra + upcharge);
+      selections.push({ id, label, kind, value, upcharge, ...(o.purpose ? { purpose: String(o.purpose).slice(0, 60) } : {}) });
+    }
   }
   if ([...byId.keys()].some((id) => !known.has(id))) return { error: 'An add-on option changed — please re-add the item.' };
   return { selections, extra };
 }
+
+const splitByRatio = (total, topWeight, bottomWeight) => {
+  const cents = Math.round((Number(total) || 0) * 100);
+  const weight = Math.max(0, Number(topWeight) || 0) + Math.max(0, Number(bottomWeight) || 0);
+  const topCents = weight > 0 ? Math.round(cents * Math.max(0, Number(topWeight) || 0) / weight) : Math.round(cents / 2);
+  return { top: topCents / 100, bottom: (cents - topCents) / 100 };
+};
 
 // ── Server-side cart pricing ─────────────────────────────────────────
 // Client lines carry only identity + personalization; every dollar figure is
@@ -311,6 +322,23 @@ async function priceCart(sb, store, cart) {
   const { data: wprods, error: wpErr } = await sb.from('webstore_products').select('*').eq('store_id', store.id).in('id', wids);
   if (wpErr) return { error: 'Could not load products: ' + wpErr.message };
   const byId = {}; (wprods || []).forEach((p) => { byId[p.id] = p; });
+  const comboChildIds = [...new Set((wprods || []).flatMap((product) => {
+    const config = comboConfig(product.options);
+    return config ? [config.pieces?.top?.webstore_product_id, config.pieces?.bottom?.webstore_product_id].filter(Boolean) : [];
+  }))];
+  const comboChildren = {};
+  const comboProducts = {};
+  if (comboChildIds.length) {
+    const childResult = await sb.from('webstore_products').select('*').eq('store_id', store.id).in('id', comboChildIds);
+    if (childResult.error) return { error: 'Could not load combo items: ' + childResult.error.message };
+    (childResult.data || []).forEach((child) => { comboChildren[child.id] = child; });
+    const childProductIds = [...new Set((childResult.data || []).map((child) => child.product_id).filter(Boolean))];
+    if (childProductIds.length) {
+      const productResult = await sb.from('products').select('id,sku,name,color,nsa_cost,image_front_url').in('id', childProductIds);
+      if (productResult.error) return { error: 'Could not load combo products: ' + productResult.error.message };
+      (productResult.data || []).forEach((product) => { comboProducts[product.id] = product; });
+    }
+  }
   // Per-size upcharges (2XL/3XL+) are published by the storefront view; read them
   // server-side so the price the shopper saw is the price we charge. Resilient: if
   // the column isn't present yet, no upcharge is applied.
@@ -374,7 +402,38 @@ async function priceCart(sb, store, cart) {
     const addOns = priceAddOnSelections(wp.options, l && l.option_selections);
     if (addOns.error) return { error: addOns.error };
 
-    if (wp.kind === 'bundle') {
+    if (isComboItem(wp.options)) {
+      const config = comboConfig(wp.options);
+      const topWp = comboChildren[config?.pieces?.top?.webstore_product_id];
+      const bottomWp = comboChildren[config?.pieces?.bottom?.webstore_product_id];
+      const topProduct = topWp && comboProducts[topWp.product_id];
+      const bottomProduct = bottomWp && comboProducts[bottomWp.product_id];
+      const configError = comboConfigError(wp.options, unitPrice, { top: topProduct?.nsa_cost, bottom: bottomProduct?.nsa_cost });
+      if (configError || !topWp || !bottomWp || !topProduct || !bottomProduct) return { error: configError || 'This combo item is not fully configured.' };
+      const topSelection = addOns.selections.find((selection) => selection.purpose === 'combo_top_size');
+      const bottomSelection = addOns.selections.find((selection) => selection.purpose === 'combo_bottom_size');
+      if (!topSelection || !bottomSelection) return { error: 'This combo item needs both a top size and a bottom size — please re-add it.' };
+      const allocation = allocateComboPrice(unitPrice, config, { top: topProduct.nsa_cost, bottom: bottomProduct.nsa_cost });
+      if (allocation.error) return { error: allocation.error };
+      const fundSplit = splitByRatio(fundAmt, allocation.top, allocation.bottom);
+      const regularSelections = addOns.selections.filter((selection) => !selection.purpose);
+      const pieces = [
+        { role: 'top', wp: topWp, product: topProduct, size: String(topSelection.value), unit_price: r2(allocation.top + addOns.extra), fundraise: fundSplit.top, option_selections: [topSelection, ...regularSelections] },
+        { role: 'bottom', wp: bottomWp, product: bottomProduct, size: String(bottomSelection.value), unit_price: allocation.bottom, fundraise: fundSplit.bottom, option_selections: [bottomSelection] },
+      ].map((piece) => ({
+        ...piece,
+        product_id: piece.wp.product_id,
+        sku: piece.wp.sku || piece.product.sku,
+        name: piece.wp.display_name || piece.product.name || piece.wp.sku,
+        color: piece.product.color || null,
+        image: piece.wp.image_url || piece.product.image_front_url || null,
+        ...(isAtOnceStore(store) ? { production_recipe: productionRecipe(piece.wp, recipeTransfers, recipeArts, store) } : {}),
+      }));
+      subtotal += r2(unitPrice + addOns.extra);
+      fundraise += fundAmt;
+      feeBase += r2(unitPrice + addOns.extra);
+      lines.push({ kind: 'combo', wp, qty: 1, pieces, option_selections: addOns.selections, line_total: r2(unitPrice + addOns.extra + fundAmt), name: wp.display_name, image: wp.image_url });
+    } else if (wp.kind === 'bundle') {
       const comps = bundleItems.filter((b) => b.bundle_id === wp.id);
       const clientComps = Array.isArray(l.components) ? l.components : [];
       // Components were built in sort_order — match by position, verify identity.
@@ -442,7 +501,7 @@ async function priceCart(sb, store, cart) {
     }
   }
   if (isAtOnceStore(store)) {
-    const error = lines.flatMap((line) => line.kind === 'bundle' ? line.components.map((c) => c.production_recipe) : [line.production_recipe]).find((recipe) => recipe?.setup_error)?.setup_error;
+    const error = lines.flatMap((line) => line.kind === 'bundle' ? line.components.map((c) => c.production_recipe) : line.kind === 'combo' ? line.pieces.map((piece) => piece.production_recipe) : [line.production_recipe]).find((recipe) => recipe?.setup_error)?.setup_error;
     if (error) return { error };
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
@@ -476,6 +535,15 @@ async function checkStock(sb, store, lines) {
   lines.forEach((l) => {
     if (l.kind === 'single' && l.size) {
       demand.push({ webstore_product_id: l.wp.id, product_id: l.wp.product_id || null, size: l.size, qty: l.qty });
+    } else if (l.kind === 'combo') {
+      (l.pieces || []).forEach((piece) => {
+        if (piece.size && piece.product_id) demand.push({
+          webstore_product_id: piece.wp?.id || null,
+          product_id: piece.product_id,
+          size: piece.size,
+          qty: 1,
+        });
+      });
     } else if (l.kind === 'bundle') {
       (l.components || []).forEach((c) => {
         // A legacy decorative/service placeholder can have no catalog product;
@@ -707,7 +775,25 @@ function productionRecipe(wp, transfers = [], arts = [], store = null) {
 function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID, snapshotRecipes = false) {
   const items = [];
   for (const l of lines) {
-    if (l.kind === 'bundle') {
+    if (l.kind === 'combo') {
+      (l.pieces || []).forEach((piece) => items.push({
+        product_id: piece.product_id,
+        sku: piece.sku,
+        size: piece.size,
+        qty: 1,
+        unit_price: r2(piece.unit_price),
+        unit_fundraise: r2(piece.fundraise),
+        player_name: orderPlayer || null,
+        player_number: null,
+        add_on_selections: piece.option_selections || [],
+        name: piece.name || null,
+        color: piece.color || null,
+        variant_label: `Combo ${piece.role}`,
+        image_url: piece.image || null,
+        line_status: 'pending',
+        production_recipe: piece.production_recipe || productionRecipe(piece.wp, [], [], { org_type: 'club' }),
+      }));
+    } else if (l.kind === 'bundle') {
       const bref = randomUUID();
       // Every parent-level upcharge belongs on the paid parent row. Components
       // remain $0 fulfillment rows, so excluding option_extra here made the
