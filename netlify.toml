@@ -191,6 +191,12 @@
 [functions."ss-adidas-sync-cron"]
   schedule = "0 12 * * *"
 
+# Adidas inventory health — every 6 hours. Alerts Steve when either CLICK or
+# S&S has no successful run in 24h, a full sweep falls behind, or the DB guard
+# has rejected size rows.
+[functions."adidas-inventory-sync-health"]
+  schedule = "20 */6 * * *"
+
 # S&S Activewear Under Armour catalog sync — daily at 12:30 UTC (after adidas).
 # Fires ss-ua-sync-background → products + ua_inventory for the Team Catalog.
 [functions."ss-ua-sync-cron"]

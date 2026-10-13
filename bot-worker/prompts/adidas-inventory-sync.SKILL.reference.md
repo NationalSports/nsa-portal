@@ -16,6 +16,10 @@ merges UNDER the table load (table wins — a plain seed assignment clobbering
 the corrected adidas_size_maps row is what caused the recurrence); Step 4 never
 writes unmapped codes (skip + report, the DB guard drops them anyway) and
 clamps the ~9,999,999 sentinel in CURRENT stock, not just future ATP.
+Updated 2026-10-13: every run now claims a durable source lock, writes
+`adidas_inventory_sync_runs`, and checkpoints its remaining SKU queue in
+`adidas_inventory_sync_state`. A 401 is recorded as `auth_required` and leaves
+the current SKU at the front of the queue for an exact resume.
 REPLACE the live skill on the Mac Mini (and any other machine running it)
 with this body wholesale — do not hand-merge.
 -->
@@ -82,6 +86,47 @@ materials/information (it 500s intermittently on rapid repeat hits to one cart; 
 
 ---
 
+## Step -1 — Durable run, lock, and checkpoint (required)
+
+Use source `api-materials` for every orchestration row and RPC. At the beginning
+of a run:
+
+1. Generate a UUID `lockOwner`, then `POST /rest/v1/rpc/claim_adidas_inventory_sync`
+   with `{p_source:"api-materials",p_owner:lockOwner,p_ttl_seconds:1200}`.
+   If `acquired` is false, stop loudly: another run owns the source. Do not start
+   another browser queue.
+2. After acquiring the lock, mark any older `api-materials` row still
+   `status='running'` with `started_at < now()-20 minutes` as `failed`, set
+   `finished_at`, and record `"Run exceeded its lock TTL and was recovered by a
+   later invocation"` in `errors`. The acquired lock proves the old owner is no
+   longer active.
+3. Insert one `adidas_inventory_sync_runs` row with `source='api-materials'`,
+   `status='running'`, and `lock_owner=lockOwner`; keep its returned `id`.
+4. If the claimed state's cursor contains `remaining_skus`, resume that queue
+   verbatim before building a new daily/weekly queue. The cursor shape is:
+   `{remaining_skus:[...], cycle_mode:"daily"|"weekly", items_total:N}`.
+5. After each successful batch (maximum 25 SKUs), call
+   `checkpoint_adidas_inventory_sync` with the still-unprocessed queue. Keep the
+   current/in-flight SKU in `remaining_skus` until its inventory upsert and
+   read-back verification both succeed. The checkpoint refreshes the expiring
+   lock; if it returns `updated:false`, stop immediately because lock ownership
+   was lost.
+6. Always finish the run row with `finished_at`, `styles_total` (SKU count),
+   `styles_processed`, `inventory_rows`, `error_count`, `errors`, and
+   `cycle_completed`. Use `success` for an error-free daily slice, `completed`
+   for an error-free full sweep, `partial` for any non-auth item failures,
+   `auth_required` for a 401, and `failed` for a fatal error. A run with errors
+   must never be labeled success.
+7. Always call `release_adidas_inventory_sync` in cleanup with the same source
+   and owner. Expiry is only a crash backstop.
+
+Before writing a batch, read the current 24-hour aggregate from
+`adidas_inventory_guard_drops` for source `api-materials`; read it again after
+the upsert. Any increase means Postgres rejected rows even if PostgREST returned
+2xx. Add the rejected count and sample SKU/size to the run's `errors`, label the
+run `partial`, and re-learn/requeue the affected conversion before claiming
+coverage.
+
 ## Step 0 — Auth (and token-expiry handling)
 
 Find/open a b2bportal.adidas-group.com tab. Confirm `localStorage.getItem('sid')` exists and a
@@ -89,8 +134,20 @@ cart GET returns 200. The `sid` token EXPIRES after ~10–15 min of an idle auto
 when it does, materials/cart calls return **401** (and the portal may reload under a different
 account with a permissions error). The runner treats 401 as stop-and-pause: stop cleanly,
 PRESERVE the in-flight batch in the queue, and tell the user to re-log-in / re-select the NSA
-account (0000270384). Do NOT drain the queue as errors. Resume from the preserved queue after
-the user restores the session. If no token at all, notify the user that manual login is needed and stop.
+account (0000270384). Do NOT drain the queue as errors. Before stopping, run the
+Step -1 checkpoint with the current SKU still first, patch the run to
+`status='auth_required'` with the 401 in `errors`, set `finished_at`, and release
+the lock. Resume from the durable queue after the user restores the session. If
+no token at all, record the same `auth_required` status, notify the user that
+manual login is needed, and stop.
+
+There is not yet a verified unattended Adidas sign-in/token-refresh flow in this
+repo. `bot-worker` defines `ADIDAS_CLICK_URL`, `ADIDAS_CLICK_USER`, and
+`ADIDAS_CLICK_PASS`, but its browser agent only performs a generic interactive
+login and does not implement CLICK account selection, MFA, cookie persistence,
+or SID renewal. Do not move this job to Netlify or claim automatic 401 recovery
+until Steve supplies/validates those credentials on the Mac Mini and an
+unattended login through account `0000270384` has been captured and tested.
 
 ## Step 1 — SKU list (re-query EVERY run — never a cached list)
 

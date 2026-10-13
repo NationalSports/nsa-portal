@@ -6,6 +6,11 @@ exports.handler = async () => {
   try {
     // Background functions return 202 immediately; the sync continues server-side.
     const res = await fetch(site + '/.netlify/functions/ss-adidas-sync-background', { method: 'POST' });
+    if (res.status !== 202) {
+      const body = await res.text().catch(() => '');
+      console.error('[ss-adidas-sync-cron] trigger failed:', res.status, body.slice(0, 300));
+      return { statusCode: 502, body: 'Background trigger failed (' + res.status + ')' };
+    }
     console.log('[ss-adidas-sync-cron] triggered:', res.status);
     return { statusCode: 200, body: 'Triggered (' + res.status + ')' };
   } catch (e) {

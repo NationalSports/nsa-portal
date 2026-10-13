@@ -1,24 +1,24 @@
+const { randomUUID } = require('node:crypto');
 const { vendorCostSnapshot } = require('../../../src/lib/vendorCostSnapshot.shared');
-// Background function (15-min limit): syncs the full adidas brand catalog
-// from S&S Activewear into the portal so the public /adidas catalog shows
-// S&S-sourced adidas gear (golf/corporate styles) with images, sizes, and
-// live inventory alongside Cowork + in-house stock.
-//
-//   products         — one row per style+color, id 'ssa-<styleName>-<colorCode>',
-//                      vendor = the S&S vendor (api_provider='ss_activewear'),
-//                      image from the S&S CDN, MAP price as retail,
-//                      customer/piece price as nsa_cost (fill-empty for desc)
-//   adidas_inventory — per sku+size stock summed across S&S warehouses,
-//                      source 'ss_activewear'
-//
-// Triggered by ss-adidas-sync-cron (daily) or manually:
-//   curl -X POST https://<site>/.netlify/functions/ss-adidas-sync-background
-//
-// Env: SS_ACCOUNT_NUMBER, SS_API_KEY, REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+const {
+  fetchWithBackoff,
+  styleKey,
+  stylesAfterCursor,
+} = require('./ss-adidas-sync-core');
 
+// Netlify background functions are capped at 15 minutes. Leave three minutes for
+// the final batch, checkpoint, run audit update, and lock release.
+const TIME_BUDGET_MS = 12 * 60 * 1000;
+const LOCK_TTL_SECONDS = 20 * 60;
+const STYLE_BATCH_SIZE = 5;
 const SS_CDN = 'https://cdn.ssactivewear.com/';
-// S&S baseCategory values are compound ("Knits & Layering", "Fleece - Premium -
-// Crew"), so map by pattern — title first (most specific), then baseCategory.
+const SOURCE = 'ss_activewear';
+const timeoutSignal = (ms) => (
+  typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined
+);
+
 const CATEGORY_RULES = [
   ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],
   ['Outerwear', /FULL[- ]ZIP|JACKET|VEST|WINDBREAKER|OUTERWEAR|RAIN/i],
@@ -33,134 +33,390 @@ const CATEGORY_RULES = [
   ['Socks', /\bSOCK\b/i],
   ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL|SLEEVE/i],
 ];
+
 function mapCategory(title, baseCategory) {
   for (const hay of [String(title || ''), String(baseCategory || '')]) {
-    for (const [cat, re] of CATEGORY_RULES) if (re.test(hay)) return cat;
+    for (const [category, pattern] of CATEGORY_RULES) {
+      if (pattern.test(hay)) return category;
+    }
   }
   return 'Other';
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 exports.handler = async () => {
+  const startedMs = Date.now();
   const ssAccount = process.env.SS_ACCOUNT_NUMBER;
   const ssKey = process.env.SS_API_KEY;
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!ssAccount || !ssKey || !sbUrl || !sbKey) {
-    console.error('[ss-adidas-sync] missing config');
-    return { statusCode: 500, body: 'Not configured' };
+  if (!sbUrl || !sbKey) {
+    console.error('[ss-adidas-sync] FATAL: missing Supabase configuration; failure cannot be audited');
+    return { statusCode: 500, body: 'Supabase not configured' };
   }
-  const ssAuth = 'Basic ' + Buffer.from(ssAccount + ':' + ssKey).toString('base64');
-  const ssGet = async (path) => {
-    const sep = path.includes('?') ? '&' : '?';
-    const res = await fetch('https://api.ssactivewear.com/V2' + path + sep + 'mediatype=json', {
-      // S&S's firewall 403s the Node runtime's default User-Agent
-      headers: { Authorization: ssAuth, Accept: 'application/json', 'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)' },
-    });
-    if (!res.ok) throw new Error('S&S ' + path + ' → ' + res.status);
-    return res.json();
+
+  const sbHeaders = {
+    'Content-Type': 'application/json',
+    apikey: sbKey,
+    Authorization: `Bearer ${sbKey}`,
   };
-  const sb = (path, init) => fetch(sbUrl + '/rest/v1/' + path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: 'Bearer ' + sbKey, ...(init && init.headers) },
+  const sbFetch = (path, init = {}) => {
+    const signal = init.signal || timeoutSignal(15_000);
+    return fetch(`${sbUrl}/rest/v1/${path}`, {
+      ...init,
+      headers: { ...sbHeaders, ...(init.headers || {}) },
+      ...(signal ? { signal } : {}),
+    });
+  };
+  const sbJson = async (path, init) => {
+    const response = await sbFetch(path, init);
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Supabase ${path.split('?')[0]} -> ${response.status}: ${text.slice(0, 300)}`);
+    return text ? JSON.parse(text) : null;
+  };
+  const rpc = (name, body) => sbJson(`rpc/${name}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
   });
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  if (!ssAccount || !ssKey) {
+    const message = 'SS_ACCOUNT_NUMBER or SS_API_KEY is missing';
+    console.error('[ss-adidas-sync] FATAL:', message);
+    try {
+      await sbJson('adidas_inventory_sync_runs', {
+        method: 'POST',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          source: SOURCE,
+          status: 'failed',
+          error_count: 1,
+          errors: [{ message }],
+          finished_at: new Date().toISOString(),
+        }),
+      });
+    } catch (auditError) {
+      console.error('[ss-adidas-sync] FATAL: could not record configuration failure', auditError);
+    }
+    return { statusCode: 500, body: message };
+  }
+
+  const ssAuth = `Basic ${Buffer.from(`${ssAccount}:${ssKey}`).toString('base64')}`;
+  let lastSsRequestAt = 0;
+  const ssGet = async (path) => {
+    const waitMs = Math.max(0, 1_050 - (Date.now() - lastSsRequestAt));
+    if (waitMs) await sleep(waitMs);
+    const separator = path.includes('?') ? '&' : '?';
+    const url = `https://api.ssactivewear.com/V2${path}${separator}mediatype=json`;
+    const response = await fetchWithBackoff(async () => {
+      lastSsRequestAt = Date.now();
+      const signal = timeoutSignal(15_000);
+      return fetch(url, {
+        headers: {
+          Authorization: ssAuth,
+          Accept: 'application/json',
+          'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
+        },
+        ...(signal ? { signal } : {}),
+      });
+    }, { maxAttempts: 3 });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`S&S ${path} -> ${response.status}: ${text.slice(0, 300)}`);
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw new Error(`S&S ${path} returned non-JSON data`);
+    }
+  };
+
+  const lockOwner = randomUUID();
+  let runId = null;
+  let lockAcquired = false;
+  let stylesTotal = 0;
+  let stylesProcessed = 0;
+  let productsUpserted = 0;
+  let inventoryRows = 0;
+  let cycleCompleted = false;
+  const errors = [];
+
+  const writeRun = async (values) => {
+    if (!runId) return;
+    await sbFetch(`adidas_inventory_sync_runs?id=eq.${encodeURIComponent(runId)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify(values),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`run update -> ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    });
+  };
 
   try {
-    // S&S vendor id (api_provider='ss_activewear')
-    const vRes = await sb('vendors?api_provider=eq.ss_activewear&select=id&limit=1');
-    const vendors = await vRes.json();
-    const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
-    if (!vendorId) return { statusCode: 200, body: 'No S&S vendor configured' };
+    const claim = await rpc('claim_adidas_inventory_sync', {
+      p_source: SOURCE,
+      p_owner: lockOwner,
+      p_ttl_seconds: LOCK_TTL_SECONDS,
+    });
+    lockAcquired = claim?.acquired === true;
+    if (!lockAcquired) {
+      console.error('[ss-adidas-sync] overlap prevented; lock held until', claim?.locked_until || 'unknown');
+      await sbJson('adidas_inventory_sync_runs', {
+        method: 'POST',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          source: SOURCE,
+          status: 'skipped_locked',
+          error_count: 1,
+          errors: [{ message: 'Another run holds the source lock', locked_until: claim?.locked_until || null }],
+          finished_at: new Date().toISOString(),
+        }),
+      });
+      return { statusCode: 409, body: 'Sync already running' };
+    }
 
-    // 1. All adidas styles on S&S
-    const styles = (await ssGet('/Styles')).filter((s) => /adidas/i.test(s.brandName || ''));
-    console.log('[ss-adidas-sync] adidas styles on S&S:', styles.length);
+    const abandonedBefore = new Date(Date.now() - LOCK_TTL_SECONDS * 1000).toISOString();
+    const abandoned = await sbFetch(
+      `adidas_inventory_sync_runs?source=eq.${SOURCE}&status=eq.running&started_at=lt.${encodeURIComponent(abandonedBefore)}`,
+      {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          status: 'failed',
+          error_count: 1,
+          errors: [{ message: 'Run exceeded its lock TTL and was recovered by a later invocation' }],
+          finished_at: new Date().toISOString(),
+        }),
+      }
+    );
+    if (!abandoned.ok) {
+      throw new Error(`Could not reconcile abandoned runs: ${abandoned.status} ${(await abandoned.text()).slice(0, 300)}`);
+    }
 
-    let productsUpserted = 0, invRows = 0;
-    const errors = [];
-    for (let i = 0; i < styles.length; i++) {
-      const st = styles[i];
-      try {
-        if (i > 0) await sleep(1100); // 60 req/min rate limit
-        const records = await ssGet('/Products/?styleid=' + encodeURIComponent(st.styleID));
-        if (!Array.isArray(records) || !records.length) continue;
+    const insertedRuns = await sbJson('adidas_inventory_sync_runs?select=id', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ source: SOURCE, status: 'running', lock_owner: lockOwner }),
+    });
+    runId = insertedRuns?.[0]?.id;
+    if (!runId) throw new Error('Run audit row was not created');
 
-        // Group size-level records into one product per style+color
-        const byColor = {};
-        for (const r of records) {
-          const key = String(r.colorCode || r.colorName || 'NA').replace(/\s+/g, '');
-          (byColor[key] = byColor[key] || []).push(r);
-        }
-        const prodRows = [];
-        const invUpserts = [];
-        for (const [colorCode, recs] of Object.entries(byColor)) {
-          const r0 = recs[0];
-          const sku = (st.styleName || st.title || 'SS') + '-' + colorCode;
-          const sizes = [...new Set(recs.map((r) => r.sizeName).filter(Boolean))];
-          const snapshot = vendorCostSnapshot(recs.map(r => ({ size: r.sizeName, cost: Number(r.customerPrice) || Number(r.piecePrice) || 0 })));
-          if (!snapshot) continue; // preserve last known costs if pricing is unavailable
-          const cost = snapshot.baseCost;
-          const map = Number(r0.mapPrice) || 0;
-          const img = r0.colorFrontImage || r0.styleImage || '';
-          // MAP can arrive as a 0.01 placeholder when unset — treat <= $1 as missing
-          // and fall back to keystone (cost x 2) so retail is never bogus.
-          const retail = map > 1 ? map : (cost > 0 ? Math.round(cost * 2) : 0);
-          prodRows.push({
-            id: 'ssa-' + sku,
-            vendor_id: vendorId,
-            sku,
-            name: 'Adidas ' + (st.title || st.styleName) + (st.styleName && st.title && !String(st.title).includes(st.styleName) ? ' (' + st.styleName + ')' : ''),
-            brand: 'Adidas',
-            color: r0.colorName || colorCode,
-            category: mapCategory(st.title, st.baseCategory),
-            retail_price: retail,
-            nsa_cost: cost,
-            size_costs: snapshot.sizeCosts,
-            // S&S coaches pay cost x 1.65 (flat markup, no adidas tier discount)
-            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
-            is_active: true,
-            available_sizes: sizes,
-            image_front_url: img ? SS_CDN + img : null,
-            description: st.description ? String(st.description).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000) : null,
-          });
-          for (const r of recs) {
-            if (!r.sizeName) continue;
-            const qty = Array.isArray(r.warehouses)
-              ? r.warehouses.reduce((a, w) => a + (Number(w.qty) || 0), 0)
-              : (Number(r.qty) || 0);
-            // id is text NOT NULL with no default — same {sku}-{size} scheme as the Cowork sync
-            invUpserts.push({ id: sku + '-' + r.sizeName, sku, size: r.sizeName, stock_qty: qty, last_synced: new Date().toISOString(), source: 'ss_activewear' });
-          }
-        }
+    const [vendorRows, stateRows, allStyles] = await Promise.all([
+      sbJson('vendors?api_provider=eq.ss_activewear&select=id&limit=1'),
+      sbJson(`adidas_inventory_sync_state?source=eq.${SOURCE}&select=cursor,cycle_started_at&limit=1`),
+      ssGet('/Styles'),
+    ]);
+    const vendorId = vendorRows?.[0]?.id;
+    if (!vendorId) throw new Error('No S&S vendor is configured');
 
-        // Upsert products (id-keyed; refreshes price/image/stock-driven fields)
-        const pr = await sb('products?on_conflict=id', {
-          method: 'POST',
-          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(prodRows),
-        });
-        if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
-        productsUpserted += prodRows.length;
+    if (!Array.isArray(allStyles)) throw new Error('S&S /Styles returned a non-array payload');
+    const adidasStyles = allStyles.filter((style) => /adidas/i.test(style.brandName || ''));
+    if (!adidasStyles.length) throw new Error('S&S /Styles returned zero Adidas styles; cursor was preserved');
+    stylesTotal = adidasStyles.length;
+    const storedCursor = stateRows?.[0]?.cursor || {};
+    const pendingStyles = stylesAfterCursor(adidasStyles, storedCursor);
+    const retryStyleIds = new Set((storedCursor.retry_style_ids || []).map(String));
+    console.log(`[ss-adidas-sync] ${stylesTotal} adidas styles; ${pendingStyles.length} remain in this cycle`);
 
-        for (let j = 0; j < invUpserts.length; j += 500) {
-          const ir = await sb('adidas_inventory?on_conflict=sku,size', {
+    let productBatch = [];
+    let inventoryBatch = [];
+    let highWaterStyleId = String(storedCursor.last_style_id || '');
+
+    const flush = async ({ completeCycle = false } = {}) => {
+      const productsToWrite = [...new Map(productBatch.map((row) => [row.id, row])).values()];
+      const inventoryToWrite = [...new Map(inventoryBatch.map((row) => [`${row.sku}\0${row.size}`, row])).values()];
+      if (productsToWrite.length) {
+        for (let index = 0; index < productsToWrite.length; index += 250) {
+          await sbJson('products?on_conflict=id', {
             method: 'POST',
             headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-            body: JSON.stringify(invUpserts.slice(j, j + 500)),
+            body: JSON.stringify(productsToWrite.slice(index, index + 250)),
           });
-          if (!ir.ok) throw new Error('inventory upsert ' + ir.status + ': ' + (await ir.text()).slice(0, 200));
         }
-        invRows += invUpserts.length;
-      } catch (e) {
-        errors.push((st.styleName || st.styleID) + ': ' + e.message);
-        if (errors.length > 25) break; // bail if S&S is having a bad day
+      }
+      if (inventoryToWrite.length) {
+        for (let index = 0; index < inventoryToWrite.length; index += 500) {
+          await sbJson('adidas_inventory?on_conflict=sku,size', {
+            method: 'POST',
+            headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(inventoryToWrite.slice(index, index + 500)),
+          });
+        }
+      }
+
+      productsUpserted += productsToWrite.length;
+      inventoryRows += inventoryToWrite.length;
+      const checkpoint = await rpc('checkpoint_adidas_inventory_sync', {
+        p_source: SOURCE,
+        p_owner: lockOwner,
+        p_cursor: completeCycle ? {} : {
+          last_style_id: highWaterStyleId,
+          retry_style_ids: [...retryStyleIds],
+        },
+        p_cycle_completed: completeCycle,
+        p_ttl_seconds: LOCK_TTL_SECONDS,
+      });
+      if (checkpoint?.updated !== true) throw new Error('Lost the sync lock while checkpointing');
+      productBatch = [];
+      inventoryBatch = [];
+    };
+
+    for (let index = 0; index < pendingStyles.length; index++) {
+      if (Date.now() - startedMs >= TIME_BUDGET_MS) {
+        console.log('[ss-adidas-sync] time budget reached; saving checkpoint before exit');
+        break;
+      }
+
+      const style = pendingStyles[index];
+      const currentStyleId = styleKey(style);
+      if (!highWaterStyleId || currentStyleId.localeCompare(highWaterStyleId, 'en', { numeric: true }) > 0) {
+        highWaterStyleId = currentStyleId;
+      }
+      try {
+        const records = await ssGet(`/Products/?styleid=${encodeURIComponent(style.styleID)}`);
+        if (!Array.isArray(records)) {
+          throw new Error('S&S /Products returned a non-array payload');
+        }
+        if (records.length) {
+          const byColor = new Map();
+          for (const record of records) {
+            const colorKey = String(record.colorCode || record.colorName || 'NA').replace(/\s+/g, '');
+            if (!byColor.has(colorKey)) byColor.set(colorKey, []);
+            byColor.get(colorKey).push(record);
+          }
+
+          const syncedAt = new Date().toISOString();
+          for (const [colorCode, colorRecords] of byColor) {
+            const first = colorRecords[0];
+            const sku = `${style.styleName || style.title || 'SS'}-${colorCode}`;
+            const sizes = [...new Set(colorRecords.map((record) => record.sizeName).filter(Boolean))];
+            const snapshot = vendorCostSnapshot(colorRecords.map((record) => ({
+              size: record.sizeName,
+              cost: Number(record.customerPrice) || Number(record.piecePrice) || 0,
+            })));
+            if (!snapshot) continue;
+            const mapPrice = Number(first.mapPrice) || 0;
+            const retail = mapPrice > 1 ? mapPrice : (snapshot.baseCost > 0 ? Math.round(snapshot.baseCost * 2) : 0);
+            const image = first.colorFrontImage || first.styleImage || '';
+            productBatch.push({
+              id: `ssa-${sku}`,
+              vendor_id: vendorId,
+              sku,
+              name: `Adidas ${style.title || style.styleName}${style.styleName && style.title && !String(style.title).includes(style.styleName) ? ` (${style.styleName})` : ''}`,
+              brand: 'Adidas',
+              color: first.colorName || colorCode,
+              category: mapCategory(style.title, style.baseCategory),
+              retail_price: retail,
+              nsa_cost: snapshot.baseCost,
+              size_costs: snapshot.sizeCosts,
+              catalog_sell_price: snapshot.baseCost > 0 ? Math.round(snapshot.baseCost * 1.65 * 100) / 100 : null,
+              is_active: true,
+              available_sizes: sizes,
+              image_front_url: image ? SS_CDN + image : null,
+              description: style.description
+                ? String(style.description).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000)
+                : null,
+            });
+            for (const record of colorRecords) {
+              if (!record.sizeName) continue;
+              const quantity = Array.isArray(record.warehouses)
+                ? record.warehouses.reduce((sum, warehouse) => sum + (Number(warehouse.qty) || 0), 0)
+                : (Number(record.qty) || 0);
+              inventoryBatch.push({
+                id: `${sku}-${record.sizeName}`,
+                sku,
+                size: record.sizeName,
+                stock_qty: quantity,
+                last_synced: syncedAt,
+                source: SOURCE,
+              });
+            }
+          }
+        }
+        retryStyleIds.delete(currentStyleId);
+      } catch (error) {
+        const detail = {
+          style_id: style.styleID,
+          style_name: style.styleName || null,
+          message: String(error?.message || error).slice(0, 500),
+        };
+        errors.push(detail);
+        retryStyleIds.add(currentStyleId);
+        console.error('[ss-adidas-sync] STYLE FAILED', JSON.stringify(detail));
+        if (errors.length >= 25) throw new Error('Stopped after 25 style failures');
+      }
+      stylesProcessed++;
+
+      const isLastStyle = index === pendingStyles.length - 1;
+      if (stylesProcessed % STYLE_BATCH_SIZE === 0 || isLastStyle) {
+        cycleCompleted = isLastStyle && retryStyleIds.size === 0;
+        await flush({ completeCycle: cycleCompleted });
       }
     }
 
-    console.log('[ss-adidas-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', errors.length, 'errors', errors.slice(0, 5));
-    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, errors: errors.slice(0, 10) }) };
-  } catch (e) {
-    console.error('[ss-adidas-sync]', e);
-    return { statusCode: 500, body: e.message };
+    if (!cycleCompleted && (productBatch.length || inventoryBatch.length || highWaterStyleId || retryStyleIds.size)) {
+      await flush();
+    }
+    if (!pendingStyles.length) {
+      cycleCompleted = true;
+      highWaterStyleId = '';
+      await flush({ completeCycle: true });
+    }
+
+    const status = errors.length ? 'partial' : (cycleCompleted ? 'completed' : 'success');
+    await writeRun({
+      status,
+      styles_total: stylesTotal,
+      styles_processed: stylesProcessed,
+      products_upserted: productsUpserted,
+      inventory_rows: inventoryRows,
+      error_count: errors.length,
+      errors: errors.slice(0, 100),
+      cycle_completed: cycleCompleted,
+      finished_at: new Date().toISOString(),
+    });
+    const summary = {
+      status,
+      styles_total: stylesTotal,
+      styles_processed: stylesProcessed,
+      products: productsUpserted,
+      inventory_rows: inventoryRows,
+      errors: errors.length,
+      cycle_completed: cycleCompleted,
+    };
+    if (errors.length) {
+      console.error('[ss-adidas-sync] PARTIAL FAILURE', JSON.stringify(summary), errors.slice(0, 5));
+      return { statusCode: 502, body: JSON.stringify(summary) };
+    }
+    console.log('[ss-adidas-sync] success', JSON.stringify(summary));
+    return { statusCode: 200, body: JSON.stringify(summary) };
+  } catch (error) {
+    const message = String(error?.message || error);
+    console.error('[ss-adidas-sync] FATAL', error);
+    try {
+      await writeRun({
+        status: 'failed',
+        styles_total: stylesTotal,
+        styles_processed: stylesProcessed,
+        products_upserted: productsUpserted,
+        inventory_rows: inventoryRows,
+        error_count: Math.max(1, errors.length),
+        errors: [...errors, { message }].slice(0, 100),
+        cycle_completed: false,
+        finished_at: new Date().toISOString(),
+      });
+    } catch (auditError) {
+      console.error('[ss-adidas-sync] FATAL: could not update run audit', auditError);
+    }
+    return { statusCode: 500, body: message };
+  } finally {
+    if (lockAcquired) {
+      try {
+        await rpc('release_adidas_inventory_sync', {
+          p_source: SOURCE,
+          p_owner: lockOwner,
+        });
+      } catch (error) {
+        console.error('[ss-adidas-sync] FATAL: lock release failed', error);
+      }
+    }
   }
 };
