@@ -698,11 +698,28 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
       // would inflate "remaining to invoice" and enable over-invoicing.
       if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
+        // "Sub unfilled items" moves units off an already-invoiced line onto a replacement
+        // line that carries the source's key as an alias (SO-2640: 2 of 31 invoiced JM1033
+        // moved to AT208). The billed qty then exceeds the source line's units, so pour the
+        // overflow into the alias holders instead of leaving the source over-invoiced and the
+        // replacement showing as unbilled. With no alias holders this is the old direct add.
+        const holders = aliasBuckets.get(li._so_line_key);
+        if (holders) {
+          const exactIdx = items.findIndex((it, idx) => soLineKey(it, idx) === li._so_line_key);
+          pourInto([exactIdx, ...holders.filter(h => h !== exactIdx)], q);
+          return;
+        }
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
         return;
       }
       if (li?._so_line_key && aliasBuckets.has(li._so_line_key)) {
-        pourInto(aliasBuckets.get(li._so_line_key), q);
+        // The original line's position shifted, so its exact key no longer matches. If the
+        // original still holds its own prior key (a partial move stamps it), fill it before the
+        // replacement so the source isn't drained into its substitute.
+        const keySkuColor = li._so_line_key.slice(0, li._so_line_key.lastIndexOf('|'));
+        const holders = aliasBuckets.get(li._so_line_key);
+        const original = holders.filter(idx => (safeStr(items[idx]?.sku)||'')+'|'+(safeStr(items[idx]?.color)||'') === keySkuColor);
+        pourInto([...original, ...holders.filter(idx => !original.includes(idx))], q);
         return;
       }
       // Legacy fallback chain: parse sku/color from explicit fields or the desc
@@ -738,6 +755,20 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
 
 export const buildInvoicedQtyMap = (so, invoicesForSO) =>
   _reconcileInvoicedQty(so, invoicesForSO).map;
+
+// "Sub unfilled items" moves open units from line `src` (at srcIdx) onto a replacement line.
+// Stamp the source's invoice identity onto both so units that were already invoiced on the
+// source count as invoiced on the replacement — no re-invoice prompt for a same-price swap.
+// The source keeps its own key too, so a later index shift still finds it first. Price
+// differences are left to the final invoice's existing balance adjustment.
+export const linkMovedLineInvoiceKeys = (src, srcIdx, moved) => {
+  const clean = (keys) => safeArr(keys).map(safeStr).filter(Boolean);
+  const srcKeys = [...new Set([...clean(src?.invoice_line_keys), soLineKey(src, srcIdx)])];
+  return {
+    src: { ...src, invoice_line_keys: srcKeys },
+    moved: { ...moved, invoice_line_keys: [...new Set([...clean(moved?.invoice_line_keys), ...srcKeys])] },
+  };
+};
 
 // Detect quantities that were invoiced after the Create Invoice modal loaded.
 // The modal calculates its remaining quantities from the client's invoice snapshot;

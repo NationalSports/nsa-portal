@@ -167,5 +167,37 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  await db.exec('reset role;');
  console.log('PASS memo command obeys row visibility and UPDATE policy for authenticated staff');
  console.log('PASS anonymous and nonstaff access blocked');
+ // Header touch for art/job-only saves (migration so_touch_without_version_bump): other sessions
+ // must see that the order changed, but the rep's edit base (_version) must not move (SO-2444).
+ await db.exec('drop trigger version on sales_orders;');
+ await db.exec(read('supabase/migrations/20261012160000_so_touch_without_version_bump.sql'));
+ const hdr=async()=>(await query('select _version v, updated_at::text u from sales_orders where id=$1',[id]))[0];
+ await query("update sales_orders set updated_at='2020-01-01T00:00:00Z' where id=$1",[id]);
+ const h0=await hdr();
+ const touched=(await query('select touch_sales_order($1) r',[id]))[0].r;
+ const h1=await hdr();
+ assert.equal(touched.touched,true);assert.equal(touched.version,h0.v);
+ assert.equal(h1.v,h0.v,'touch keeps the edit base');assert.notEqual(h1.u,h0.u,'touch moves updated_at');
+ const lightArt=await save(id,await token(id),{header:{id},write_header:false,art_upserts:[{id:'ART',name:'artist upload'}],art_deletes:[],job_upserts:[{id:'JOB',art_name:'artist status'}],job_deletes:[]});
+ assert.equal(lightArt.version,h0.v,'art+jobs save leaves the edit base alone');
+ await query('select touch_sales_order($1)',[id]);assert.equal((await hdr()).v,h0.v,'art save + touch: a rep editing at base v'+h0.v+' can still save');
+ await query("update sales_orders set memo='after touch' where id=$1",[id]);assert.equal((await hdr()).v,h0.v+1,'an ordinary edit still bumps');
+ const h2=await hdr();
+ await db.exec("begin;select touch_sales_order('"+id+"');update sales_orders set memo='same transaction' where id='"+id+"';commit;");
+ assert.equal((await hdr()).v,h2.v+1,'the touch flag never leaks into a later edit in the same transaction');
+ const h3=await hdr();
+ await db.exec("create function touch_side_effect() returns trigger language plpgsql as $$begin new.po_number:='SIDE-EFFECT';return new;end$$;create trigger a_touch_side_effect before update on sales_orders for each row execute function touch_side_effect();");
+ await query('select touch_sales_order($1)',[id]);assert.equal((await hdr()).v,h3.v+1,'a touch that ends up changing real content is a normal edit');
+ await db.exec('drop trigger a_touch_side_effect on sales_orders;drop function touch_side_effect();');
+ assert.equal((await query("select touch_sales_order('SO-DOES-NOT-EXIST') r"))[0].r.touched,false);
+ await db.exec("set test.staff='false';set role authenticated;");
+ await assert.rejects(query('select touch_sales_order($1)',[id]),/STAFF_REQUIRED/);
+ await db.exec("reset role;set test.staff='true';set role authenticated;");
+ const h4=await hdr();const staffTouch=(await query('select touch_sales_order($1) r',[id]))[0].r;
+ assert.equal(staffTouch.touched,true);assert.equal((await hdr()).v,h4.v,'staff touch under RLS keeps the version');
+ await db.exec('reset role;set role anon;');
+ await assert.rejects(query('select touch_sales_order($1)',[id]),/permission denied/);
+ await db.exec('reset role;');
+ console.log('PASS header touch moves updated_at without advancing the edit version; edits still bump; staff only');
  await db.close();console.log('ALL_ORDER_SAVE_SCENARIOS_PASSED');
 })().catch(e=>{console.error(e.message,e.where||'');process.exit(1)});
