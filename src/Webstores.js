@@ -61,6 +61,7 @@ import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFun
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
+import { allocateComboPrice, cleanSizeList, comboConfig, comboConfigError, comboSizeOptions, isComboItem, isComboSizeOption, withComboConfig } from './lib/webstoreItemOptions.shared';
 
 // The proxy already explains an OMG outage in words ("their report service did not
 // respond"); a bare status code tells staff nothing they can act on. Fall back to the
@@ -83,6 +84,50 @@ const { DEFAULT_SHIP_FROM_CODE, shipFromCode, shipFromLabel, shipStationShipFrom
 // blocking every store edit until the migration catches up.
 const shipFromColumnMissing = (error) => !!error && /ship_from_code/.test(error.message || '');
 const withoutShipFrom = (row) => { const { ship_from_code, ...rest } = row; return rest; };
+
+const comparableStoreValue = (value) => {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.map(comparableStoreValue);
+  if (typeof value === 'object') return Object.keys(value).sort().reduce((out, key) => {
+    out[key] = comparableStoreValue(value[key]);
+    return out;
+  }, {});
+  return value;
+};
+
+export const storeValueEqual = (left, right) => (
+  JSON.stringify(comparableStoreValue(left)) === JSON.stringify(comparableStoreValue(right))
+);
+
+export const storeFieldEqual = (key, left, right) => {
+  if (/_at$/.test(key) && left && right) {
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime)) return leftTime === rightTime;
+  }
+  return storeValueEqual(left, right);
+};
+
+export const webstoreSaveConflicts = (original, latest, patch) => Object.keys(patch || {})
+  .filter((key) => !storeFieldEqual(key, original?.[key], latest?.[key]));
+
+export const webstoreDirtyPatch = (original, payload, dirtyFields) => [...dirtyFields]
+  .reduce((patch, key) => {
+    if (!storeFieldEqual(key, original?.[key], payload?.[key])) patch[key] = payload[key];
+    return patch;
+  }, {});
+
+export const webstoreLineDecorations = (line, decorationsByKey = {}) => (
+  /^Combo (top|bottom)$/i.test(line?.variant_label || '') && Array.isArray(line?.production_recipe?.decorations)
+    ? line.production_recipe.decorations
+    : (decorationsByKey[line?.product_id] || decorationsByKey[line?.sku] || [])
+);
+
+const webstoreChangedElsewhere = (original, latest) => {
+  const keys = new Set([...Object.keys(original || {}), ...Object.keys(latest || {})]);
+  keys.delete('updated_at');
+  return [...keys].some((key) => !storeValueEqual(original?.[key], latest?.[key]));
+};
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -1989,19 +2034,40 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Store closed — staff notification is queued for the hourly retry'); }
   }, [flash]);
 
-  const saveStore = useCallback(async (form, existingId) => {
+  const saveStore = useCallback(async (form, existingId, originalStore) => {
     if (existingId) {
-      const prevStore = stores.find((s) => s.id === existingId);
-      const reopenPatch = reopenPatchForCloseDate(prevStore, form.close_at);
+      const { data: latest, error: loadError } = await supabase.from('webstores').select('*').eq('id', existingId).single();
+      if (loadError || !latest) return { error: loadError || { message: 'Store could not be reloaded before saving.' } };
+      const conflicts = webstoreSaveConflicts(originalStore, latest, form);
+      if (conflicts.length) {
+        return { error: { code: 'WEBSTORE_STALE', message: `This store changed elsewhere while you were editing (${conflicts.join(', ')}). Your changes were not saved. Reopen settings and try again.` } };
+      }
+      const closeDateChanged = Object.prototype.hasOwnProperty.call(form, 'close_at');
+      const reopenPatch = closeDateChanged ? reopenPatchForCloseDate(latest, form.close_at) : {};
       const reopenedByDate = reopenPatch.status === 'open';
       const patch = { ...form, ...reopenPatch, updated_at: new Date().toISOString() };
-      let { data, error } = await supabase.from('webstores').update(patch).eq('id', existingId).select().single();
-      if (shipFromColumnMissing(error)) ({ data, error } = await supabase.from('webstores').update(withoutShipFrom(patch)).eq('id', existingId).select().single());
+      if (Object.keys(form).length === 0) {
+        setStores((prev) => prev.map((s) => (s.id === existingId ? latest : s)));
+        if (sel?.id === existingId) setSel(latest);
+        flash(webstoreChangedElsewhere(originalStore, latest) ? 'No settings changed — reloaded changes made elsewhere' : 'No settings changed');
+        return { data: latest };
+      }
+      const runUpdate = (nextPatch) => {
+        let query = supabase.from('webstores').update(nextPatch).eq('id', existingId);
+        if (latest.updated_at) query = query.eq('updated_at', latest.updated_at);
+        return query.select().single();
+      };
+      let { data, error } = await runUpdate(patch);
+      if (shipFromColumnMissing(error)) ({ data, error } = await runUpdate(withoutShipFrom(patch)));
+      if (error && latest.updated_at && (error.code === 'PGRST116' || /0 rows|multiple \(or no\) rows|JSON object requested|cannot coerce/i.test(error.message || ''))) {
+        return { error: { code: 'WEBSTORE_STALE', message: 'This store changed again while it was being saved. Your changes were not saved. Reopen settings and try again.' } };
+      }
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
-      if (!reopenedByDate && prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
-      flash(reopenedByDate ? 'Store saved — reopened for shoppers' : 'Store saved'); return { data };
+      if (!reopenedByDate && latest.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
+      const merged = webstoreChangedElsewhere(originalStore, latest);
+      flash(reopenedByDate ? 'Store saved — reopened for shoppers' : merged ? 'Store saved — merged with changes made elsewhere' : 'Store saved'); return { data };
     }
     // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
     // with an existing store (e.g. re-importing the same OMG report, or two similarly-named teams)
@@ -3945,7 +4011,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       lines.forEach((i) => {
         if (!selIds.has(i.order_id)) return;
         const seen = new Set();
-        (decosByKey[i.product_id] || decosByKey[i.sku] || []).forEach((d) => {
+        webstoreLineDecorations(i, decosByKey).forEach((d) => {
           const k = d.art_id || d.art_url; if (!k || seen.has(k)) return; seen.add(k);
           units[k] = (units[k] || 0) + (i.qty || 1);
           if (!meta[k]) { const lib = d.art_id ? artById[d.art_id] : null; meta[k] = { key: k, name: (lib && lib.name) || 'Store logo', method: (lib && lib.deco_type) || 'screen_print', img: d.art_url || (lib && lib.web_logo_url) || '' }; }
@@ -4086,16 +4152,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // from the money collected; a separate line per price makes every qty × rate exact,
       // so the SO, its print and the batch invoice tie to the cent.
       const unitCollected = r2(collectedForLine(i) / q);
+      const lineDecorations = webstoreLineDecorations(i, decosByKey);
       const baseKey = webstoreProductionKey({
         sku: source.sku,
         color: sourceColor,
         vendorId: source.vendor_id,
-        decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
+        decorations: lineDecorations,
         personalize: personalize[sourcePid] || {},
         transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
       });
       const key = baseKey + '§$' + unitCollected.toFixed(2);
-      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, decorations: lineDecorations, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[key];
       const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
@@ -4183,7 +4250,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: 0, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
-      (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {
+      (g.decorations || []).forEach((d) => {
         const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
         const lib = d.art_id ? artById[d.art_id] : null;
         // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
@@ -4246,7 +4313,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
       const catalogMatches = (detail.catalog || []).filter(c => sourcePid ? c.product_id === sourcePid : c.sku === item.sku);
-      const placed = [...new Map((decosByKey[sourcePid] || decosByKey[g.sku] || []).map(d => [placeKey(d), d])).values()];
+      const placed = [...new Map((g.decorations || []).map(d => [placeKey(d), d])).values()];
       storeMockSources.push({ item, product: sourceInfo, catalog: catalogMatches.length === 1 ? catalogMatches[0] : {}, decorations: placed,
         ambiguous: catalogMatches.length > 1, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
       return item;
@@ -4448,7 +4515,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCancel={() => { setPendingStartTpl(null); if (tplAfterEdit) { setTplAfterEdit(null); flash('Store saved as a draft — bring the template\'s items in any time via Add items → Add template'); } setEditing(null); omgResetStaged(); }}
           onSave={async (form) => {
             const isNew = editing === 'new';
-            const r = await saveStore(form, isNew ? null : editing.id);
+            const r = await saveStore(form, isNew ? null : editing.id, isNew ? null : editing);
             if (r.error) return r;
             setEditing(null);
             // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
@@ -5889,6 +5956,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     close_at: store ? dateOnly(store.close_at) : initialOverrides?.org_type === 'all_school' ? '' : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()),
     close_time: store ? ptTimeInput(store.close_at) : ptTimeInput(initialOverrides?.close_at),
   }));
+  const dirtyFields = useRef(new Set());
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
@@ -5934,8 +6002,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
   // column is set on an existing store; defaults to percent.
   const [fundMode, setFundMode] = useState(Number(store?.fundraise_flat) > 0 ? 'flat' : 'pct');
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const setName = (v) => { setNameTouched(true); setF((p) => ({ ...p, name: v, slug: slugTouched ? p.slug : slugify(v) })); };
+  const change = (patch) => {
+    Object.keys(patch).forEach((key) => dirtyFields.current.add(key));
+    setF((p) => ({ ...p, ...patch }));
+  };
+  const set = (k, v) => change({ [k]: v });
+  const setName = (v) => { setNameTouched(true); change({ name: v, slug: slugTouched ? f.slug : slugify(v) }); };
   // Auto-name the store from the customer's readable NAME (not its tag). The team
   // (child) record already carries the sport, so "Dana Hills Football" → "Dana Hills
   // Football Team Store"; a parent org → "<name> <noun> Store".
@@ -5955,28 +6027,39 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     const autoName = storeNameFor(id, noun);
     const resolvedRep = (c && c.primary_rep_id) || (parent && parent.primary_rep_id) || f.rep_id;
     const primCsr = primaryCsrForRep(resolvedRep);
-    setF((p) => ({
-      ...p, customer_id: id,
-      rep_id: resolvedRep || p.rep_id,
-      csr_id: primCsr || p.csr_id,
-      primary_color: ph(0) || p.primary_color, accent_color: ph(1) || p.accent_color,
-      name: nameTouched ? p.name : (autoName || p.name),
-      slug: nameTouched || slugTouched ? p.slug : (autoName ? slugify(autoName) : p.slug),
-    }));
+    change({
+      customer_id: id,
+      rep_id: resolvedRep || f.rep_id,
+      csr_id: primCsr || f.csr_id,
+      primary_color: ph(0) || f.primary_color, accent_color: ph(1) || f.accent_color,
+      name: nameTouched ? f.name : (autoName || f.name),
+      slug: nameTouched || slugTouched ? f.slug : (autoName ? slugify(autoName) : f.slug),
+    });
   };
   // Switching team/club re-labels the auto-name too (OLu Football Team Store → Club Store).
   const switchOrg = (t) => {
     setOrgType(t);
+    dirtyFields.current.add('org_type');
+    if (t !== 'club') dirtyFields.current.add('number_enabled');
     if (t !== 'all_school' && page === 'operations') setPage('setup');
     if (t === 'all_school' && orgType !== 'all_school') {
       setFundMode('pct');
-      setF((p) => ({ ...p, close_at: '', delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, fundraise_flat: 0, fundraise_round: false, all_school_settings: normalizeAllSchoolSettings(p.all_school_settings) }));
+      change({ close_at: '', delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, fundraise_flat: 0, fundraise_round: false, all_school_settings: normalizeAllSchoolSettings(f.all_school_settings) });
     }
     if (!nameTouched && f.customer_id) {
       const nn = t === 'all_school' ? 'School' : t === 'club' ? 'Club' : 'Team';
       const autoName = storeNameFor(f.customer_id, nn);
-      if (autoName) setF((p) => ({ ...p, name: autoName, slug: slugTouched ? p.slug : slugify(autoName) }));
+      if (autoName) change({ name: autoName, slug: slugTouched ? f.slug : slugify(autoName) });
     }
+  };
+  const changeFundMode = (mode) => {
+    setFundMode(mode);
+    dirtyFields.current.add('fundraise_pct');
+    dirtyFields.current.add('fundraise_flat');
+  };
+  const changeFundraising = (enabled) => {
+    set('fundraise_enabled', enabled);
+    if (!enabled) ['fundraise_pct', 'fundraise_flat', 'fundraise_round', 'fundraise_goal'].forEach((key) => dirtyFields.current.add(key));
   };
   // Build a fresh hero blurb from the store's own details — coach-approved, the
   // chosen delivery method and post-close delivery window. Varies each click.
@@ -6078,7 +6161,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; payload.fundraise_goal = 0; }
     else if (fundMode === 'pct') payload.fundraise_flat = 0;
     else payload.fundraise_pct = 0;
-    const r = await onSave(payload);
+    const savePayload = store ? webstoreDirtyPatch(store, payload, dirtyFields.current) : payload;
+    const r = await onSave(savePayload);
     setBusy(false);
     if (r?.error) setError(r.error.message || 'Save failed.');
   };
@@ -6124,14 +6208,14 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         {store?.store_code && <Row label="Store # (auto-assigned — use it to look this store up)"><div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: '.06em', color: '#191919', padding: '6px 0' }}>{store.store_code}</div></Row>}
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; setF((p) => ({ ...p, rep_id: rid, csr_id: primaryCsrForRep(rid) || '' })); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; change({ rep_id: rid, csr_id: primaryCsrForRep(rid) || '' }); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
           <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{csrOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
           <Row label="Close date (optional)"><input className="form-input" data-tour-id="ws-close-date" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
           <Row label="Close time (Pacific)">
-            <input className="form-input" data-tour-id="ws-close-time" type="time" value={f.close_time || DEFAULT_CLOSE_TIME} onChange={(e) => set('close_time', e.target.value || DEFAULT_CLOSE_TIME)} disabled={!f.close_at} />
+            <input className="form-input" data-tour-id="ws-close-time" type="time" value={f.close_time || DEFAULT_CLOSE_TIME} onChange={(e) => { change({ close_time: e.target.value || DEFAULT_CLOSE_TIME }); dirtyFields.current.add('close_at'); }} disabled={!f.close_at} />
           </Row>
         </div>
         <div style={{ fontSize: 12, color: '#8A93A8', marginTop: -6, marginBottom: 10 }}>
@@ -6189,12 +6273,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
 
       <Section title="Fundraising">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Add fundraising on top of every item's price for the whole store. You can still set a specific amount on any single item in the Catalog — an item's own amount always wins.</div>
-        <Toggle label="Add fundraising to this store" checked={f.fundraise_enabled} onChange={(v) => set('fundraise_enabled', v)} />
+        <Toggle label="Add fundraising to this store" checked={f.fundraise_enabled} onChange={changeFundraising} />
         {f.fundraise_enabled && <div style={{ marginTop: 2, marginBottom: 4 }}>
           <Row label="Fundraise by">
             <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }}>
               {[['pct', '% of item price'], ['flat', '$ per item']].map(([m, lbl]) => (
-                <button key={m} type="button" onClick={() => setFundMode(m)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: fundMode === m ? '#fff' : 'transparent', color: fundMode === m ? '#191919' : '#6A7180', boxShadow: fundMode === m ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+                <button key={m} type="button" onClick={() => changeFundMode(m)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: fundMode === m ? '#fff' : 'transparent', color: fundMode === m ? '#191919' : '#6A7180', boxShadow: fundMode === m ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
               ))}
             </div>
           </Row>
@@ -6232,7 +6316,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></Row>}
         <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2, marginBottom: 8 }}>Shown to families on the storefront, cart, and checkout.</div>
-        {f.delivery_mode === 'ship_home' && <WebstoreShippingSettings store={f} onChange={patch => setF(prev => ({ ...prev, ...patch }))} />}
+        {f.delivery_mode === 'ship_home' && <WebstoreShippingSettings store={f} onChange={change} />}
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
           <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
@@ -8011,10 +8095,76 @@ function OptionsEditor({ value, onChange }) {
   );
 }
 
+export function ComboSizeEditor({ item, options, catalog = [], stockByWp = {}, costByPid = {}, defaultSizes = [], price, onChange, onEnabled, onEditItem }) {
+  const combo = isComboItem(options);
+  const config = comboConfig(options) || { pieces: { top: {}, bottom: {} } };
+  const pieces = config.pieces || {};
+  const definitions = comboSizeOptions(options);
+  const labelsFor = (purpose) => (definitions.find((option) => option.purpose === purpose)?.choices || []).map((choice) => choice.label);
+  const [topText, setTopText] = useState(() => labelsFor('combo_top_size').join(', '));
+  const [bottomText, setBottomText] = useState(() => labelsFor('combo_bottom_size').join(', '));
+  const parse = (value) => cleanSizeList(String(value || '').split(','));
+  const candidates = (catalog || []).filter((row) => row.kind === 'single' && row.id !== item.id && !isComboItem(row.options));
+  const rowFor = (role) => candidates.find((row) => row.id === pieces[role]?.webstore_product_id);
+  const costs = { top: costByPid[rowFor('top')?.product_id], bottom: costByPid[rowFor('bottom')?.product_id] };
+  const allocation = allocateComboPrice(price, config, costs);
+  const configError = comboConfigError(options, price, costs);
+  const setConfig = (next) => onChange(withComboConfig(options, true, next));
+  const setPiece = (role, patch) => setConfig({ ...config, pieces: { ...pieces, [role]: { ...(pieces[role] || {}), ...patch } } });
+  const applySizes = (role, value) => setPiece(role, { sizes: parse(value) });
+  const toggle = (enabled) => {
+    onEnabled(enabled);
+    if (!enabled) { onChange(withComboConfig(options, false)); return; }
+    const defaults = cleanSizeList(defaultSizes);
+    const top = topText || defaults.join(', ');
+    const bottom = bottomText || defaults.join(', ');
+    setTopText(top); setBottomText(bottom);
+    onChange(withComboConfig(options, true, { pieces: { top: { sizes: parse(top), price_share: null }, bottom: { sizes: parse(bottom), price_share: null } } }));
+  };
+  const pieceEditor = (role, label, text, setText) => {
+    const selected = rowFor(role);
+    const share = pieces[role]?.price_share;
+    return <div style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, background: '#fff' }}>
+      <div style={{ fontWeight: 800, fontSize: 12, textTransform: 'uppercase', color: '#334155', marginBottom: 8 }}>{label}</div>
+      <Row label={`${label} store item`}>
+        <select aria-label={`${label} combo item`} className="form-input" value={pieces[role]?.webstore_product_id || ''} onChange={(event) => setPiece(role, { webstore_product_id: event.target.value || null })}>
+          <option value="">Choose an item…</option>
+          {candidates.map((row) => <option key={row.id} value={row.id}>{row.display_name || stockByWp[row.id]?.name || row.sku} · {row.sku || 'no SKU'}</option>)}
+        </select>
+      </Row>
+      <Row label={`${label} sizes (comma-separated)`}><input aria-label={`Combo ${role} sizes`} className="form-input" value={text} onChange={(event) => setText(event.target.value)} onBlur={() => applySizes(role, text)} placeholder="S, M, L, XL" /></Row>
+      <Row label={`${label} price share (optional)`}><div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span>$</span><input aria-label={`${label} combo price share`} className="form-input" type="number" min="0" step="0.01" value={share == null ? '' : share} onChange={(event) => setPiece(role, { price_share: event.target.value === '' ? null : Number(event.target.value) })} placeholder="auto" /></div></Row>
+      {selected && <div style={{ fontSize: 11.5, color: '#64748b' }}>
+        SKU <b>{selected.sku || '—'}</b> · {(selected.decorations || []).length} decoration{(selected.decorations || []).length === 1 ? '' : 's'}
+        {onEditItem && <button type="button" onClick={() => onEditItem(selected.id)} style={{ marginLeft: 8, color: '#2563eb', border: 'none', background: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>Edit item &amp; decoration</button>}
+      </div>}
+    </div>;
+  };
+  return (
+    <ItemSection title="Top + bottom combo" hint="· one item and price; shopper chooses each size separately">
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+        <input type="checkbox" checked={combo} onChange={(event) => toggle(event.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: '#2563eb' }} />
+        <span>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>Sell this listing as a combo item</span>
+          <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>Use for a set such as a sweat suit. This is not a bundle and remains one order line at one price.</div>
+        </span>
+      </label>
+      {combo && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 10, marginTop: 12 }}>
+        {pieceEditor('top', 'Top', topText, setTopText)}
+        {pieceEditor('bottom', 'Bottom', bottomText, setBottomText)}
+        <div style={{ gridColumn: '1 / -1', color: configError ? '#b91c1c' : '#166534', background: configError ? '#fef2f2' : '#f0fdf4', border: `1px solid ${configError ? '#fecaca' : '#bbf7d0'}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}>
+          {configError || `Sales Order split: Top ${money(allocation.top)} · Bottom ${money(allocation.bottom)}. Blank shares use the two products’ blank-cost ratio.`}
+        </div>
+        <div style={{ gridColumn: '1 / -1', color: '#64748b', fontSize: 12 }}>Each linked item keeps its own SKU and decoration setup. Checkout creates two normal order lines so purchasing and production handle them independently.</div>
+      </div>}
+    </ItemSection>
+  );
+}
+
 // Drop blank options / empty choices so we never store half-filled add-ons.
 const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => {
-    const kind = ['addon', 'number', 'text', 'choice'].includes(o.kind) ? o.kind : 'text';
+    const kind = ['addon', 'number', 'text', 'choice', 'combo'].includes(o.kind) ? o.kind : 'text';
     return { ...o, kind, label: (o.label || '').trim(), upcharge: Number(o.upcharge) || 0, choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) };
   })
   .filter((o) => o.label && (o.kind !== 'choice' || o.choices.length));
@@ -8295,6 +8445,9 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // goalkeepers. Drives per-player bifurcation of the storefront.
   const [audience, setAudience] = useState(item.roster_audience || 'all');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
+  const comboItem = isComboItem(options);
+  const regularOptions = options.filter((option) => !isComboSizeOption(option) && option.kind !== 'combo');
+  const setRegularOptions = (next) => setOptions([...next, ...(comboConfig(options) ? [comboConfig(options)] : []), ...comboSizeOptions(options)]);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
@@ -8568,6 +8721,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     // rep can see on the card — not just the webstore_products fields below.
     if (!isBundle && item.product_id && onUpdateProductMeta) await saveSku();
     const cleanOptions = cleanItemOptions(options);
+    if (isComboItem(cleanOptions)) {
+      const cfg = comboConfig(cleanOptions);
+      const topRow = (catalog || []).find((row) => row.id === cfg?.pieces?.top?.webstore_product_id);
+      const bottomRow = (catalog || []).find((row) => row.id === cfg?.pieces?.bottom?.webstore_product_id);
+      const error = comboConfigError(cleanOptions, price, {
+        top: costByPid[topRow?.product_id],
+        bottom: costByPid[bottomRow?.product_id],
+      });
+      if (error) { window.alert('Combo setup: ' + error); return; }
+    }
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, deco_cost_estimate: Number(decoCostEst) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
@@ -8596,7 +8759,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       const _sameAsScale = _off.length === allSizes.length && allSizes.every((s) => _off.includes(s));
       fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
       // Inventory tracking only matters for stock-backed items; persist the choice there.
-      if (inventoryBacked) fields.track_inventory = !!trackInv;
+      if (inventoryBacked) fields.track_inventory = comboItem ? false : !!trackInv;
       // Size-level SKU overrides: only persist when there's something set.
       const overrideColor = stockByWp[item.id]?.color || item.color || '';
       fields.size_skus = Object.fromEntries(Object.entries(sizeSkus).flatMap(([sz, raw]) => {
@@ -8769,6 +8932,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
               <datalist id={catListId}>{categorySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
+              {!category.trim() && <div role="alert" style={{ marginTop: 6, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, padding: '6px 8px', fontSize: 11.5 }}>No category selected. Shoppers will find this item under “Other.”</div>}
             </Row>
             <Row label="Part of a kit / package">
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
@@ -8893,7 +9057,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'sizes' && !isBundle && <React.Fragment>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
+        {!comboItem && <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Size style</span>
             <select className="form-input" value={sizePresetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) applySizePreset(p); }} style={{ minWidth: 190, fontSize: 13 }}>
@@ -8913,14 +9077,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           </div>
           {offeredSizes.length > 0 && sizeList.some((s) => !offeredSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {sizeList.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
           {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
-        </ItemSection>
+        </ItemSection>}
+        <ComboSizeEditor item={item} options={options} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} defaultSizes={offeredSizes.length ? offeredSizes : sizeList} price={price} onChange={setOptions} onEnabled={(enabled) => { if (enabled) { setTrackInv(false); setTakesNumber(false); setTakesName(false); } }} onEditItem={onEditItem} />
         {inventoryBacked && (
           <ItemSection title="Inventory tracking" hint="· turn off for custom / made-to-order items">
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-              <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: comboItem ? 'not-allowed' : 'pointer', opacity: comboItem ? 0.65 : 1 }}>
+              <input type="checkbox" checked={comboItem ? false : trackInv} disabled={comboItem} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: comboItem ? 'not-allowed' : 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
               <span>
                 <span style={{ fontWeight: 700, fontSize: 13, color: '#191919' }}>Follow vendor &amp; in-house stock</span>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{trackInv
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{comboItem
+                  ? 'Off — combo top/bottom selections are made-to-order and do not map to one garment inventory size.'
+                  : trackInv
                   ? 'On — a size stops selling when it runs out of stock (and shows as sold out).'
                   : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
               </span>
@@ -8961,7 +9128,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         </div>
         <div>
         <ItemSection title="Add-on options" hint="· shopper-selected extras, e.g. embroidered name or collar color">
-          <OptionsEditor value={options} onChange={setOptions} />
+          <OptionsEditor value={regularOptions} onChange={setRegularOptions} />
         </ItemSection>
         </div>
       </div>

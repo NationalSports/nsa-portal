@@ -14,6 +14,7 @@ import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _sc
 import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
+import { isComboItem } from '../lib/webstoreItemOptions.shared';
 import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from '../lib/a11y';
 import { AllSchoolHeader, AllSchoolIntro, AllSchoolBrowse, schoolProductMatches, schoolOrderShipmentDate, schoolVariantGroupKey } from '../allSchool/AllSchoolStorefront';
 
@@ -268,7 +269,7 @@ function lookOverride() {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
-const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && String(o.label || '').trim()) : [];
+const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && o.kind !== 'combo' && String(o.label || '').trim()) : [];
 const optionKey = (o, i) => String(o.id || `option-${i}`);
 const optionHasValue = (o, value) => o.kind === 'addon' ? value === true : String(value == null ? '' : value).trim() !== '';
 const optionSelections = (defs, values) => defs.reduce((out, o, i) => {
@@ -784,12 +785,10 @@ function storeShortName(name) {
   return n || raw;
 }
 
-// Reps can curate a storefront-specific category, but older/live stores often
-// only carry the catalog category. Both are shopper-facing labels, so the
-// varsity category cards use the curated value first and gracefully fall back
-// to the catalog value instead of disappearing entirely.
-function productCategory(product) {
-  return String((product && (product.store_category || product.category)) || '').trim();
+// Store sections are curated per listing. An unset listing category must remain
+// visible without silently inheriting the catalog product's internal category.
+export function productCategory(product) {
+  return String((product && product.store_category) || '').trim() || 'Other';
 }
 
 // The reference header is built around a short school name ("Cal Poly
@@ -1588,7 +1587,7 @@ export function Card({ store, theme, p, colorRows = [], bundleItems = [], compIn
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(cardRow, theme);
-  const catLabel = (p.store_category || p.category || '').trim();
+  const catLabel = productCategory(p);
   const vs = theme.varsity;
   // Varsity badges selectively, like the design: a plain in-stock item carries no
   // tag, so the only tags on the grid are the ones that change a decision
@@ -1845,20 +1844,23 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const addOnDefs = optionDefsOf(p);
+  const comboItem = isComboItem(p.options);
+  const takesNumber = !comboItem && !!p.takes_number;
+  const takesName = !comboItem && !!p.takes_name;
   const addOnExtra = optionsExtra(addOnDefs, addOnValues);
   const selectedAddOns = optionSelections(addOnDefs, addOnValues);
   const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
-  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0) + addOnExtra;
-  const needSize = isFitGroup ? true : sizesArr.length > 0;
+  const total = priceOf(p) + upNow + (takesName && pname.trim() ? nameUp : 0) + addOnExtra;
+  const needSize = !comboItem && (isFitGroup ? true : sizesArr.length > 0);
   // A product that inherently has sizes (a real size scale, or a rep-added
   // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
   // not restocking. Its size list is empty, so needSize is false — without this guard
   // the button would enable and add it with size=null (unfulfillable). Block it; the
   // server rejects the same case (checkSizesRequired) as defense in depth.
   const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
-  const soldOutNoSize = inherentlySized && sizesArr.length === 0;
-  const needNumber = !!p.takes_number && store.org_type !== 'all_school';
-  const isPersonalized = !!p.takes_number || !!p.takes_name || selectedAddOns.length > 0;
+  const soldOutNoSize = !comboItem && inherentlySized && sizesArr.length === 0;
+  const needNumber = takesNumber && store.org_type !== 'all_school';
+  const isPersonalized = takesNumber || takesName || selectedAddOns.length > 0;
   const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
   const addToCart = () => {
     if (!canAdd) return;
@@ -1867,16 +1869,16 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
       name: p.name, color: p.color || null, variant_label: [p.variant_label, p.school_design_label].filter(Boolean).join(' · ') || null, image: ((isFitGroup ? rep : p).image_front_url) || null, size: size || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       size_extra: upNow,
-      name_extra: p.takes_name && pname.trim() ? nameUp : 0,
+      name_extra: takesName && pname.trim() ? nameUp : 0,
       option_extra: addOnExtra,
       option_selections: selectedAddOns,
-      player_number: p.takes_number && num.trim() ? num.trim() : null,
-      player_name: p.takes_name && pname.trim() ? pname.trim() : null,
+      player_number: takesNumber && num.trim() ? num.trim() : null,
+      player_name: takesName && pname.trim() ? pname.trim() : null,
       qty: isPersonalized ? 1 : qty,
     });
     setAdded({ product: { ...p, image_front_url: (isFitGroup ? rep : p).image_front_url }, size,
       qty: isPersonalized ? 1 : qty, price: money(total * (isPersonalized ? 1 : qty)),
-      name: p.takes_name ? pname.trim() : '', number: p.takes_number ? num.trim() : '', options: optionDetailLabels(selectedAddOns) });
+      name: takesName ? pname.trim() : '', number: takesNumber ? num.trim() : '', options: optionDetailLabels(selectedAddOns) });
   };
   const sizes = sizesArr;
   const onHand = effOnHand(p);
@@ -1887,7 +1889,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   const descText = cleanDesc(p.description);
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
   // Number/name personalization previews on the back, so make the back viewable for it too.
-  const isPerso = !!(p.takes_number || p.takes_name);
+  const isPerso = takesNumber || takesName;
   // Fits share one image — keep the representative row's image no matter which
   // fit's size is selected (each fit is a different product with its own photo).
   const imgRow = isFitGroup ? rep : p;
@@ -1900,14 +1902,14 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   return (
     <div className="sf-purchase-page" style={{ paddingTop: 24 }}>
       {theme.varsity
-        ? <VsCrumbs store={store} theme={theme} category={[p.store_category, p.category].filter(Boolean)[0] || ''} name={p.name} onCat={onCat} />
+        ? <VsCrumbs store={store} theme={theme} category={productCategory(p)} name={p.name} onCat={onCat} />
         : <BackLink store={store} theme={theme} />}
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: activeDetail ? '1' : '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={activeDetail ? `${p.name} — ${p.color || ''} — ${activeDetail.label}` : p.name} style={{ width: '100%', height: '100%', objectFit: activeDetail ? 'contain' : gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
-            {img === 'back' && <PersoMock takesNumber={p.takes_number && (store.org_type !== 'all_school' || !!num.trim())} takesName={p.takes_name && (store.org_type !== 'all_school' || !!pname.trim())} decorations={p.decorations} sampleName={store.org_type === 'all_school' ? pname.trim() : 'PLAYER'} sampleNumber={store.org_type === 'all_school' ? num.trim() : '00'} preserveCase={store.org_type === 'all_school'} />}
+            {img === 'back' && <PersoMock takesNumber={takesNumber && (store.org_type !== 'all_school' || !!num.trim())} takesName={takesName && (store.org_type !== 'all_school' || !!pname.trim())} decorations={p.decorations} sampleName={store.org_type === 'all_school' ? pname.trim() : 'PLAYER'} sampleNumber={store.org_type === 'all_school' ? num.trim() : '00'} preserveCase={store.org_type === 'all_school'} />}
           </div>
           {store.org_type === 'all_school' && img === 'back' && isPerso && <p style={{ fontSize: 12, color: theme.subText, textAlign: 'center', margin: '10px 0 0' }}>Name and number placement preview. Check your entered text before ordering.</p>}
           {(hasBackDeco || isPerso || decorationDetails.length > 0) && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
@@ -1917,7 +1919,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
           {activeDetail && <p style={{fontSize:12,color:theme.subText,textAlign:'center'}}>Rendered decoration preview. Actual fabric and stitching may vary.</p>}
         </div>
         <div ref={detailsSection} style={{ paddingTop: 4 }}>
-          <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{[p.store_category, p.category].filter(Boolean)[0] || 'Team Gear'}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{productCategory(p)}</div>
           <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(32px,4vw,48px)', margin: '0 0 12px', letterSpacing: 0.2, lineHeight: 0.96, textTransform: 'uppercase', color: theme.varsity ? theme.band : theme.ink }}>{p.name}</h1>
           {theme.varsity && <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, margin: '0 0 20px' }} />}
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3, color: theme.varsity ? theme.band : theme.primary }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: theme.subText, fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
@@ -1936,9 +1938,9 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
             </div>
           </div>}
 
-          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
+          {!comboItem && !isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
-          <div ref={sizeSection} tabIndex={-1} style={{ scrollMarginTop: 160 }}>
+          {!comboItem && <div ref={sizeSection} tabIndex={-1} style={{ scrollMarginTop: 160 }}>
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
               <div style={label}>Select fit &amp; size</div>
@@ -1963,15 +1965,15 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(p, sizes)}</div>
           </div>)}
 
-          </div>
+          </div>}
 
-          {(p.takes_number || p.takes_name) && (
+          {(takesNumber || takesName) && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
-              {p.takes_number && <div>
+              {takesNumber && <div>
                 <div style={label}>Number{store.org_type === 'all_school' ? ' (optional)' : ''}</div>
                 <input aria-label="Jersey number" className="sf-input" value={num} onChange={(e) => setNum(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 80)} />
               </div>}
-              {p.takes_name && <div>
+              {takesName && <div>
                 <div style={label}>Name {nameUp > 0 ? `(+${money(nameUp)})` : ''}</div>
                 <input aria-label="Name on jersey" className="sf-input" value={pname} maxLength={nameLimit(p)} onChange={(e) => setPname(nameInput(p, e.target.value))} placeholder="Last name" style={fieldStyle(theme, 220)} />
                 <div style={{ fontSize: 11, color: theme.subText, marginTop: 6 }}>{nameUppercase(p) ? 'Printed in uppercase. ' : ''}Maximum {nameLimit(p)} characters. Check spelling before adding.</div>
@@ -1981,7 +1983,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
 
           <AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} />
 
-          {(upNow > 0 || addOnExtra > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
+          {(upNow > 0 || addOnExtra > 0 || (takesName && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
           <div className="sf-selection-summary" aria-live="polite"><small>Your selection</small>{selectionSummary(p, size) || p.name}{needSize && !size && <span> · Select a size</span>}</div>
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
             {!isPersonalized && (
@@ -2201,7 +2203,8 @@ export function cartLineQty(line) {
 // A chosen color/size/custom option does not make a garment one-of-a-kind.
 // Only packs and genuinely personalized lines must remain at one unit.
 export function isFixedCartQty(line) {
-  return line?.kind === 'bundle' || !!line?.player_number || !!line?.player_name;
+  const combo = (line?.option_selections || []).some((selection) => selection && (selection.purpose === 'combo_top_size' || selection.purpose === 'combo_bottom_size'));
+  return line?.kind === 'bundle' || combo || !!line?.player_number || !!line?.player_name;
 }
 
 export function setCartLineQty(cart, key, nextQty) {

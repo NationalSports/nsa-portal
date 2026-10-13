@@ -9,7 +9,11 @@ const positive = (n) => n != null && n !== '' && Number.isFinite(Number(n)) && N
 const { shippingConfig, validateShipping, ruleShipping } = require('../../src/lib/webstoreShippingRules.shared');
 
 async function cartWeightOz(sb, store, lines) {
-  const components = (lines || []).filter((l) => l.kind === 'bundle').flatMap((l) => l.components || []);
+  const components = (lines || []).flatMap((line) => line.kind === 'bundle'
+    ? (line.components || [])
+    : line.kind === 'combo'
+      ? (line.pieces || []).map((piece) => ({ ...piece, webstore_product_id: piece.wp?.id || null, qty: 1 }))
+      : []);
   const productIds = [...new Set(components.map((c) => c.product_id).filter(Boolean))];
   let catalog = [];
   if (components.length) {
@@ -24,19 +28,22 @@ async function cartWeightOz(sb, store, lines) {
   }
   let weight = 0;
   for (const line of lines || []) {
-    if (line.kind !== 'bundle') {
+    if (line.kind !== 'bundle' && line.kind !== 'combo') {
       if (!positive(line.wp && line.wp.weight_oz)) return failure(`Shipping weight is missing for ${line.wp && (line.wp.display_name || line.wp.sku) || 'an item'}. Please contact the store before checkout.`);
       if (!positive(line.qty)) return failure('The cart quantity could not be verified. Please refresh your cart.');
       weight += Number(line.wp.weight_oz) * Number(line.qty);
       continue;
     }
-    if (!(line.components || []).length) return failure('A package has no garments to ship. Please contact the store to correct its shipping setup.');
-    for (const component of line.components) {
+    const lineComponents = line.kind === 'combo'
+      ? (line.pieces || []).map((piece) => ({ ...piece, webstore_product_id: piece.wp?.id || null, qty: 1 }))
+      : (line.components || []);
+    if (!lineComponents.length) return failure('A package has no garments to ship. Please contact the store to correct its shipping setup.');
+    for (const component of lineComponents) {
       const byId = component.webstore_product_id && catalog.find((c) => c.id === component.webstore_product_id);
       const candidates = catalog.filter((c) => c.product_id === component.product_id);
       const weights = [...new Set(candidates.map((c) => c.weight_oz).filter(positive).map(Number))];
       const unitWeight = byId ? byId.weight_oz : weights.length === 1 ? weights[0] : null;
-      if (!positive(unitWeight)) return failure(`Shipping weight is missing or ambiguous for package garment ${component.sku || component.product_id || ''}. Please contact the store before checkout.`);
+      if (!positive(unitWeight)) return failure(`Shipping weight is missing or ambiguous for ${line.kind === 'combo' ? 'combo' : 'package'} garment ${component.sku || component.product_id || ''}. Please contact the store before checkout.`);
       if (!positive(component.qty)) return failure('A package garment quantity could not be verified. Please refresh your cart.');
       weight += Number(unitWeight) * Number(component.qty);
     }
@@ -50,7 +57,13 @@ async function quoteShipping(sb, store, lines, ship, freeShipping = false, subto
   const error = validateShipping({ ...config, mode: config.mode || 'flat' });
   if (error) return failure(error);
   const subtotalCents = Math.round(subtotal * 100);
-  const itemCount = (lines || []).reduce((sum, l) => sum + (l.kind === 'bundle' ? (l.components || []).reduce((n, c) => n + Number(c.qty), 0) : Number(l.qty)), 0);
+  const itemCount = (lines || []).reduce((sum, line) => sum + (
+    line.kind === 'bundle'
+      ? (line.components || []).reduce((count, component) => count + Number(component.qty), 0)
+      : line.kind === 'combo'
+        ? (line.pieces || []).length
+        : Number(line.qty)
+  ), 0);
   freeShipping = !!freeShipping || (config.free_over_cents != null && subtotalCents >= config.free_over_cents);
   if (config.mode !== 'ups_live') {
     const amount = ruleShipping(config, store.flat_shipping, subtotalCents, itemCount, freeShipping);
