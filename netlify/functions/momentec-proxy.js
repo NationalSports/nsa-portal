@@ -17,7 +17,7 @@ const BASE_URL = 'https://www.momentecbrands.com';
 // Momentec /v2 API (order submission, inventory) — a different host from the HCL
 // storefront above. Onboarding/test orders go to STAGE; production to prod. env
 // defaults to 'stage' so an accidental call can't place a real production order.
-const { verifyUser } = require('./_shared');
+const { verifyUserOrInternal: verifyUser } = require('./_shared');
 const V2_HOSTS = {
   stage: 'https://stage-api.momentecbrands.com',
   prod:  'https://api.momentecbrands.com',
@@ -42,6 +42,10 @@ exports.handler = async (event) => {
     if (!Array.isArray(payload.items) || payload.items.length === 0) {
       return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Momentec order payload missing items.' }) };
     }
+    const { guardAllSchoolVendorRequest } = require('./_allSchoolVendorGuard');
+    const guard = await guardAllSchoolVendorRequest({vendor:'Momentec',poNumber:payload.poNum,token:payload._allSchoolSubmissionToken});
+    if (!guard.ok) return {statusCode:guard.statusCode,body:JSON.stringify({error:guard.error})};
+    delete payload._allSchoolSubmissionToken;
     // Inject credentials server-side — never trust client-supplied creds.
     payload.credentials = { logonId, password };
     try {

@@ -4,7 +4,7 @@ import {
   allocateUnreflectedPayments, classifyInvoiceDuplicate, classifySourceInvoice,
   cardFeeDriftEligible, cardFeeLineUpdate, CARD_FEE_DESCRIPTION, invoiceResyncUpdate, invoiceStillSettling, buildInvoiceLines,
   customerIdentityRisks, invoiceNumberForms, linkedInvoiceTotalDrift, normalizeInvoiceNumber,
-  paymentIdentity, paymentReference, writeAllowed,
+  paymentIdentity, paymentReference, writeAllowed, taxPlan,
 } from '../../supabase/functions/qbo-sales-background/logic';
 
 const root=path.join(__dirname,'..','..');
@@ -116,7 +116,7 @@ describe('held records carry diagnosable evidence',()=>{
     expect(edge).toContain("review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift,cc_fee:money(invoice.cc_fee)})");
   });
   test('payments for a drifted invoice are suppressed so one alert explains the cause',()=>{
-    expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id)))continue;');
+    expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id))||atOnceHeld.has(String(invoice.id)))continue;');
   });
   test('a refused payment records the amounts that refused it',()=>{
     expect(edge).toContain("code:'payment_amount_conflict',details:{payment_amount:candidate.amount,qbo_invoice_balance:balance");
@@ -251,7 +251,7 @@ describe('card-fee write is gated, fresh, and read back',()=>{
     expect(edge).toContain("if(feeDrift&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){");
   });
   test('built from a fresh QBO read taken under the invoice claim',()=>{
-    expect(edge).toMatch(/acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request\(`\/invoice\/\$\{candidate\.qboId\}`\)\)\.Invoice;\s*const update=cardFeeLineUpdate\(candidate\.invoice,fresh,String\(salesItem\.Id\)\);/);
+    expect(edge).toMatch(/acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request\(`\/invoice\/\$\{candidate\.qboId\}`\)\)\.Invoice;\s*const update=cardFeeLineUpdate\(candidate\.invoice,fresh,String\(String\(fresh.CustomerRef\?\.value\)===atOnceCustomerId\?atOnceItem.Id:salesItem.Id\)\);/);
   });
   test('payments are released only after QBO reads back the Portal total',()=>{
     expect(edge).toContain("if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)");
@@ -469,5 +469,23 @@ describe('received checks — accounting edge cases',()=>{
     expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],300)).toMatchObject({state:'match',foreignTotal:300});
     expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],0).state).toBe('conflict');
     expect(compareReceiptPayment({Line:[{Amount:5,LinkedTxn:[{TxnId:'7',TxnType:'CreditMemo'}]}]},[],100).state).toBe('conflict');
+  });
+});
+
+
+describe('individual checkout tax jurisdiction',()=>{
+  test('uses the order jurisdiction before the school customer address',()=>{
+    const invoice={total:124.25,tax:8.25,shipping:8,tax_rate:0,tax_state:'CA'};
+    const plan=taxPlan(invoice,{shipping_state:'WA'});
+    expect(plan.state).toBe('CA');
+    const lines=buildInvoiceLines({invoice,description:'Paid store checkout',salesItemId:'sales',taxItemId:'ca-tax',plan});
+    expect(lines.reduce((sum,line)=>sum+line.Amount,0)).toBeCloseTo(124.25,2);
+    expect(lines.find(line=>line.SalesItemLineDetail?.ItemRef.value==='ca-tax').Amount).toBe(8.25);
+  });
+  test('existing invoices still use the customer address',()=>{
+    expect(taxPlan({total:108,tax:8},{shipping_state:'CA'}).state).toBe('CA');
+  });
+  test('an unsupported checkout jurisdiction cannot silently fall back to the school',()=>{
+    expect(()=>taxPlan({total:108,tax:8,tax_state:'ZZ'},{shipping_state:'CA'})).toThrow('unmapped_tax_state');
   });
 });

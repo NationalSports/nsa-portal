@@ -4,6 +4,10 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './tra
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
   expect(b.purchasing.enabled).toBe(false); expect(b.purchasing.minimum_cents).toBe(20000); expect(b.target_ship_days).toBe(14);
+  expect(b.production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: true } }).production.auto_release_enabled).toBe(true);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 'true' } }).production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 1 } }).production.auto_release_enabled).toBe(false);
   expect(normalizeAllSchoolSettings({ dtf: { supplier_id: 'Astra' } }).dtf).toEqual({ supplier_id: 'Astra', auto_send: false });
   expect(normalizeAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch' } }).first_logo_by_style).toEqual({ hoodie: 'arch' });
   expect(validateAllSchoolSettings(b)).toBe('');
@@ -127,4 +131,11 @@ describe('normal visual art choices', () => {
     expect(() => visualLogoCopies(rows, rows, entries.slice(1))).toThrow('every color');
     expect(() => visualLogoCopies(rows, rows, entries.map((r) => ({ ...r, image_url: null })))).toThrow('blank garment');
   });
+});
+
+it('production allowance is separate and cannot silently become zero or accept invalid days', () => {
+  expect(normalizeAllSchoolSettings({}).production.business_days).toBeNull();
+  expect(validateAllSchoolSettings({ production: { business_days: 4 } })).toBe('');
+  expect(validateAllSchoolSettings({ production: { business_days: -1 } })).toMatch(/Production allowance/);
+  expect(validateAllSchoolSettings({ production: { business_days: 2.5 } })).toMatch(/Production allowance/);
 });

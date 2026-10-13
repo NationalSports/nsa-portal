@@ -418,7 +418,7 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
   ].filter(Boolean).join('\n');
 }
 
-async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt, editPrompt }) {
+async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt, editPrompt, quality = 'high' }) {
   const config = getOpenAiConfig();
   if (!config.key) throw new Error('OpenAI image generation is not configured');
   const prompt = editPrompt || buildEditPrompt(product, decorations, analysis, settings, storeArt);
@@ -429,7 +429,8 @@ async function generateWithOpenAI({ product, decorations, images, analysis, sett
   form.append('model', config.model);
   form.append('prompt', prompt);
   form.append('size', '1024x1024');
-  form.append('quality', 'high');
+  if (!['high','medium'].includes(quality)) throw new Error('Unsupported Showcase image quality');
+  form.append('quality', quality);
   form.append('output_format', 'png');
   form.append('n', '1');
   const res = await fetch(OPENAI_IMAGE_URL, {
@@ -446,6 +447,8 @@ async function generateWithOpenAI({ product, decorations, images, analysis, sett
     contentType: 'image/png',
     model: config.model,
     providerJobId: payload.id || null,
+    quality,
+    usage: payload.usage || null,
     prompt,
   };
 }

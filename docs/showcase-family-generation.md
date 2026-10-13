@@ -1,94 +1,140 @@
-# Shared Showcase garments
+# Showcase generation by color and design
 
-Store Appearance groups active catalog rows by supplier, brand and style SKU,
-stripping only a matching full color suffix. Explicit school/style grouping is a
-fallback; product names are never used as identity. This combines legacy rows
-with the same supplier style without merging unrelated garments.
+The catalog UI still groups supplier styles, colors and designs together. The
+worker uses a separate finished image for each actual product/color. It no longer
+uses a green shared master, color sampling, texture reconstruction, AI placement
+quads, strand tracing, or automatic visual-placement rejection.
 
-Each base-item job makes at most one OpenAI edit for a blank master garment.
-The master uses green main fabric so the renderer can separate fabric from the
-white background, manufacturer marks and hardware. Kimi identifies clean fabric
-patches in each original supplier photo; Sharp samples their actual sRGB pixels.
-The renderer transfers the sampled color onto the master's shading. Fine heather
-uses high-frequency texture from a supplier patch. This is a photographic color
-reference, not a calibrated measurement of physical cloth.
+## Image flow
 
-Exact transparent logo files are reused, fitted to their original aspect ratios
-on mapped garment planes. Artwork hue comes from the original sRGB file, independent of garment RGB. New renders apply bounded neutral lighting (90–106%) and subtle simulated raised-finish relief, without substituting a different ink palette. Source texture and alpha edges are retained. Placement
-planes are shared across colors and designs with matching saved coordinates.
-Drawstrings and narrow zippers use curved centerlines with per-point widths, with anti-aliased boundaries. Broad polygon cutouts and ordinary fold occlusion are rejected in new jobs. Traces are limited to 2.5% of image width and require human review against the garment. Source artwork uses premultiplied bilinear sampling to avoid jagged enlarged detail edges. Raised finishes receive subtle relief at alpha boundaries while keeping source hues independent of garment color. Brand
-marks and neutral background pixels are protected from recoloring.
+1. Fetch the actual color's blank supplier photo, with existing SanMar recovery
+   and store-local supplier-photo overrides.
+2. Composite the assigned exact artwork onto the supplier photo using its saved
+   editor position in a contain-fitted 1000 × 1250 frame. This reference has no
+   AI geometry transfer and no synthesized decoration detail.
+3. Create the first finished image in that color at high quality: natural matte
+   lighting, restrained athletic volume, slight hero turn, hood down.
+   Women's items receive explicit natural shoulder, bust, waist and hip guidance
+   for invisible support while preserving the supplier's actual cut and ease.
+   This applies to new color images; cached images keep their existing silhouette
+   until a pose revision creates a replacement.
+4. Cache this finished image by product and color. For each additional design,
+   pass that same original color image, the new decorated supplier reference,
+   the actual blank supplier photo, and exact artwork to an image edit at medium
+   quality. Ask to change only customer decoration and preserve the garment.
+   Never chain an edit's output into the next edit.
+5. Return candidates for human approval. Existing approved images remain in use
+   until approval. The whole generated image is the review surface; no automatic
+   detail crop claims exact production stitching or placement.
 
-Complex patterned or contrasting-panel products, differing manufacturer-mark
-colors, green brand marks that overlap the master masking color, unreliable mappings, missing artwork/placements and missing supplier
-photos fail clearly. These cases need separate rendering support; the pipeline
-does not silently substitute guessed colors or branding. All outputs require
-human comparison of color, texture, construction, marks and decoration placement.
-The mapper and master generator remain probabilistic; tests do not establish
-production visual quality.
+Image editing is generative: the preservation instructions are not a guarantee
+of unchanged pixels. Compare exact artwork, placement, manufacturer marks,
+material, color, pose and lighting before approval.
 
-## Jobs and rollout
+## Cache and jobs
 
-The additive `showcase_family_jobs` migration must be applied before the UI is
-deployed. It adds a private RLS-enabled family cache plus service-role-only RPCs
-for atomic queue, claim, cache, finish and cancel/fail transitions. The existing
-per-combination assets and approval/publication contracts remain in place.
-Approved URLs survive regeneration. Stale/canceled workers cannot commit a
-partial set, and catalog changes prevent generation completion or approval.
-Old browser bundles are instructed to refresh instead of generating individual
-paid images. Already-queued legacy jobs can still finish or be canceled.
+Pipeline version: `showcase-color-design-v2`; renderer: `color-design-v1`.
+Old green masters are incompatible and cannot seed new color images.
+Color signatures include source photo, product, color, name and pose/review notes.
+Changing notes or replacing the supplier photo invalidates that color's seed.
+Changing a design/finish requests an edit against its matching color image.
 
-Generate whole item reuses a valid cached master. New base garment explicitly
-invalidates it and incurs another image edit. Analysis calls, storage and local
-rendering still have costs; no fixed total-price promise is made. Outputs and
-masters have immutable storage paths.
+Generate all queues one job per product/color and dispatches after every job is
+queued and the notification batch is marked pending. Each color retains the
+whole style's catalog guard, so later artwork/catalog edits block completion and
+approval. The existing per-image request guards preserve cancellation and prevent
+concurrent jobs from changing the same asset. Single-image jobs can reuse a color
+job's cache and touch only the selected combination. Failed initial color calls
+are not repeatedly retried for each design; other color jobs still proceed.
 
-## Verification
+The cache is per store and supplier family; product/color identity prevents
+cross-color reuse even when placeholder URLs are shared. Missing photos are
+skipped through existing recovery logic and explicit failure records.
 
-- Jest: grouped controls, expand/review behavior, existing Showcase tests.
-- Node renderer tests: actual decoded pixels, color sampling, mask/protected
-  pixels, logo-only changes and drawstring occlusion.
-- Postgres (PGlite): applied migration, service permissions, duplicate claims,
-  cancellation, atomic completion, preserved approvals, and an injected-provider
-  worker run producing 15 combinations with one master edit and zero further
-  edits on a cached rerender.
-- Isolated Netlify bundle: Supabase startup and Sharp native PNG processing.
+## Cost and observability
 
-Before merging, review a real provider-generated family in the deploy preview.
-Local testing uses injected provider responses; it does not spend live provider
-credits or certify Kimi's garment mapping.
+Every initial color image and every follow-up design edit is a paid image call.
+The first uses high quality; follow-up edits use medium quality. A smaller edit
+area alone does not imply a lower API bill. The direct Images API does not provide
+cached input billing merely because a reference is reused.
 
-## Decoration details
+QA records generation stage, requested quality, provider-reported usage when
+available, color, source color-image URL and human-review requirements. Full cost
+includes image/text input plus output; retries and reference sizes affect it.
+Do not claim measured savings without actual billed usage and accepted outputs.
 
-Each front decoration gets a square detail crop for each color/design row.
-The working canvas is 2048px (the master is resampled, not AI-regenerated), and
-original artwork is composited at that resolution. Detail crops reuse those exact
-finished pixels, with context around the mapped artwork and no crop upscaling.
-They add zero OpenAI image edits, but do add rendering and storage costs.
-Small placements that cannot yield a useful 160px crop fail for staff correction.
-This is a rendered preview, not evidence of real twill weave, stitch construction
-or production depth. Real finished-decoration photographs are needed to verify
-those properties. The storefront labels detail previews accordingly.
+For GPT Image 2, official documentation supports both high and medium quality and
+high-fidelity inputs automatically:
+https://developers.openai.com/api/docs/guides/image-generation
 
-Candidate detail metadata is stored in the same atomic job result as the hero
-(`qa_result.detail_images`). Approval copies it to `approved_detail_images` in the
-same guarded update as the approved hero URL. Rejection and regeneration preserve
-the old set; Use Standard clears both. Apply `showcase_decoration_details` before
-deploying this code. Existing approvals have no details until regeneration and
-review. Product detail controls follow the selected logo/color and never use an
-unapproved candidate; staff reviews the full image set in the comparison dialog.
+## Verification and release status
 
-New relief renders carry `qa_result.artwork_color_policy=source-hue-relief-v2`; older color-locked renders use `original-srgb-v1`.
-Older outputs can be regenerated using the cached base; this does not require
-purchasing a new garment master. Existing approved imagery remains unchanged
-until staff approves replacements. The relief and weave are simulations, not evidence of actual stitch construction.
+The Node fixtures exercise real PNG reference construction with mocked provider
+responses, multipart quality/usage handling, color isolation/cache reuse,
+cancellation, partial failures, batch queuing, and PGlite database transitions.
+The UI suites cover generation, review/revision, approval, and bulk actions.
+They do not establish real image quality or exact artwork preservation.
 
-The Appearance card reports generated, currently approved and awaiting-review counts separately. Regenerate whole item reuses the cached garment and produces new review candidates; saved older images do not change automatically. The review button opens the same modal as Before / After, with sticky close and approval controls.
+On 2026-10-11, six single-image in-app-browser cycles completed, each followed
+by a five-minute wait and inspection of the new request's actual result:
 
-## Athletic pose and mapping recovery
+- Black NKFD9889 with original Serra artwork and Serra Tail artwork rendered
+  successfully, but the compact, square silhouette read as youth/unisex.
+- Explicit women's form guidance plus adult-proportion review feedback produced
+  a longer, less square NKFD9889 torso with gentle waist definition. This is one
+  observed improvement, not proof that the default prompt always gets fit right.
+- A medium-quality refresh reused that revised high-quality color image. The
+  silhouette, pocket, cords and Swoosh looked stable, but the logo moved slightly
+  lower. Usage reported 1,756 output tokens versus 7,024 for high quality; billed
+  dollars per accepted image were not measured.
+- Team Anthracite CN9402, previously blocked by drawstring tracing, generated
+  successfully with visible heather, white cords, zipper and women's shape. Its
+  first artwork was undersized. A feedback revision brought the artwork closer
+  to the supplier reference's scale; exact artwork/placement remains unverified.
 
-Master pose version `athletic-hood-down-v2` restores fit-aware athletic volume, a restrained 10–12 degree turn and a chest-level camera. Hoodie hoods rest down behind the neck. The master signature includes the pose version, so the next generation replaces an older pose once instead of silently reusing it; subsequent renders reuse the new base. Existing approved images remain unchanged.
+The subsequent whole-item test generated all 12 NKFD9889 combinations together:
+four colors, each with three designs. One batch queued four concurrent color
+jobs, producing four high-quality color seeds and eight medium-quality edits.
+All 12 finished without generation errors and were individually inspected in
+Before/After and enlarged hero views after a five-minute wait.
 
-Mapping validates all protected polygons, drawstring traces and requested placement quads before rendering. Numeric string coordinates and explicit x/y objects normalize without changing units. Pixel/percentage coordinates, extra dimensions, missing placements and unsafe traces trigger one corrected analysis using the same image references. A second invalid response fails with an actionable retry message and retains the cached master. This retry does not purchase another master image.
+Within each color, the three designs retained visually consistent pose,
+silhouette, pockets, cuffs, fabric color, lighting and sleeve Swoosh. Different
+colors use independent seeds, so their pose and waist shaping are not identical.
+The first Royal block SERRA edit lost/darkened the artwork's white inner outline;
+one medium refresh against the same Royal seed visibly restored it. The charcoal
+set's supplier neck label is not visible; concealment versus omission remains
+unconfirmed. No exact pixel-preservation or production-artwork guarantee follows
+from this visual review.
 
-Comparison now receives explicit catalog identity and fit even when using the custom mapping prompt. Temporary chroma color, lowered hood and modest presentation changes are distinguished from actual construction changes. A rejected comparison gets one contextual recheck against the same images; confirmed mismatches remain blocked. Provider rejection details stay in diagnostic logs. Staff see an actionable replacement-base message without internal color or coordinate terminology.
+The second whole-item test generated all 12 Port & Co PC90H combinations under
+batch `e8f9bd52-f869-4148-b261-f966db452ba9`, started 07:12:09 UTC on October 11.
+Gold, Jet Black, Royal and White each produced three designs, with four high
+color seeds and eight medium design edits. All 12 finished by 07:14:53 UTC with
+no errors or retries. Each was inspected in Before/After and enlarged hero views
+after the five-minute wait. Within-color hood, drawstrings, pocket, cuffs,
+fabric, neck label and pose remained visually consistent. Expected lettering
+and artwork borders were visible. The prior Gold horizontal placement issue
+was not apparent. Logo scale varies between independent color seeds: Gold and
+Jet Black look smaller across the chest than their standard references. This
+remains a review flag; exact size, label lettering and artwork pixels were not
+verified. No code change was made for this additional data point.
+
+The third whole-item test generated all six women's CN9402 combinations under
+batch `dc34b59e-52dc-4e76-802d-cb66c7cb2397`, started 07:28:26 UTC on October 11.
+Team Black, Team Anthracite and Team Royal each produced two designs, with three
+high color seeds and three medium edits. All six finished by 07:30:39 UTC with
+no errors or additional retries, including Royal despite its prior missing-photo
+error. Each was inspected against the current supplier reference and enlarged
+after the five-minute wait. All six showed adult women's shoulder proportions,
+gentle waist shaping and full torso length, without obvious cropping or artificial
+cinching. Within each color the silhouette, zipper, white cords, pockets,
+heather, neck tag and Swoosh remained visually consistent. Serra script appears
+smaller than its standard reference, most noticeably on Black; this remains a
+review flag. Exact fit dimensions, decoration size and artwork pixels were not
+verified. No code change was made for this additional silhouette test.
+
+All new candidates remain in review. Nothing was approved or published. Keep
+PR #2509 draft: PC90H logo scale, the charcoal NKFD9889 neck-label detail, and
+CN9402 script scale and other styles/colors still need review. Successful generation and passing
+automated tests do not establish exact garment or artwork fidelity.

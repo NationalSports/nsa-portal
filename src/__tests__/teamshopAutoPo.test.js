@@ -483,7 +483,10 @@ describe('sweepDtf', () => {
   const dtfScript = (over = {}) => ({
     'teamshop_auto_po_settings.select': [{ data: [DTF_SETTING], error: null }],
     // recordDtfNeeds
-    'webstore_orders.select': [{ data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null }],
+    'webstore_orders.select': [
+      { data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null }, // record DTF needs
+      { data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null }, // purchasing eligibility
+    ],
     'so_jobs.select': [{ data: [{ so_id: 'SO-1', id: 'JOB-1', deco_type: 'dtf', total_units: 120, prod_status: 'hold' }], error: null }],
     'teamshop_dtf_print_needs.select': [
       { data: [], error: null }, // recordDtfNeeds exist-check: none yet
@@ -519,6 +522,56 @@ describe('sweepDtf', () => {
     expect(updates[0].payload.po_id).toBeUndefined();
     expect(updates[0].filters).toEqual(expect.arrayContaining([['eq', 'status', 'pending']])); // claim CAS
     expect(updates[1].payload).toMatchObject({ po_id: 'po-dtf' }); // links the PO after creation
+  });
+
+  test('Club-only DTF needs remain pending and never create or claim a PO', async () => {
+    const sb = fakeSb(dtfScript({
+      'webstore_orders.select': [
+        { data: [{ so_id: 'SO-CLUB', order_source: 'club' }], error: null },
+        { data: [], error: null },
+      ],
+      'so_jobs.select': [{ data: [{ so_id: 'SO-CLUB', id: 'JOB-C', deco_type: 'dtf', total_units: 120, prod_status: 'hold' }], error: null }],
+      'teamshop_dtf_print_needs.select': [
+        { data: [], error: null },
+        { data: [{ id: 8, so_id: 'SO-CLUB', job_id: 'JOB-C', qty: 120, created_at: new Date().toISOString() }], error: null },
+      ],
+    }));
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r).toMatchObject({ ok: true, batched: false, reason: 'no_pending' });
+    expect(sb.calls.filter((c) => c.op === 'rpc' && c.table === 'create_purchase_order')).toHaveLength(0);
+    expect(sb.calls.filter((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs')).toHaveLength(0);
+    expect(sb.calls.find((c) => c.table === 'teamshop_dtf_print_needs' && c.op === 'upsert').payload[0]).toMatchObject({ so_id: 'SO-CLUB', status: 'pending' });
+  });
+
+  test('mixed Team Shop and Club pending needs batch Team Shop quantities only', async () => {
+    const sb = fakeSb(dtfScript({
+      'teamshop_auto_po_settings.select': [{ data: [{ ...DTF_SETTING, threshold_qty: 50 }], error: null }],
+      'webstore_orders.select': [
+        { data: [{ so_id: 'SO-TS', order_source: 'teamshop' }, { so_id: 'SO-CLUB', order_source: 'club' }], error: null },
+        { data: [{ so_id: 'SO-TS', order_source: 'teamshop' }], error: null },
+      ],
+      'so_jobs.select': [{ data: [
+        { so_id: 'SO-TS', id: 'JOB-TS', deco_type: 'dtf', total_units: 60, prod_status: 'hold' },
+        { so_id: 'SO-CLUB', id: 'JOB-CLUB', deco_type: 'dtf', total_units: 120, prod_status: 'hold' },
+      ], error: null }],
+      'teamshop_dtf_print_needs.select': [
+        { data: [], error: null },
+        { data: [
+          { id: 5, so_id: 'SO-TS', job_id: 'JOB-TS', qty: 60, created_at: new Date().toISOString() },
+          { id: 8, so_id: 'SO-CLUB', job_id: 'JOB-CLUB', qty: 120, created_at: new Date().toISOString() },
+        ], error: null },
+      ],
+      'teamshop_dtf_print_needs.upsert': [{ data: null, error: null }],
+      'teamshop_dtf_print_needs.update': [{ data: [{ id: 5, so_id: 'SO-TS', job_id: 'JOB-TS', qty: 60 }], error: null }, { data: [{ id: 5 }], error: null }],
+    }));
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r).toMatchObject({ ok: true, batched: true, reason: 'threshold', total_prints: 60 });
+    const pendingQuery = sb.calls.find((c) => c.table === 'teamshop_dtf_print_needs' && c.op === 'select' && c.filters.some((f) => f[0] === 'eq' && f[1] === 'status' && f[2] === 'pending'));
+    expect(pendingQuery.filters).toEqual(expect.arrayContaining([['in', 'so_id', ['SO-TS']]]));
+    const rpc = sb.calls.find((c) => c.op === 'rpc' && c.table === 'create_purchase_order');
+    expect(rpc.payload.p_lines).toEqual([expect.objectContaining({ so_id: 'SO-TS', qty: 60, meta: { job_id: 'JOB-TS', deco_type: 'dtf' } })]);
+    const claim = sb.calls.find((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs');
+    expect(claim.filters).toEqual(expect.arrayContaining([['in', 'id', [5]]]));
   });
 
   test('below threshold → holds, creates no PO', async () => {

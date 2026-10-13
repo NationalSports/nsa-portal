@@ -19,7 +19,26 @@ function summarizeAssets(rows, requestIds) {
   return summary;
 }
 
-function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl }) {
+function finishedBatchItems(assets, families, batchId) {
+  const items = new Map();
+  for (const family of families || []) {
+    if (family.inputs?.notification_batch_id !== batchId) continue;
+    const members = new Map((family.inputs.members || []).map(m=>[m.webstore_product_id,m]));
+    for (const asset of assets || []) {
+      if (asset.generation_request_id !== family.request_id || !['review','approved'].includes(asset.status)) continue;
+      const member = members.get(asset.webstore_product_id);
+      if (!member) continue;
+      const name = member.name || member.sku || asset.product_id || 'Store item';
+      if (!items.has(name)) items.set(name,{name,colors:new Set(),count:0});
+      const item = items.get(name);
+      item.count++;
+      if (member.color) item.colors.add(member.color);
+    }
+  }
+  return [...items.values()].map(item=>({...item,colors:[...item.colors]}));
+}
+
+function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl, finishedItems = [] }) {
   const hasFailures = summary.failed > 0;
   const subject = hasFailures
     ? `Showcase generation ${summary.review || summary.approved ? 'partially completed' : 'failed'} — ${store.name}`
@@ -30,6 +49,8 @@ function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl }) {
   const failureLine = hasFailures
     ? `<p style="margin:8px 0 0;color:#b91c1c"><strong>${summary.failed}</strong> product${summary.failed === 1 ? '' : 's'} failed to generate and may need to be retried.</p>`
     : '';
+  const itemList = finishedItems.length ? `<h3 style="font-size:15px;margin:18px 0 8px">Finished items</h3><ul style="padding-left:20px;margin:0">${finishedItems.map(item=>
+    `<li style="margin:6px 0"><strong>${esc(item.name)}</strong>${item.colors?.length ? ` — ${item.colors.map(esc).join(', ')}` : ''} (${item.count} image${item.count===1?'':'s'})</li>`).join('')}</ul>` : '';
   const html = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:0 auto;color:#1e293b">
     <div style="background:#0f172a;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0">
       <div style="font-size:11px;letter-spacing:1.4px;text-transform:uppercase;opacity:.75">National Sports Apparel</div>
@@ -40,6 +61,7 @@ function buildShowcaseReviewEmail({ store, rep, summary, reviewUrl }) {
       <p style="margin:0 0 8px">Showcase image generation for <strong>${esc(store.name)}</strong> ${hasFailures ? 'did not finish successfully for every image.' : 'has finished.'}</p>
       <p style="margin:0">${reviewLine}</p>
       ${failureLine}
+      ${itemList}
       <a href="${esc(reviewUrl)}" style="display:inline-block;margin-top:20px;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">Review Showcase images</a>
       <p style="font-size:12px;color:#64748b;line-height:1.5;margin:18px 0 0">Every image must be approved before it can replace the Standard product image for shoppers.</p>
     </div>
@@ -101,7 +123,7 @@ async function notifyShowcaseReady(admin, storeId, portalBase) {
   try {
     const [{ data: rep, error: repError }, { data: assets, error: assetsError }, {data: families, error: familiesError}] = await Promise.all([
       admin.from('team_members').select('id,name,email,is_active').eq('id', store.rep_id).maybeSingle(),
-      admin.from('webstore_showcase_assets').select('status,approval_status,generation_request_id').eq('store_id', storeId),
+      admin.from('webstore_showcase_assets').select('webstore_product_id,product_id,status,approval_status,generation_request_id').eq('store_id', storeId),
       admin.from('webstore_showcase_families').select('request_id,inputs').eq('store_id',storeId),
     ]);
     if (repError) throw new Error(repError.message);
@@ -124,7 +146,8 @@ async function notifyShowcaseReady(admin, storeId, portalBase) {
     const reviewUrl = `${base.origin}/?pg=webstores&store=${encodeURIComponent(store.id)}&tab=appearance`;
     const requestIds = (families || []).filter(f => f.inputs?.notification_batch_id === batchId).map(f => f.request_id);
     const summary = summarizeAssets(assets, requestIds.length ? requestIds : undefined);
-    const email = buildShowcaseReviewEmail({ store, rep, summary, reviewUrl });
+    const finishedItems = finishedBatchItems(assets,families,batchId);
+    const email = buildShowcaseReviewEmail({ store, rep, summary, reviewUrl, finishedItems });
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
@@ -177,6 +200,7 @@ async function notifyShowcaseReady(admin, storeId, portalBase) {
 }
 
 module.exports = {
+  finishedBatchItems,
   summarizeAssets,
   buildShowcaseReviewEmail,
   markShowcaseBatchPending,

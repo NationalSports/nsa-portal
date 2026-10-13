@@ -1,7 +1,9 @@
 // Shared by SHIP_NOTIFY and the staff status-check endpoint. Only exact SO
 // numbers are accepted; webstore orders retain their separate notification path.
 const normalized = value => String(value || '').trim().toLowerCase();
-const isSoNumber = value => /^SO-\d+$/.test(String(value || ''));
+// At-Once orders use the numeric checkout order number. Accept the earlier
+// 247 prefix too so existing linked orders retain shipment sync.
+const isSoNumber = value => /^(?:SO-\d+|247-\d+|\d+)$/.test(String(value || ''));
 
 function mergeShipment(shipments, shipment) {
   if (!Array.isArray(shipments)) throw new Error('Invalid saved shipment list');

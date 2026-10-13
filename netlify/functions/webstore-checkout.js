@@ -1,3 +1,4 @@
+const { loadItemEstimates } = require('./_webstoreItemEstimates');
 const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
 // Server-side storefront checkout — the browser never decides a price again.
 //
@@ -1393,7 +1394,8 @@ async function trackOrder(sb, body) {
       else console.error('[webstore-checkout] shipment tracker repair failed:', repair.id, repairError.message);
     }
   }
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: publicStoreRow((sRows && sRows[0]) || null), items: items || [], shipments: shipments || [], messages }) };
+  const itemEstimates = await loadItemEstimates(sb, order, sRows && sRows[0], items);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: publicStoreRow((sRows && sRows[0]) || null), items: items || [], shipments: shipments || [], messages, item_estimates: itemEstimates }) };
 }
 
 // Load one order's customer↔staff thread, sanitized for the public portal. Only

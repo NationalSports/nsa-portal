@@ -1,6 +1,8 @@
+const { addBusinessDays } = require('../../src/lib/businessDates.shared');
 // Server-only adapter. The purchasing worker owns the durable claim/state machine;
 // this module will send once only after that worker returns a claimed PO header.
 // An ambiguous response is always unknown, never a signal to retry or send email.
+const { buildMomentecOrderPayload } = require('../../src/lib/momentecOrder.shared');
 const crypto = require('crypto');
 const { buildSanMarPOPayload } = require('../../src/lib/sanmarPO.shared');
 const { buildSSOrderPayload } = require('../../src/lib/ssOrder.shared');
@@ -26,9 +28,10 @@ function normalizeShipTo(value = {}) {
   };
 }
 
-function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.env } = {}) {
+function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, momentecHandler, env = process.env } = {}) {
   const sm = sanmarHandler || require('./sanmar-proxy').handler;
   const ss = ssHandler || require('./ss-proxy').handler;
+  const mt = momentecHandler || require('./momentec-proxy').handler;
   const secret = () => env.INTERNAL_FUNCTION_SECRET || env.SUPABASE_SERVICE_ROLE_KEY;
   async function invoke(handler, queryStringParameters, body, method = 'POST') {
     const response = await handler({ httpMethod: method, queryStringParameters,
@@ -48,15 +51,16 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
 
   async function resolveVendorPurchaseOrder({ purchaseOrder, lines, shipTo } = {}) {
     const po = purchaseOrder || {};
-    if (!['SanMar', 'S&S Activewear'].includes(po.vendor)) return held('This supplier does not support automatic API purchasing');
+    if (!['SanMar', 'S&S Activewear', 'Momentec'].includes(po.vendor)) return held('This supplier does not support automatic API purchasing');
     const externalPoNumber = String(po.po_number || '').trim();
     if (!externalPoNumber || externalPoNumber.length > 28 || /[\r\n,]/.test(externalPoNumber)) return held('A stable valid external PO reference is required');
     if (!secret()) return held('Internal supplier authentication is not configured');
     if (po.vendor === 'SanMar' && (!env.SANMAR_USERNAME || !env.SANMAR_PASSWORD)) return held('SanMar purchasing credentials are not configured');
     if (po.vendor === 'S&S Activewear' && (!env.SS_ACCOUNT_NUMBER || !env.SS_API_KEY)) return held('S&S purchasing credentials are not configured');
+    if (po.vendor === 'Momentec' && (!env.MOMENTEC_LOGON_ID || !env.MOMENTEC_PASSWORD)) return held('Momentec purchasing credentials are not configured');
     const expectedAccount = po.vendor === 'SanMar'
       ? String(env.SANMAR_CUSTOMER_NUMBER || String(env.SANMAR_USERNAME || '').replace(/-.*$/, '')).trim()
-      : String(env.SS_ACCOUNT_NUMBER || '').trim();
+      : po.vendor === 'Momentec' ? String(env.MOMENTEC_LOGON_ID || '').trim() : String(env.SS_ACCOUNT_NUMBER || '').trim();
     if (po.supplier_account && String(po.supplier_account).trim() !== expectedAccount) return held('The configured purchasing account does not match this supplier connection');
     const ship = normalizeShipTo(shipTo || po.ship_to);
     if (!ship.companyName || !ship.address1 || !ship.city || !ship.region || !ship.postalCode || ship.country !== 'US') return held('A complete US supplier shipping address is required');
@@ -81,7 +85,7 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
         quantity: qty, unitPrice: cents / 100, uom: 'EA', description: [style, color, size].join(' ').replace(/,/g, ' '),
         sourceSO: row.so_id, sourcePO: po.id, sourceItemIdx: index,
         partId: String(meta.sanmar_part_id || meta._sanmar_partId || meta.partId || ''),
-        sku: String(meta.ss_sku || meta._ss_sku || ''),
+        sku: po.vendor === 'Momentec' ? String(meta.momentec_sku || '') : String(meta.ss_sku || meta._ss_sku || ''),
       });
     }
     if (new Set(sourceLines.map(l => l.style)).size > 20) return held('Split this purchase into at most 20 supplier styles');
@@ -99,7 +103,7 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
         sanmarGetProduct: (style, color = '', size = '') => lookupInvoke(sm, { service: 'product', action: 'getProductInfoByStyleColorSize' }, { style, color, size }),
         ssApiCall: (path) => lookupInvoke(ss, { path }, undefined, 'GET'),
       });
-      try { lookup = await (po.vendor === 'SanMar' ? resolvers.sanmarResolvePartIds(missing) : resolvers.ssResolveSkus(missing)); }
+      try { lookup = po.vendor === 'Momentec' ? await resolveMomentec(missing, design => lookupInvoke(mt,{service:'style',env:'prod'},{productOrDesignNumber:design})) : await (po.vendor === 'SanMar' ? resolvers.sanmarResolvePartIds(missing) : resolvers.ssResolveSkus(missing)); }
       catch (_) { return held('Supplier item lookup failed before purchasing'); }
       sourceLines.forEach(l => { if (!l[field] && lookup.resolved[l.key]) l[field] = lookup.resolved[l.key]; });
     }
@@ -108,6 +112,9 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
     if (po.vendor === 'SanMar') {
       payload = buildSanMarPOPayload({ poNumber: externalPoNumber, lineItems: sourceLines, shipTo: ship });
       vendorLines = payload.PO.lineItems;
+    } else if (po.vendor === 'Momentec') {
+      const built=buildMomentecOrderPayload({poNumber:externalPoNumber,lineItems:sourceLines,shipTo:ship});
+      payload=built.order; vendorLines=built.merged;
     } else {
       const built = buildSSOrderPayload({ poNumber: externalPoNumber, lineItems: sourceLines, shipTo: ship, testOrder: false });
       payload = { ...built.order, rejectLineErrors: true }; // automatic POs must not silently drop size lines
@@ -135,6 +142,14 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
           vendor_lines: resolved.vendor_lines, verified: false, confirmation: 'transaction',
         }; // The existing SanMar proxy offers transaction acknowledgement, no line readback.
       }
+      if (resolved.vendor === 'Momentec') {
+        const placed=await invoke(mt,{service:'order',env:'prod'},{...resolved.payload,_allSchoolSubmissionToken:po.submission_token});
+        if(!placed.orderId) return unknown('Momentec did not return an order ID');
+        const verified=await invoke(mt,{service:'order-details',env:'prod',ecomOrderId:String(placed.orderId)},undefined,'GET');
+        const actual=(verified.lines || []).map(l=>({sku:l.itemNumber,quantity:l.orderedQuantity}));
+        if(!verified.found || !exactVendorLineQuantities(resolved.vendor_lines,{lines:actual},l=>l.sku)) return unknown('Momentec quantities could not be verified; reconcile before reordering',{api_order_id:String(placed.orderId)});
+        return {ok:true,api_order_id:String(placed.orderId),vendor_lines:resolved.vendor_lines,verified:true,confirmation:'supplier-readback'};
+      }
       const placed = await invoke(ss, { path: '/orders' }, { ...resolved.payload, _allSchoolSubmissionToken: po.submission_token });
       const ids = records(placed).map(orderNumber).filter(Boolean);
       if (!ids.length) return unknown('S&S did not return a supplier order number');
@@ -145,8 +160,26 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
       if (!ids.every(id => orders.some(row => orderNumber(row) === id)) || !reconciliation.verified || !exactVendorLineQuantities(resolved.vendor_lines, orders, l => l.sku)) {
         return unknown('S&S acceptance could not be verified in full; reconcile this PO before any reorder', { api_order_id: ids.join(','), vendor_lines: resolved.vendor_lines });
       }
+      // Arrival metadata is best-effort AFTER acceptance. A lookup failure must
+      // never turn a confirmed purchase into an unknown outcome or a retry.
+      let vendorLines = resolved.vendor_lines;
+      try {
+        const zip = String(resolved.payload.shippingAddress?.zip || '').slice(0, 5);
+        if (/^\d{5}$/.test(zip) && orders.some(o => o.warehouseAbbr || o.WarehouseAbbr)) {
+          const response = await invoke(ss, { path: `/DaysInTransit/${zip}` }, undefined, 'GET');
+          const row = (Array.isArray(response) ? response : [response]).find(Boolean) || {};
+          const transit = Object.fromEntries((row.warehouses || row.Warehouses || []).map(w => [String(w.warehouseAbbr || w.WarehouseAbbr || '').toUpperCase(), w.daysInTransit ?? w.DaysInTransit]));
+          vendorLines = vendorLines.map(line => {
+            const shipments = orders.filter(o => (o.lines || o.Lines || []).some(l => String(l.sku || l.Sku || '').toUpperCase() === String(line.sku).toUpperCase()));
+            const warehouses = shipments.map(o => String(o.warehouseAbbr || o.WarehouseAbbr || '').toUpperCase());
+            const days = warehouses.map(w => transit[w] == null || transit[w] === '' ? null : Number(transit[w]));
+            const arrival = days.length && days.every(d => Number.isInteger(d) && d >= 0) ? addBusinessDays(new Date(), Math.max(...days)) : null;
+            return { ...line, estimated_arrival: arrival };
+          });
+        }
+      } catch (_) { /* keep the confirmed order without an arrival forecast */ }
       return { ok: true, api_order_id: ids.join(','), raw: { orderNumbers: ids, confirmation: 'supplier-readback' },
-        vendor_lines: resolved.vendor_lines, verified: true, confirmation: 'supplier-readback' };
+        vendor_lines: vendorLines, verified: true, confirmation: 'supplier-readback' };
     } catch (_) { return unknown('The supplier submission outcome is unknown; verify the external PO reference before any reorder'); }
   }
   async function submitVendorPurchaseOrder(args) {
@@ -156,3 +189,19 @@ function createVendorPurchaseAdapter({ sanmarHandler, ssHandler, env = process.e
   return { resolveVendorPurchaseOrder, submitResolvedVendorPurchaseOrder, submitVendorPurchaseOrder };
 }
 module.exports = { createVendorPurchaseAdapter, normalizeShipTo, ...createVendorPurchaseAdapter() };
+
+async function resolveMomentec(lines, lookup) {
+  const resolved={};
+  const norm=value=>{const s=String(value || '').toUpperCase().replace(/[\s._/-]/g,'');if(['OS','OSFA','OSFM','ONESIZE','OSZ','1SZ','UNI','UNIVERSAL'].includes(s)) return 'OS';const n=s.match(/^([2-6])XL?$/);return n ? n[1]+'X' : /^X{2,6}L$/.test(s) ? (s.length-1)+'X' : s;};
+  const designs=[...new Set(lines.map(l=>l.style.split('.')[0]))];
+  for(const design of designs) {
+    const data=await lookup(design);
+    const items=(data.productInfo || []).flatMap(p=>p.items || []);
+    for(const line of lines.filter(l=>l.style.split('.')[0]===design)) {
+      const matches=items.filter(it=>{const parts=String(it.SKU || '').split('.');return parts[0]===design && [String(it.colorName || '').trim().toLowerCase(),String(parts[1]).toLowerCase()].includes(line.color.trim().toLowerCase()) && norm(parts.slice(2).join('.'))===norm(line.size);});
+      const skus=[...new Set(matches.map(it=>it.SKU))];
+      if(skus.length===1) resolved[line.key]=skus[0];
+    }
+  }
+  return {resolved};
+}

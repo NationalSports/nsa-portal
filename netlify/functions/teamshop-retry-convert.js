@@ -42,7 +42,21 @@ async function retryConvert(admin, body) {
   const order = data && data[0];
   if (!order) return bad(404, 'Order not found');
   if (!RPC_BY_SOURCE[order.order_source]) return bad(409, 'Not a Team Shop, Club, or All School order.');
-  if (order.so_id) return ok({ ok: true, so_id: order.so_id, replayed: true });
+  const ensureNeedsLedger = async (soId) => {
+    if (!soId || !['paid','batched','po_verified'].includes(order.status)) return;
+    try {
+      await require('./teamshop-auto-po').generateForSoSafe(admin, soId, 'teamshop-retry-convert', 'teamshop-retry-convert');
+    } catch (e) {
+      console.error('[teamshop-retry-convert] needs-ledger generation error:', e.message);
+    }
+  };
+  if (order.so_id) {
+    // Heal the post-conversion gap too: conversion may have committed while
+    // the needs-ledger hook failed. The generator is idempotent, and for Club
+    // it records backorder review rows without creating supplier POs.
+    await ensureNeedsLedger(order.so_id);
+    return ok({ ok: true, so_id: order.so_id, replayed: true });
+  }
   if (!RETRYABLE_STATUSES.includes(order.status)) return bad(409, `Order is not ready to convert (status: ${order.status}).`);
 
   const rpcName = RPC_BY_SOURCE[order.order_source];
@@ -55,18 +69,12 @@ async function retryConvert(admin, body) {
     return bad(502, rpc.error.message);
   }
 
-  // Auto-PO generation mirrors every other teamshop conversion call site
-  // (checkout/webhook/po-review) — teamshop only; club orders never trigger it
-  // at any other call site either (traced: stripe-webhook's club branch does
-  // not call generateForSoSafe), so this doesn't either.
+  // Record the same post-conversion needs ledger as the checkout / webhook
+  // call sites. Club generation is ledger-only: teamshop-auto-po explicitly
+  // skips Club supplier PO creation and stamps shortages club_review, so this
+  // retry does not place or draft a supplier order.
   const soId = rpc.data && rpc.data.so_id;
-  if (soId && ['teamshop','all_school'].includes(order.order_source)) {
-    try {
-      await require('./teamshop-auto-po').generateForSoSafe(admin, soId, 'teamshop-retry-convert', 'teamshop-retry-convert');
-    } catch (e) {
-      console.error('[teamshop-retry-convert] auto-PO generation error:', e.message);
-    }
-  }
+  await ensureNeedsLedger(soId);
   return ok({ ok: true, ...(rpc.data || {}) });
 }
 
