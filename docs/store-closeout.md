@@ -12,12 +12,12 @@ Paid store invoices earn new commissions only after both closeout and cost confi
 
 ## Rollout and verification
 
-Apply `20261011065626_store_closeout.sql` before deploying the endpoint/UI. It backfills reminders, not financial closeouts or payments. Child-only cost/item/job edits invalidate the SO review version and serialize with closeout. The automatic Club and All School converters defer their former invoice blocks so paid-order conversion still succeeds. It protects against old browser tabs creating store invoices/payments through the former paths. Existing integrity monitoring is updated to require invoices only for closed stores. This PR does not deploy the migration or change production accounting.
+Apply `20261011065626_store_closeout.sql`, then `20261012205048_store_closeout_review.sql`, before deploying the endpoint/UI. It backfills reminders, not financial closeouts or payments. Child-only cost/item/job edits invalidate the SO review version and serialize with closeout. The automatic Club and All School converters defer their former invoice blocks so paid-order conversion still succeeds. It protects against old browser tabs creating store invoices/payments through the former paths. Existing integrity monitoring is updated to require invoices only for closed stores. This PR does not deploy the migration or change production accounting.
 
 Targeted unit tests:
 
 ```sh
-CI=true npm test -- --env=node --runInBand src/__tests__/storeCloseout.test.js src/__tests__/closeStoreHandler.test.js src/__tests__/commissionSnapshots.test.js src/__tests__/webstoreBatchFinalization.characterization.test.js src/__tests__/omgCreationGuard.test.js
+CI=true npm test -- --runInBand src/__tests__/storeCloseoutReview.test.js src/__tests__/storeCloseout.test.js src/__tests__/closeStoreHandler.test.js src/__tests__/commissionSnapshots.test.js src/__tests__/webstoreBatchFinalization.characterization.test.js src/__tests__/omgCreationGuard.test.js
 ```
 
 Isolated PostgreSQL regression test (install `@electric-sql/pglite` in a temporary directory, then point at its module):
@@ -40,3 +40,13 @@ October 12 staging database/API results and the schema-baseline repair are recor
 
 
 The October 12 final browser review exercised the actual local React app and Close Store handler against hosted isolated Supabase Auth/PostgREST, including OMG/webstore payment application, confirmation cancellation, reload persistence, both editor closed states, commission totals and HTTP retry protection. Details and the remaining hosted-deployment/QBO-export limits are in `store-closeout-audit.md`. No production deployment is included in this PR review.
+
+## Rep review and outside decorators
+
+Five weeks (35 calendar days from SO creation) triggers the rep review, never automatic invoicing, payment application, store closure, or commission release. The Close Store review lists every blocking production job by name, ID and status. A stuck/error job must be resolved or its status corrected after verifying fulfillment; the review cannot override it.
+
+Each outside decorator/vendor group requires shipment-to-families confirmation, final costs confirmation, and a shipment/bill reference. Multiple groups, mixed inside/outside work, drop shipments, no-job direct fulfillment, partial shipments and replacement/rework costs remain subject to those confirmations. Outside artwork preparation is excluded from garment fulfillment groups. Checking one decorator does not satisfy another.
+
+An incomplete review can be saved with a note and next-check date, assigned to the active SO rep. It reopens the same task instead of creating duplicates. The next-check date survives later SO/job saves. An inactive or missing rep must be corrected before a follow-up can be saved. Completing a todo never closes accounting or releases commissions. Changed saved order/vendor/job details invalidate previous confirmations.
+
+Only a fully confirmed Close Store reconciles accounting. Existing payment/revenue safeguards still apply, and an accounting conflict leaves an actionable follow-up with no partial invoice/payment commit. Commission eligibility requires the paid invoice and completed cost-confirmed closeout; this does not issue a commission payment. The new review evidence table is service-only with RLS and no browser policies. Evidence stores the latest review, not a full review-history ledger.

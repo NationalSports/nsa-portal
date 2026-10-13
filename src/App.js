@@ -1,3 +1,4 @@
+import StoreCloseoutReview from './StoreCloseoutReview';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
@@ -15786,20 +15787,24 @@ export default function App(){
     const total=Math.round((sub+ship)*100)/100;
     return {line_items:lineItems,total,shipping:ship};
   };
+  const [storeCloseoutReview,setStoreCloseoutReview]=useState(null);
   const closeStoreLocks=useRef(new Set());
-  const closeStore=async so=>{
+  const closeStore=async (so,reviewSubmission=null)=>{
     if(!so||!supabase||(!so.omg_store_id&&!so.webstore_id))return null;
     if(!acquireOmgCreationGuard(closeStoreLocks.current,so.id))return null;
     try{
-      if(dirtyRef.current||_dbSavePendingIds.has(so.id)||_dbSaveFailedIds.has(so.id)||[so._itemsHydrated,so._posHydrated,so._decosHydrated,so._jobsHydrated].includes(false)){
-        nf('Save the sales order and wait for saving to finish before Close Store.','error');return null;
-      }
-      if(!window.confirm('Close Store — '+so.id+'?\n\nConfirm every item has shipped to families and ALL costs are recorded, including garments, decoration, freight and platform fees. Existing store payments will be applied automatically. Any duplicate or ambiguous accounting will stop closeout.'))return null;
+      const savePending=dirtyRef.current||_dbSavePendingIds.has(so.id)||_dbSaveFailedIds.has(so.id)||[so._itemsHydrated,so._posHydrated,so._decosHydrated,so._jobsHydrated].includes(false);
+      if(reviewSubmission?.action==='close'&&savePending)throw new Error('Save the sales order and wait for saving to finish before Close Store.');
       const{data:session}=await supabase.auth.getSession();
-      const response=await fetch('/.netlify/functions/close-store',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session?.session?.access_token||'')},body:JSON.stringify({soId:so.id,version:Number(so._version),costsRecorded:true,shipped:true,invoice:so.omg_store_id?buildOmgCloseoutInvoice(so):null})});
+      const response=await fetch('/.netlify/functions/close-store',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session?.session?.access_token||'')},body:JSON.stringify({soId:so.id,version:Number(reviewSubmission?.action==='follow_up'?reviewSubmission.version:so._version),action:reviewSubmission?.action||'inspect',review:reviewSubmission,invoice:reviewSubmission?.action==='close'&&so.omg_store_id?buildOmgCloseoutInvoice(so):null})});
       const result=await response.json();
+      if(result.todo){stageDocumentBaseline(_dbSnap,'assignedTodos',result.todo);setAssignedTodos(prev=>prev.some(t=>t.id===result.todo.id)?prev.map(t=>t.id===result.todo.id?result.todo:t):[result.todo,...prev])}
       if(!response.ok||!result.ok)throw new Error(result.error||'Closeout was not confirmed. Reload before retrying.');
+      if(!reviewSubmission)return new Promise(resolve=>{setStoreCloseoutReview(previous=>{previous?.resolve(null);return {so,status:{...result.review_status,save_pending:savePending},resolve}})});
+      if(result.follow_up_saved){storeCloseoutReview?.resolve(null);setStoreCloseoutReview(null);nf('Review saved. Rep follow-up assigned; store remains open.');return null}
+      setStoreCloseoutReview(null);
       const updated={...so,...result.sales_order};
+      storeCloseoutReview?.resolve(updated);
       const inv={...result.invoice,payments:result.payments,_paymentsHydrated:true};
       stageDocumentBaseline(_dbSnap,'sos',updated);
       stageDocumentBaseline(_dbSnap,'invs',inv);
@@ -15812,7 +15817,7 @@ export default function App(){
       }
       nf('Store closed — costs confirmed and existing payments reconciled'+(Number(inv.total)>Number(inv.paid)?'. Remaining balance: $'+(Number(inv.total)-Number(inv.paid)).toFixed(2):'.'));
       return updated;
-    }catch(e){nf(e.message||'Close Store failed; reload before retrying.','error');return null}
+    }catch(e){if(reviewSubmission)throw e;nf(e.message||'Close Store failed; reload before retrying.','error');return null}
     finally{closeStoreLocks.current.delete(so.id)}
   };
   const createAndSettleOmgInvoice=so=>closeStore(so);
@@ -39053,6 +39058,7 @@ export default function App(){
       <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setNeedByAsk(null)}>Cancel</button><button className="btn btn-primary" disabled={!_ok} onClick={_go}>{needByAsk.kind==='convert'?'Convert to sales order':'Create sales order'}</button></div>
     </div></div>})()}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
+    {storeCloseoutReview&&<StoreCloseoutReview key={storeCloseoutReview.status.token} status={storeCloseoutReview.status} onCancel={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null)}} onJobs={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null);setESOTab('jobs')}} onSubmit={review=>closeStore(storeCloseoutReview.so,review)}/>}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
       <div className="modal-body">

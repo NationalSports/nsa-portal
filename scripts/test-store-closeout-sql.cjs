@@ -179,6 +179,7 @@ assert.equal((await db.query("select store_closed_at from sales_orders where id=
 await db.exec('set role authenticated');await assert.rejects(close('D'),/permission denied/);
 await assert.rejects(db.exec("update sales_orders set store_closed_at=now() where id='D'"),/Use Close Store/);
 console.log('Passed: deferred accounting, due date, unfinished jobs, stale version, cost/shipment confirmation, atomic close, repeated close/batch, legacy reuse, duplicate invoices, unapplied receipts, permissions and commission gate.');
+await require('./pgtest/store_closeout_review.cjs')(db);
 if(db.newConnection)await require('./pgtest/store_closeout_concurrency.cjs')(db);
 await db.close();
 })().catch(e=>{console.error(e);process.exitCode=1});

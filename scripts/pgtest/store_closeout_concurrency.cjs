@@ -37,13 +37,16 @@ module.exports=async db=>{
   const rpcClient=cs[2];const sandbox={exports:{},require:name=>{
    assert.equal(name,'./_shared');return {
     verifyUser:async()=>({ok:true,teamMemberId:'rep'}),
-    getSupabaseAdmin:()=>({rpc:async(name,p)=>{assert.equal(name,'close_store');try{return{data:await call(rpcClient,p.p_so_id,p.p_expected_version)}}catch(e){return{error:{message:e.message}}}}})
+    getSupabaseAdmin:()=>({rpc:async(name,p)=>{assert.equal(name,'review_store_closeout');try{return{data:(await rpcClient.query('select review_store_closeout($1,$2,$3,$4,$5,$6) r',[p.p_so_id,p.p_actor_id,p.p_action,p.p_expected_version,p.p_review,p.p_invoice])).rows[0].r}}catch(e){return{error:{message:e.message}}}}})
    };
   }};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../../netlify/functions/close-store.js'),'utf8'),sandbox);
-  const event={httpMethod:'POST',body:JSON.stringify({soId:'HTTP-RETRY',version:hv,costsRecorded:true,shipped:true,invoice:draft})};
+  const status=(await rpcClient.query("select store_closeout_status('HTTP-RETRY') r")).rows[0].r;
+  const review={token:status.token,confirmations:{shipped:true,costs:true,outside:{direct:{shipped:true,costs:true,evidence:'Family delivery and final vendor costs verified'}}}};
+  const event={httpMethod:'POST',body:JSON.stringify({soId:'HTTP-RETRY',version:hv,review,invoice:draft})};
   // Pretend the first committed response was lost; the caller resends its old version.
   assert.equal((await sandbox.exports.handler(event)).statusCode,200);
+  const retries=await Promise.all(Array.from({length:8},()=>sandbox.exports.handler(event)));assert(retries.every(r=>r.statusCode===200));
   const retry=await sandbox.exports.handler(event);assert.equal(retry.statusCode,200);assert(JSON.parse(retry.body).already_closed);
   assert.equal((await db.query("select count(*)::int n from invoice_payments where ref='OMG HTTP-RETRY'")).rows[0].n,1);
   console.log('Passed real PG concurrency: 8 same-store requests; cross-store source collision; stale child-edit race; Netlify handler dropped-response retry (stubbed auth).');
