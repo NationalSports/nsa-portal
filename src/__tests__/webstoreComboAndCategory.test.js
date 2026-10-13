@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import React, { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
@@ -9,6 +11,7 @@ import {
   withComboConfig,
 } from '../lib/webstoreItemOptions.shared';
 import { ComboSizeEditor } from '../Webstores';
+import { productCategory } from '../storefront/Storefront';
 
 describe('webstore combo item configuration', () => {
   test('adds required top and bottom size choices without disturbing regular options', () => {
@@ -68,5 +71,18 @@ describe('webstore combo item configuration', () => {
     expect(screen.getByText(/Sales Order split: Top \$84\.00 · Bottom \$56\.00/)).toBeTruthy();
     expect(document.body.textContent).toContain('SKU TOP · 1 decoration');
     expect(document.body.textContent).toContain('SKU BOTTOM · 1 decoration');
+  });
+});
+
+describe('uncategorized storefront items', () => {
+  test('normalizes missing listing category to the visible Other section', () => {
+    expect(productCategory({ category: null, store_category: null })).toBe('Other');
+    expect(productCategory({ category: 'Catalog only', store_category: null })).toBe('Other');
+    expect(productCategory({ category: 'Catalog', store_category: 'Spirit Wear' })).toBe('Spirit Wear');
+  });
+
+  test('admin editor warns when no category is selected', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'Webstores.js'), 'utf8');
+    expect(source).toContain('No category selected. Shoppers will find this item under “Other.”');
   });
 });

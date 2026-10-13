@@ -785,12 +785,10 @@ function storeShortName(name) {
   return n || raw;
 }
 
-// Reps can curate a storefront-specific category, but older/live stores often
-// only carry the catalog category. Both are shopper-facing labels, so the
-// varsity category cards use the curated value first and gracefully fall back
-// to the catalog value instead of disappearing entirely.
-function productCategory(product) {
-  return String((product && (product.store_category || product.category)) || '').trim();
+// Store sections are curated per listing. An unset listing category must remain
+// visible without silently inheriting the catalog product's internal category.
+export function productCategory(product) {
+  return String((product && product.store_category) || '').trim() || 'Other';
 }
 
 // The reference header is built around a short school name ("Cal Poly
@@ -1589,7 +1587,7 @@ export function Card({ store, theme, p, colorRows = [], bundleItems = [], compIn
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(cardRow, theme);
-  const catLabel = (p.store_category || p.category || '').trim();
+  const catLabel = productCategory(p);
   const vs = theme.varsity;
   // Varsity badges selectively, like the design: a plain in-stock item carries no
   // tag, so the only tags on the grid are the ones that change a decision
@@ -1902,7 +1900,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   return (
     <div className="sf-purchase-page" style={{ paddingTop: 24 }}>
       {theme.varsity
-        ? <VsCrumbs store={store} theme={theme} category={[p.store_category, p.category].filter(Boolean)[0] || ''} name={p.name} onCat={onCat} />
+        ? <VsCrumbs store={store} theme={theme} category={productCategory(p)} name={p.name} onCat={onCat} />
         : <BackLink store={store} theme={theme} />}
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
@@ -1919,7 +1917,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
           {activeDetail && <p style={{fontSize:12,color:theme.subText,textAlign:'center'}}>Rendered decoration preview. Actual fabric and stitching may vary.</p>}
         </div>
         <div ref={detailsSection} style={{ paddingTop: 4 }}>
-          <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{[p.store_category, p.category].filter(Boolean)[0] || 'Team Gear'}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{productCategory(p)}</div>
           <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(32px,4vw,48px)', margin: '0 0 12px', letterSpacing: 0.2, lineHeight: 0.96, textTransform: 'uppercase', color: theme.varsity ? theme.band : theme.ink }}>{p.name}</h1>
           {theme.varsity && <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, margin: '0 0 20px' }} />}
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3, color: theme.varsity ? theme.band : theme.primary }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: theme.subText, fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>

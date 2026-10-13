@@ -8925,6 +8925,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
               <datalist id={catListId}>{categorySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
+              {!category.trim() && <div role="alert" style={{ marginTop: 6, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, padding: '6px 8px', fontSize: 11.5 }}>No category selected. Shoppers will find this item under “Other.”</div>}
             </Row>
             <Row label="Part of a kit / package">
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
