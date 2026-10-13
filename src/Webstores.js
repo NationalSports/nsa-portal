@@ -55,7 +55,7 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
-import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise } from './lib/webstoreOrderMoney';
+import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise, refundOwed } from './lib/webstoreOrderMoney';
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
@@ -14522,7 +14522,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
                 <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
-                <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
+                <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{refundOwed(o) > 0 && <div title="Items were removed after payment but the card hasn't been refunded. Open the order to refund." style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: '#b91c1c', borderRadius: 4, padding: '1px 5px', marginTop: 2, display: 'inline-block' }}>Refund owed {money(refundOwed(o))}</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
                 <td style={td}>{o.so_id ? (
@@ -14643,7 +14643,10 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
     unit_price: Number(i.unit_price) || 0, unit_fundraise: Number(i.unit_fundraise) || 0,
   })).filter((i) => i.item_id && i.qty > 0);
   const [rows, setRows] = useState(initRows);
-  const [refundAmt, setRefundAmt] = useState('');
+  // Money already owed back on this order from an earlier cancel that was never
+  // refunded — read from the saved order, so it survives closing and reopening.
+  const owedOnFile = refundOwed(order);
+  const [refundAmt, setRefundAmt] = useState(() => (owedOnFile > 0 ? owedOnFile.toFixed(2) : ''));
   const [busy, setBusy] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   // Amount a completed save left owed back to the buyer. Held separately from the
@@ -14706,7 +14709,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   // just-completed save left standing.
   useEffect(() => {
     if (savedOwed > 0) return;
-    setRefundAmt(hasChanges && owed > 0.005 ? owed.toFixed(2) : '');
+    setRefundAmt(hasChanges && owed > 0.005 ? owed.toFixed(2) : (owedOnFile > 0 ? owedOnFile.toFixed(2) : ''));
   }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-sync the editable rows whenever the saved order comes back from the reload, so
@@ -14777,8 +14780,18 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
 
   const sectionLabel = { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 10 };
 
+  // Cancel and refund are two saves, so the refund can't be allowed to slip away
+  // quietly: whatever is still owed (this session's save, or an older cancel that
+  // was never refunded) stays on screen, and closing with money owed asks first.
+  const outstanding = owedOnFile > 0.005 ? owedOnFile : savedOwed;
+  const startRefund = () => { setRefundAmt(outstanding.toFixed(2)); setComposeOpen(true); };
+  const tryClose = () => {
+    if (outstanding > 0.005 && !window.confirm(`${money(outstanding)} is still owed back to ${order.buyer_name || order.buyer_email || 'this buyer'}.\n\nClose without refunding? The order will stay flagged "Refund owed".`)) return;
+    onClose();
+  };
+
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflow: 'auto' }}>
+    <div onClick={tryClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflow: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 580, width: '100%', marginTop: 24, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.25)' }}>
 
         {/* Header */}
@@ -14794,10 +14807,19 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               {Number(order.refunded_amt) > 0 && <span style={{ color: '#b45309' }}> · {money(order.refunded_amt)} refunded</span>}
             </div>
           </div>
-          <button onClick={onClose} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'grid', placeItems: 'center', lineHeight: 1 }}>×</button>
+          <button onClick={tryClose} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'grid', placeItems: 'center', lineHeight: 1 }}>×</button>
         </div>
 
         <div style={{ padding: '18px 20px' }}>
+          {outstanding > 0.005 && !fullyRefunded && (
+            <div role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', background: '#fef2f2', border: '2px solid #fca5a5', borderRadius: 10, padding: '12px 14px', marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: '#7f1d1d', lineHeight: 1.45 }}>
+                <div style={{ fontWeight: 800, fontSize: 14 }}>Refund owed: {money(outstanding)}</div>
+                Items were removed from this paid order, but the buyer’s card hasn’t been refunded yet.
+              </div>
+              <button className="btn btn-primary" disabled={busy} onClick={startRefund} style={{ background: '#b91c1c', borderColor: '#b91c1c', whiteSpace: 'nowrap' }}>Refund {money(outstanding)} now</button>
+            </div>
+          )}
           {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>⚠️ Batched into SO <b>{order.so_id}</b> — adjust that SO too if needed.</div>}
           {fullyRefunded && <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>Fully refunded — item history is locked.</div>}
 
@@ -14855,9 +14877,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               reductions open the same review automatically after a successful save. */}
           <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
             <div style={sectionLabel}>Refund</div>
-            {savedOwed > 0.005 && (
+            {outstanding > 0.005 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 13 }}>
-                <span>Items saved. <b>{money(savedOwed)}</b> is still owed back — issue the refund below.</span>
+                <span>Items saved. <b>{money(outstanding)}</b> is still owed back — issue the refund below.</span>
               </div>
             )}
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
@@ -14941,7 +14963,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                 {pendingRefundItems.some((i) => Number(selectedRefundItems[i.item_id]) > 0) && <div style={{ marginTop: 5, fontWeight: 700 }}>The refund ledger will retain the selected SKU, size, player, and quantity.</div>}
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button className="btn btn-secondary" disabled={busy} onClick={() => setComposeOpen(false)}>Cancel</button>
+                <button className="btn btn-secondary" disabled={busy} onClick={() => setComposeOpen(false)}>{outstanding > 0.005 ? 'Not now' : 'Cancel'}</button>
                 <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>
                   {busy ? 'Sending…' : order.buyer_email ? `Send & refund ${money(Number(refundAmt) || 0)}` : `Refund ${money(Number(refundAmt) || 0)}`}
                 </button>

@@ -9,6 +9,10 @@
 //   * its store is still open (no point nudging after close);
 //   * the same buyer hasn't placed a live order in that store since (a retry
 //     that went through), and hasn't already been reminded for that store;
+//   * nobody has since placed an order at that store for the same PLAYER —
+//     families often retry under a second parent's name and email, and the
+//     player's name is what ties the two checkouts together (an amount match
+//     isn't enough: a popular pack has the same price for every family);
 //   * Stripe confirms the payment genuinely never happened. A bank (ACH) debit
 //     stays pending_payment for days while it settles — those parents DID pay
 //     and must never be told otherwise — so only an intent still waiting for a
@@ -29,7 +33,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Pure decision for one pending order, given its store and that store's other
 // orders from the same buyer. Returns a skip reason, or null when it qualifies
 // (the Stripe check happens after).
-function skipReason(order, store, sameBuyerOrders, now) {
+const normPlayer = (n) => String(n || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+function skipReason(order, store, sameBuyerOrders, now, samePlayerOrders = []) {
   if (order.status !== 'pending_payment' || order.payment_mode !== 'paid') return 'not-pending-card';
   if (order.payment_reminder_sent_at) return 'already-reminded';
   if (!order.buyer_email || !EMAIL_RE.test(order.buyer_email)) return 'no-email';
@@ -43,7 +49,28 @@ function skipReason(order, store, sameBuyerOrders, now) {
     if (!LIVE_EXCLUDE.has(o.status) && new Date(o.created_at).getTime() >= since) return 'bought-since';
     if (o.payment_reminder_sent_at) return 'buyer-already-reminded';
   }
+  // samePlayerOrders: this store's orders that share a player name with this one.
+  for (const o of samePlayerOrders) {
+    if (o.id === order.id || LIVE_EXCLUDE.has(o.status)) continue;
+    if (new Date(o.created_at).getTime() >= since) return 'same-player-ordered-since';
+  }
   return null;
+}
+
+// This store's live orders (placed since an hour before this one) that carry any of
+// the same player names as this stalled checkout.
+async function samePlayerOrders(sb, order) {
+  const { data: mine } = await sb.from('webstore_order_items').select('player_name').eq('order_id', order.id);
+  const names = new Set((mine || []).map((i) => normPlayer(i.player_name)).filter(Boolean));
+  if (!names.size) return [];
+  const { data: recent } = await sb.from('webstore_orders').select('id,status,created_at')
+    .eq('store_id', order.store_id).neq('id', order.id)
+    .gte('created_at', new Date(new Date(order.created_at).getTime() - 3600000).toISOString());
+  const live = (recent || []).filter((o) => !LIVE_EXCLUDE.has(o.status));
+  if (!live.length) return [];
+  const { data: items } = await sb.from('webstore_order_items').select('order_id,player_name').in('order_id', live.map((o) => o.id));
+  const hit = new Set((items || []).filter((i) => names.has(normPlayer(i.player_name))).map((i) => i.order_id));
+  return live.filter((o) => hit.has(o.id));
 }
 
 exports.handler = async () => {
@@ -73,7 +100,8 @@ exports.handler = async () => {
     if (handled.has(key)) { skipped['duplicate-in-run'] = (skipped['duplicate-in-run'] || 0) + 1; continue; }
     const { data: sameBuyer } = await sb.from('webstore_orders').select(cols)
       .eq('store_id', order.store_id).ilike('buyer_email', String(order.buyer_email || '').replace(/[%_\\]/g, '\\$&'));
-    const reason = skipReason(order, storeById[order.store_id], sameBuyer || [], now);
+    const samePlayer = await samePlayerOrders(sb, order);
+    const reason = skipReason(order, storeById[order.store_id], sameBuyer || [], now, samePlayer);
     if (reason) { skipped[reason] = (skipped[reason] || 0) + 1; continue; }
     let pi;
     try { pi = await stripe(sk).paymentIntents.retrieve(order.stripe_pi_id); }
@@ -91,4 +119,4 @@ exports.handler = async () => {
   return { statusCode: 200, body: `Sent ${sent}` };
 };
 
-exports._test = { skipReason };
+exports._test = { skipReason, samePlayerOrders };

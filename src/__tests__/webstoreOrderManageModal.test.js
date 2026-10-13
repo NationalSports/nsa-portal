@@ -110,3 +110,49 @@ test('a team-tab order may increase quantity because no settled card amount is b
   fireEvent.click(save);
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
 });
+
+describe('a cancel that was never refunded stays in front of the rep', () => {
+  const cancelledLeftOwed = {
+    order: { total: 0, original_total: 30, refunded_amt: 0 },
+    item: { qty: 0, cancelled_qty: 1, refunded_qty: 0, line_status: 'cancelled' },
+  };
+
+  test('reopening the order shows the amount owed and a one-click refund', async () => {
+    await renderModal(cancelledLeftOwed);
+    expect(screen.getByText('Refund owed: $30.00')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Refund $30.00 now' }));
+    expect(screen.getByRole('button', { name: /Send & refund \$30\.00/ })).toBeTruthy();
+    // Dismissing the review keeps the flag up rather than dropping the money owed.
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    expect(screen.getByText('Refund owed: $30.00')).toBeTruthy();
+  });
+
+  test('closing with money owed asks first, and staying keeps the modal open', async () => {
+    const onClose = jest.fn();
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    await act(async () => {
+      render(<OrderManageModal order={{ ...baseOrder, ...cancelledLeftOwed.order }} items={[{ ...baseItem, ...cancelledLeftOwed.item }]}
+        availSizes={{}} nameByPid={{}} storeName="Test Store" onSave={jest.fn()} onRefund={jest.fn()} onClose={onClose} />);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('$30.00 is still owed back to Test Buyer'));
+    expect(onClose).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    expect(onClose).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  test('a fully settled order closes without asking', async () => {
+    const onClose = jest.fn();
+    const confirm = jest.spyOn(window, 'confirm');
+    await act(async () => {
+      render(<OrderManageModal order={baseOrder} items={[baseItem]} availSizes={{}} nameByPid={{}} storeName="Test Store" onSave={jest.fn()} onRefund={jest.fn()} onClose={onClose} />);
+    });
+    expect(screen.queryByText(/Refund owed/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+});
