@@ -10,7 +10,7 @@ import {
   isComboItem,
   withComboConfig,
 } from '../lib/webstoreItemOptions.shared';
-import { ComboSizeEditor } from '../Webstores';
+import { ComboSizeEditor, webstoreLineDecorations } from '../Webstores';
 import { productCategory } from '../storefront/Storefront';
 
 describe('webstore combo item configuration', () => {
@@ -51,6 +51,8 @@ describe('webstore combo item configuration', () => {
       .toEqual({ top: 84, bottom: 56 });
     expect(allocateComboPrice(99.99, { pieces: { top: {}, bottom: {} } }, { top: 1, bottom: 1 }))
       .toEqual({ top: 50, bottom: 49.99 });
+    expect(allocateComboPrice(100, { pieces: { top: {}, bottom: {} } }, { top: null, bottom: 20 }).error)
+      .toMatch(/blank costs/i);
   });
 
   test('admin can enable a combo and link independently decorated top and bottom items', () => {
@@ -71,6 +73,19 @@ describe('webstore combo item configuration', () => {
     expect(screen.getByText(/Sales Order split: Top \$84\.00 · Bottom \$56\.00/)).toBeTruthy();
     expect(document.body.textContent).toContain('SKU TOP · 1 decoration');
     expect(document.body.textContent).toContain('SKU BOTTOM · 1 decoration');
+  });
+
+  test('batching uses each combo child recipe instead of other listings for the same blank', () => {
+    const exact = [{ art_id: 'selected-child-logo', placement: 'left_chest' }];
+    const mergedCatalogDecorations = { 'same-product': [{ art_id: 'wrong-logo' }, { art_id: 'selected-child-logo' }] };
+
+    expect(webstoreLineDecorations({
+      product_id: 'same-product',
+      variant_label: 'Combo top',
+      production_recipe: { decorations: exact },
+    }, mergedCatalogDecorations)).toEqual(exact);
+    expect(webstoreLineDecorations({ product_id: 'same-product' }, mergedCatalogDecorations))
+      .toEqual(mergedCatalogDecorations['same-product']);
   });
 });
 

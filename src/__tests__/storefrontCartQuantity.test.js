@@ -40,6 +40,7 @@ describe('storefront cart quantity controls', () => {
 
   test('packs and personalized items remain fixed at one', () => {
     expect(isFixedCartQty({ kind: 'bundle' })).toBe(true);
+    expect(isFixedCartQty({ kind: 'single', option_selections: [{ purpose: 'combo_top_size', value: 'M' }, { purpose: 'combo_bottom_size', value: 'L' }] })).toBe(true);
     expect(isFixedCartQty({ kind: 'single', player_number: '12' })).toBe(true);
     expect(isFixedCartQty({ kind: 'single', player_name: 'KOISSIAN' })).toBe(true);
   });

@@ -89,6 +89,21 @@ describe('server-authoritative UPS checkout rates', () => {
     expect((await cartWeightOz(ambiguous, store, [{ ...bundleLines[0], components: [{ product_id: 'p1', qty: 2 }] }])).error).toMatch(/ambiguous/i);
   });
 
+  test('combo rates count and weigh both linked garments, never the parent listing', async () => {
+    const top = { id: 'top-wp', product_id: 'top-product', sku: 'TOP', weight_oz: 20 };
+    const bottom = { id: 'bottom-wp', product_id: 'bottom-product', sku: 'BOTTOM', weight_oz: 16 };
+    const combo = [{ kind: 'combo', wp: { id: 'combo', weight_oz: 12 }, qty: 1, pieces: [
+      { wp: top, product_id: top.product_id, sku: top.sku, size: 'M' },
+      { wp: bottom, product_id: bottom.product_id, sku: bottom.sku, size: 'L' },
+    ] }];
+    const comboDb = fakeSb({ webstore_products: { data: [top, bottom], error: null } });
+
+    expect(await cartWeightOz(comboDb, store, combo)).toEqual({ weight_oz: 36 });
+    const itemCountShipping = { mode: 'item_count', tiers: [{ from: 0, amount_cents: 300 }, { from: 2, amount_cents: 600 }] };
+    const flat = { ...store, all_school_settings: { shipping: itemCountShipping }, shipping_settings: itemCountShipping };
+    expect(await quoteShipping(comboDb, flat, combo, ship)).toMatchObject({ amount: 6, quote: { item_count: 2 } });
+  });
+
   test('quote endpoint uses live rates and checkout re-rates before any write, rejecting changed totals', async () => {
     const cart = [{ webstore_product_id: 'wp1', qty: 3 }];
     const quote = await checkout.quoteTotals(db(), { storeSlug: 'school', cart, ship });

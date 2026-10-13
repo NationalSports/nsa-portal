@@ -68,8 +68,11 @@ const allocateComboPrice = (price, config, costs = {}) => {
     if (setCents < 0 || setCents > totalCents) return { error: 'A combo price share cannot exceed the combo price.' };
     topCents = topSet ? setCents : totalCents - setCents;
   } else {
-    const topCost = Math.max(0, Number(costs.top) || 0);
-    const bottomCost = Math.max(0, Number(costs.bottom) || 0);
+    const topKnown = costs.top !== null && costs.top !== undefined && costs.top !== '' && Number.isFinite(Number(costs.top));
+    const bottomKnown = costs.bottom !== null && costs.bottom !== undefined && costs.bottom !== '' && Number.isFinite(Number(costs.bottom));
+    if (!topKnown || !bottomKnown) return { error: 'Enter price shares or add blank costs to both linked items.' };
+    const topCost = Math.max(0, Number(costs.top));
+    const bottomCost = Math.max(0, Number(costs.bottom));
     const totalCost = topCost + bottomCost;
     topCents = totalCost > 0 ? Math.round(totalCents * topCost / totalCost) : Math.round(totalCents / 2);
   }

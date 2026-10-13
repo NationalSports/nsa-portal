@@ -117,6 +117,12 @@ export const webstoreDirtyPatch = (original, payload, dirtyFields) => [...dirtyF
     return patch;
   }, {});
 
+export const webstoreLineDecorations = (line, decorationsByKey = {}) => (
+  /^Combo (top|bottom)$/i.test(line?.variant_label || '') && Array.isArray(line?.production_recipe?.decorations)
+    ? line.production_recipe.decorations
+    : (decorationsByKey[line?.product_id] || decorationsByKey[line?.sku] || [])
+);
+
 const webstoreChangedElsewhere = (original, latest) => {
   const keys = new Set([...Object.keys(original || {}), ...Object.keys(latest || {})]);
   keys.delete('updated_at');
@@ -4005,7 +4011,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       lines.forEach((i) => {
         if (!selIds.has(i.order_id)) return;
         const seen = new Set();
-        (decosByKey[i.product_id] || decosByKey[i.sku] || []).forEach((d) => {
+        webstoreLineDecorations(i, decosByKey).forEach((d) => {
           const k = d.art_id || d.art_url; if (!k || seen.has(k)) return; seen.add(k);
           units[k] = (units[k] || 0) + (i.qty || 1);
           if (!meta[k]) { const lib = d.art_id ? artById[d.art_id] : null; meta[k] = { key: k, name: (lib && lib.name) || 'Store logo', method: (lib && lib.deco_type) || 'screen_print', img: d.art_url || (lib && lib.web_logo_url) || '' }; }
@@ -4146,16 +4152,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // from the money collected; a separate line per price makes every qty × rate exact,
       // so the SO, its print and the batch invoice tie to the cent.
       const unitCollected = r2(collectedForLine(i) / q);
+      const lineDecorations = webstoreLineDecorations(i, decosByKey);
       const baseKey = webstoreProductionKey({
         sku: source.sku,
         color: sourceColor,
         vendorId: source.vendor_id,
-        decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
+        decorations: lineDecorations,
         personalize: personalize[sourcePid] || {},
         transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
       });
       const key = baseKey + '§$' + unitCollected.toFixed(2);
-      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, decorations: lineDecorations, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[key];
       const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
@@ -4243,7 +4250,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: 0, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
-      (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {
+      (g.decorations || []).forEach((d) => {
         const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
         const lib = d.art_id ? artById[d.art_id] : null;
         // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
@@ -4306,7 +4313,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
       const catalogMatches = (detail.catalog || []).filter(c => sourcePid ? c.product_id === sourcePid : c.sku === item.sku);
-      const placed = [...new Map((decosByKey[sourcePid] || decosByKey[g.sku] || []).map(d => [placeKey(d), d])).values()];
+      const placed = [...new Map((g.decorations || []).map(d => [placeKey(d), d])).values()];
       storeMockSources.push({ item, product: sourceInfo, catalog: catalogMatches.length === 1 ? catalogMatches[0] : {}, decorations: placed,
         ambiguous: catalogMatches.length > 1, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
       return item;
@@ -8099,7 +8106,7 @@ export function ComboSizeEditor({ item, options, catalog = [], stockByWp = {}, c
   const parse = (value) => cleanSizeList(String(value || '').split(','));
   const candidates = (catalog || []).filter((row) => row.kind === 'single' && row.id !== item.id && !isComboItem(row.options));
   const rowFor = (role) => candidates.find((row) => row.id === pieces[role]?.webstore_product_id);
-  const costs = { top: Number(costByPid[rowFor('top')?.product_id]) || 0, bottom: Number(costByPid[rowFor('bottom')?.product_id]) || 0 };
+  const costs = { top: costByPid[rowFor('top')?.product_id], bottom: costByPid[rowFor('bottom')?.product_id] };
   const allocation = allocateComboPrice(price, config, costs);
   const configError = comboConfigError(options, price, costs);
   const setConfig = (next) => onChange(withComboConfig(options, true, next));
@@ -8719,8 +8726,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       const topRow = (catalog || []).find((row) => row.id === cfg?.pieces?.top?.webstore_product_id);
       const bottomRow = (catalog || []).find((row) => row.id === cfg?.pieces?.bottom?.webstore_product_id);
       const error = comboConfigError(cleanOptions, price, {
-        top: Number(costByPid[topRow?.product_id]) || 0,
-        bottom: Number(costByPid[bottomRow?.product_id]) || 0,
+        top: costByPid[topRow?.product_id],
+        bottom: costByPid[bottomRow?.product_id],
       });
       if (error) { window.alert('Combo setup: ' + error); return; }
     }
@@ -9071,7 +9078,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           {offeredSizes.length > 0 && sizeList.some((s) => !offeredSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {sizeList.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
           {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
         </ItemSection>}
-        <ComboSizeEditor item={item} options={options} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} defaultSizes={offeredSizes.length ? offeredSizes : sizeList} price={price} onChange={setOptions} onEnabled={(enabled) => { if (enabled) setTrackInv(false); }} onEditItem={onEditItem} />
+        <ComboSizeEditor item={item} options={options} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} defaultSizes={offeredSizes.length ? offeredSizes : sizeList} price={price} onChange={setOptions} onEnabled={(enabled) => { if (enabled) { setTrackInv(false); setTakesNumber(false); setTakesName(false); } }} onEditItem={onEditItem} />
         {inventoryBacked && (
           <ItemSection title="Inventory tracking" hint="· turn off for custom / made-to-order items">
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: comboItem ? 'not-allowed' : 'pointer', opacity: comboItem ? 0.65 : 1 }}>

@@ -271,6 +271,26 @@ describe('combo top and bottom sizes', () => {
     expect(priced.lines[0].pieces.map((piece) => piece.unit_price)).toEqual([84, 56]);
     expect(priced.lines[0].pieces.reduce((sum, piece) => sum + piece.unit_price, 0)).toBe(140);
   });
+
+  test('legacy parent personalization flags cannot add charges or disappear into combo children', async () => {
+    const legacyParent = { ...wp, takes_name: true, takes_number: true, name_upcharge: 25 };
+    const legacySb = fakeSb({
+      webstore_products: { data: [legacyParent, topWp, bottomWp], error: null },
+      products: { data: [
+        { id: 'top-product', sku: 'TOP', name: 'Sweatshirt', nsa_cost: 30 },
+        { id: 'bottom-product', sku: 'BOTTOM', name: 'Sweatpants', nsa_cost: 20 },
+      ], error: null },
+      webstore_storefront_products: { data: [{ webstore_product_id: wp.id, size_upcharges: {} }], error: null },
+    });
+    const priced = await checkout.priceCart(legacySb, { id: 'store-1' }, [{
+      webstore_product_id: wp.id, player_name: 'SMITH', player_number: '12',
+      option_selections: [{ id: 'combo-top-size', value: 'M' }, { id: 'combo-bottom-size', value: 'L' }],
+    }]);
+    const saved = checkout.buildOrderItems(priced.lines, null);
+
+    expect(priced.subtotal).toBe(140);
+    expect(saved).toMatchObject([{ player_name: null, player_number: null }, { player_name: null, player_number: null }]);
+  });
 });
 
 describe('couponDiscount — percent only', () => {
