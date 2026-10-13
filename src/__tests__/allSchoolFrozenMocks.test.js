@@ -61,3 +61,20 @@ test('unbatched drafts use bought imagery and changed bought spelling appears in
   expect(packetPrintHtml(packet)).not.toContain('https://example.com/current.png');
   expect(packet.ready).toBe(false);
 });
+
+test('24/7 v2 DTF packet uses the reviewed frozen stock specification and keeps private file paths private',()=>{
+ const data=fixture(),item=data.salesOrders[0].items[0],r=item.recipe_snapshot;
+ r.version=2;r.takes_name=false;r.takes_number=false;
+ const file={bucket:'all-school-art',path:'PRIVATE/black.ai',name:'black.ai',sha256:'a'.repeat(64)};
+ const variant={id:'black-v2',reviewed:true,knockout_color:'Black removed',production_file:file};
+ r.decorations=[{art_id:'crest',dtf_variant_id:variant.id,transfer_code:'dtf-crest-black-v2',side:'front',placement:'left_chest',art_url:'https://example.com/black-knockout.png'}];
+ r.art_files=[{id:'crest',dtf_variants:[variant]}];
+ r.transfer_inventory=[{code:'dtf-crest-black-v2',kind:'design',decoration_type:'dtf',width_in:4,height_in:3,production_file:file,artwork_version:variant.id}];
+ item.decorations=[{kind:'art',type:'dtf',position:'Left Chest',placement:'left_chest',transfer_code:'dtf-crest-black-v2'}];data.salesOrders[0].art_files=[];
+ const packet=buildProductionPacket(data);expect(packet.ready).toBe(true);
+ expect(packet.garments[0].frozenMocks[0]).toMatchObject({recipeVersion:2,approved:true});
+ expect(packet.decorations[0]).toMatchObject({dimensions:'4 × 3 in',specReady:true});
+ expect(packetPrintHtml(packet)).toContain('Black removed');expect(packetPrintHtml(packet)).toContain('dtf-crest-black-v2');
+ expect(JSON.stringify(packet)).not.toContain('PRIVATE');
+ variant.reviewed=false;expect(buildProductionPacket(data).ready).toBe(false);
+});

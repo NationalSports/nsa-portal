@@ -21,7 +21,7 @@ function setup(overrides = {}) {
     supabase: {}, nf: jest.fn(), cust: [{ id: 'c', name: 'School' }], cu: { id: 'rep' }, invs: [], sos: [],
     _dbSnap: {current:{sos:[],ests:[]}}, stageDocumentBaseline,
     safeItems: o => o.items || [], safeSizes: it => it.sizes || {}, safeNum: n => Number(n) || 0,
-    nextSOId: () => 'SO-2851', _refetchEstimateForConvert: jest.fn(),
+    mintSOId: async () => 'SO-2851', _refetchEstimateForConvert: jest.fn(),
     _dbSaveSO: jest.fn(so => soSave.promise.then(result => { if (result !== false) so._version = 1; return result; })),
     _dbSaveEstimate: jest.fn(() => estimateSave.promise),
     createArtService: () => ({ syncConversion: jest.fn(() => artSync.promise) }), _loadArtRow: row => row,
@@ -66,6 +66,7 @@ test('a repeated convert click cannot start a second create while persistence is
   const t = setup();
   const pending = t.convert(t.estimate, '2026-11-01');
   const repeated = t.convert(t.estimate, '2026-11-01');
+  await settle(); // the SO number is minted asynchronously before the save starts
   expect(t.deps._dbSaveSO).toHaveBeenCalledTimes(1);
   t.soSave.resolve(true); t.estimateSave.resolve(true); t.artSync.resolve({ id: 'SO-2851', _version: 2, art_files: [] });
   await Promise.all([pending, repeated]);

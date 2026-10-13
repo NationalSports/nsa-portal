@@ -1,15 +1,17 @@
+import { artworkSetup } from './atOnceArtwork.shared';
 import { methodSetupError } from './methodReadiness.shared';
 import { DecoOverlay } from '../lib/decoOverlay';
 import PersonalizationOverlay from '../lib/personalizationOverlay';
 import React, { useState } from 'react';
 export const productionSetupError = (item, transfers = [], art = []) => {
-  const methodError = methodSetupError(item, transfers, art);
+  const checked = artworkSetup(item, transfers, art);
+  const methodError = checked.error || methodSetupError(checked.item, transfers, art);
   if (methodError) return methodError;
   return '';
 };
 export default function ProductionSetupReview({ item, stock, transfers, art, staffId, onSave, onClose }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  const blocked = productionSetupError(item, transfers, art);
+  const blocked = productionSetupError({...item,color:stock?.color || item.color}, transfers, art);
   const approve = async () => {
     if (blocked || !staffId) return setError(blocked || 'A signed-in staff identity is required for approval.');
     setBusy(true);

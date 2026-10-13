@@ -1,3 +1,5 @@
+import AtOnceArtVariants from './allSchool/AtOnceArtVariants';
+import { artworkSetup, isAtOnceStore } from './allSchool/atOnceArtwork.shared';
 import { approveImages } from './lib/showcaseApproval';
 import ArtworkReadiness from './allSchool/ArtworkReadiness';
 import InventoryPurchasing from './allSchool/InventoryPurchasing';
@@ -2324,16 +2326,24 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Templates are reusable starting points, never live stores: launching one would put
     // it in the public team-stores directory and make it purchasable.
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
-    if (status === 'open' && store.org_type === 'all_school') {
+    if (status === 'open' && isAtOnceStore(store)) {
       const { data: offerings, error: loadError } = await supabase.from('webstore_products').select('*').eq('store_id', store.id);
       const { data: transferRows, error: transferError } = await supabase.from('webstore_transfers').select('*').eq('store_id', store.id);
-      const { data: customerArt, error: artError } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
-      const setupArt = [...(store.store_art || []), ...(customerArt?.art_files || [])];
-      const blocked = loadError || transferError || artError ? 'Could not verify setup. Please retry.' : schoolLaunchError(offerings, transferRows, setupArt);
+      const { data: customerArt, error: artError } = await supabase.from('customers').select('art_files,parent_id').eq('id', store.customer_id).maybeSingle();
+      const parentArt = customerArt?.parent_id ? await supabase.from('customers').select('art_files').eq('id', customerArt.parent_id).maybeSingle() : {data:null};
+      if (loadError || transferError || artError || parentArt.error) { flash('Could not verify setup. Please retry.'); return false; }
+      const setupArt = [...(store.store_art || []), ...(parentArt.data?.art_files || []), ...(customerArt?.art_files || [])];
+      const productIds = [...new Set((offerings || []).map(row => row.product_id).filter(Boolean))];
+      const colors = productIds.length ? await supabase.from('products').select('id,color').in('id', productIds) : {data:[]};
+      if (colors.error) { flash('Could not verify garment colors.'); return false; }
+      for (const row of offerings || []) row.color = (colors.data || []).find(p => p.id === row.product_id)?.color || '';
+      const artProblem = (offerings || []).filter(row => row.active !== false && row.kind !== 'bundle').map(row => artworkSetup(row, transferRows || [], setupArt).error).find(Boolean);
+      if (artProblem) { flash(artProblem); return false; }
+      const blocked = loadError || transferError || artError ? 'Could not verify setup. Please retry.' : store.org_type === 'all_school' ? schoolLaunchError(offerings, transferRows, setupArt) : '';
       if (blocked) { flash(blocked); return false; }
       for (const row of offerings.filter((r) => r.active !== false)) {
-        const resolved = resolveSchoolSetup(row, transferRows, setupArt);
-        const linked = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
+        const resolved = artworkSetup(resolveSchoolSetup(row, transferRows, setupArt), transferRows, setupArt).item;
+        const linked = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes, transfer_code: null }).eq('id', row.id).select('id');
         if (linked.error || !linked.data?.length) { flash('Could not link inventory to the garment.'); return false; }
         const { data: saved, error } = await supabase.from('webstore_products').update({ production_approved_at: new Date().toISOString(), production_approved_by: 'automatic_method_readiness' }).eq('id', row.id).select('id');
         if (error || !saved?.length) { flash('Could not save readiness. Please retry.'); return false; }
@@ -6846,7 +6856,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
-          {s.org_type === 'all_school' && s.status !== 'open' && <ArtworkReadiness loading={loading} error={schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])])} onReview={() => onSetStatus && !s.is_template ? setLaunchOpen(true) : setTab('art')} />}
+          {s.org_type === 'all_school' && s.status !== 'open' && <ArtworkReadiness loading={loading} error={schoolLaunchError(catalog.map(row => ({...row,color:stockByWp[row.id]?.color || row.color})), detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])])} onReview={() => onSetStatus && !s.is_template ? setLaunchOpen(true) : setTab('art')} />}
           {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
           {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button data-tour-id="ws-launch-store" className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
@@ -6855,7 +6865,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
         </div>
       </div>
 
-      {launchOpen && <LaunchStoreModal store={s} readinessLoading={s.org_type === 'all_school' && loading} readinessError={s.org_type === 'all_school' ? schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) : ''} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
+      {launchOpen && <LaunchStoreModal store={s} readinessLoading={s.org_type === 'all_school' && loading} readinessError={s.org_type === 'all_school' ? schoolLaunchError(catalog.map(row => ({...row,color:stockByWp[row.id]?.color || row.color})), detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) : ''} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
@@ -6906,6 +6916,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
           {tab === 'programs' && s.org_type === 'all_school' && <><AllSchoolPrograms store={s} catalog={catalog} stockByWp={stockByWp} transfers={detail?.transfers || []} artLibrary={[...(s.store_art || []), ...(detail?.libraryArt || [])]} staffId={cu?.id} logoOptions={schoolLogoOptions} onSaveSettings={onSaveAllSchoolSettings} onUpdateItem={onUpdateItem} onCopyOfferings={onCopySchoolOfferings} /><div style={{ marginTop: 20 }}><AllSchoolDtfQueue storeId={s.id} /></div></>}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && schoolMockAmbiguous && <div role="status" style={{ padding: 12, background: '#fef3c7', color: '#92400e', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>This school has different sport designs on the same blank and color. Use each offering’s Catalog art editor for mockups; the shared mock builder cannot distinguish these designs.</div>}
+          {tab === 'art' && <AtOnceArtVariants store={s} catalog={catalog} stockByWp={stockByWp} artwork={[...(s.store_art || []), ...(detail?.libraryArt || [])]} transfers={detail?.transfers || []} onSaved={onRefreshInventory} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} onRemoveOrderShipping={onRemoveOrderShipping} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -12719,7 +12730,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
                 {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}{isAllSchool && <select aria-label={`Decoration method for ${a.name}`} value={a.deco_type || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => onSaveStoreArt(storeArt.map((row) => row.id === a.id ? { ...row, deco_type: e.target.value } : row))} style={{ width: '100%', fontSize: 11, marginTop: 5 }}>
                   {(!a.deco_type || a.deco_type === 'screen_print') && <option value={a.deco_type || ''}>Choose method</option>}
-                  <option value="dtf">DTF</option><option value="twill">Heat-transfer twill</option><option value="patch">Patch</option><option value="embroidery">Embroidery</option>
+                  <option value="dtf">DTF</option><option value="twill">Heat-transfer twill</option><option value="chenille">Chenille</option><option value="patch">Patch</option><option value="embroidery">Embroidery</option>
                 </select>}
               </button>
               {multi && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>

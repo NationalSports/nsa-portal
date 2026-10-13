@@ -151,7 +151,8 @@ describe('client side of the batch', () => {
 
   test('commissions count processing fee revenue against Stripe card-fee cost, and shipping charged at checkout', () => {
     expect(commissions).toContain("import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';");
-    expect(commissions).toContain('const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost;');
+    expect(commissions).toContain('const omgPlatformCost=omgCloseoutPlatformCost(so);');
+    expect(commissions).toContain('const totalRev=rev+shipRev+storeProcRev+storeShipRev+(omgMoney?.fundraise||0);const totalCost=cost+shipCost+inboundFreight+storeCardCost+omgPlatformCost;');
   });
 });
 
