@@ -2,15 +2,12 @@
 // assembled by the same _dbLoad the staff app boots with (its `source` option), so orders,
 // estimates and invoices come out in exactly the shape CoachPortal has always received.
 import { _dbLoad } from './dbEngine';
-
-export const COACH_PORTAL_DATA_URL = '/.netlify/functions/coach-portal-data';
+import { requestCoachPortalData, takePrefetchedCoachPortalData } from './coachPortalPrefetch';
 
 // → {status:'ok', customer, customers, sos, ests, invs, reps, products, appState}
 //   | {status:'not_found'} | {status:'ambiguous'}; throws on a failed load.
 export async function loadCoachPortal(alphaTag, fetchImpl = fetch) {
-  const res = await fetchImpl(COACH_PORTAL_DATA_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alphaTag }),
-  });
+  const res = await (takePrefetchedCoachPortalData(alphaTag) || requestCoachPortalData(alphaTag, fetchImpl));
   const body = await res.json().catch(() => null);
   if (res.status === 404) return { status: 'not_found' };
   if (res.status === 409) return { status: 'ambiguous' };

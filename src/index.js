@@ -9,6 +9,7 @@ import {
 import { DEFAULT_REPS } from './constants';
 import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isMoveCheckinPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 import { qboFunctionCallbackUrl } from './qbOAuthCallback';
+import { prefetchCoachPortalData } from './lib/coachPortalPrefetch';
 
 // Intuit currently returns to /?action=callback. Complete the exchange in the
 // serverless function before mounting the portal, so the code cannot be mistaken
@@ -149,6 +150,7 @@ const isUniformBuilder = _path === '/uniform-builder' || _path === '/uniform-bui
 // netlify/functions/coach-portal-data.js), never the staff App or its login gate.
 const _portalParam = (() => { try { return new URLSearchParams(window.location.search).get('portal'); } catch { return null; } })();
 const isCoachPortal = (_path === '/' || _path === '') && !!_portalParam;
+if (isCoachPortal) prefetchCoachPortalData(_portalParam);
 // Team Shop retail storefront — matched by hostname (nationalteamshop.com) or
 // /teamshop path. Checked AFTER every path-prefix branch above (see the render
 // chain), so /shop/foo, /adidas, /team-stores, auth flows, and the coach portal

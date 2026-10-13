@@ -24,7 +24,13 @@ jest.mock('@supabase/supabase-js', () => {
         if (op === 'like') { const pre = v.replace(/\*.*$/, ''); st.filters.push((r) => !String(r[c]).startsWith(pre)); }
         return b;
       },
-      or: () => b,
+      // Only the `col.eq."v",col.eq."v"` form coach-portal-data uses; anything else (the staff
+      // load's catalog vendor filter) is ignored, as before.
+      or: (expr) => {
+        const terms = expr.split(',').map((t) => t.match(/^(\w+)\.eq\."?([^"]*)"?$/));
+        if (terms.every(Boolean)) st.filters.push((r) => terms.some(([, c, v]) => String(r[c]) === v));
+        return b;
+      },
       order: (c, o) => { st.orders.push([c, !(o && o.ascending === false)]); return b; },
       range: (from, to) => { st.range = [from, to]; return b; },
       limit: (n) => { st.limit = n; return b; },
@@ -258,6 +264,25 @@ describe('the portal shows what it showed before', () => {
     const d = await _dbLoad({ fullState: true, source: (table) => ({ data: res.tables[table] || [] }) });
     expect(mockState.fromCalls).toBe(0);
     expect(d.sales_orders.map((s) => s.id)).toEqual(['SO-1']);
+  });
+
+  test('the request index.js starts early is used once; reloads fetch fresh; another tag\'s is ignored', async () => {
+    reset();
+    const { prefetchCoachPortalData } = require('../lib/coachPortalPrefetch');
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(fetchVia);
+    try {
+      prefetchCoachPortalData('fb');
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const later = jest.fn(fetchVia);
+      expect((await loadCoachPortal('fb', later)).status).toBe('ok');
+      expect(later).not.toHaveBeenCalled();
+      expect((await loadCoachPortal('fb', later)).status).toBe('ok');
+      expect(later).toHaveBeenCalledTimes(1);
+      prefetchCoachPortalData('dept');
+      expect((await loadCoachPortal('fb', later)).customer.id).toBe('c-fb');
+      expect(later).toHaveBeenCalledTimes(2);
+    } finally { global.fetch = realFetch; }
   });
 
   test('not found and ambiguous tags come back as statuses, not errors', async () => {
