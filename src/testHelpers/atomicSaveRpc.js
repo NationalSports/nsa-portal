@@ -3,6 +3,7 @@
 // rollback, access and replay are tested by order_save_scenarios.cjs.
 module.exports = function atomicSaveRpc(state,name,args) {
   state.calls.push({table:'RPC',method:name,args:[args]});
+  if(name==='next_sales_order_id')return Promise.resolve({data:state.mintId||null,error:null});
   if(name.endsWith('_save_token'))return Promise.resolve({data:'test-save-token',error:null});
   if(name!=='save_sales_order_atomic')return Promise.resolve({data:null,error:null});
   if(state.atomicError){const error=state.atomicError;delete state.atomicError;return Promise.resolve({data:null,error})}
