@@ -896,6 +896,23 @@ export const scopeSoItemsToInvoice = (inv, soItems) => {
   return { items: scoped, extraLines };
 };
 
+// ── Print an invoice line as garment + decoration rows, like the sales order does ──
+// A stored invoice line's amount already carries its decorations (KD5420 on INV-64434:
+// $30 polo + $7 embroidery stored as one $37 rate), and the documents used to print that
+// combined $37 next to a "+$7.00/ea" note, which read as $37 AND $7. Given the line's billed
+// amount and each decoration's billed amount (as the SO prices it, already deposit-scaled
+// where the line is), returns the garment-only remainder so the garment row and the deco
+// rows add back up to exactly the invoice's amount. Returns null when the line can't be
+// split cleanly (no decorations, no qty, or decorations worth more than the line, e.g. a
+// comped line) — callers then keep the combined rate with decorations as detail.
+export const splitInvoiceLine = (lineAmt, qty, decoAmts) => {
+  const decoTotal = safeArr(decoAmts).reduce((a, v) => a + safeNum(v), 0);
+  if (!(safeNum(qty) > 0) || !(decoTotal > 0)) return null;
+  const garmentAmt = Math.round((safeNum(lineAmt) - decoTotal) * 100) / 100;
+  if (garmentAmt < 0) return null;
+  return { garmentAmt, garmentRate: Math.round((garmentAmt / safeNum(qty)) * 100) / 100 };
+};
+
 // Sum of paid-but-non-unit-billing invoice amounts on an SO (deposits today).
 // These don't lock specific units but represent $ already collected, so the
 // next invoice should credit them against the remaining balance.

@@ -5,11 +5,11 @@ import { isOutsideArtJob } from './lib/outsideArt';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, jobItemRoster, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, jobItemRoster, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, splitInvoiceLine, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { garmentLogoDetails, logoDetailBg } from './lib/logoDetail';
 import { calcSOStatus, resolveOrderShipTo, orderShipToSub, custShipAddrSub, resolveOrderBillTo, orderBillToSub } from './components';
-import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
+import { dP, decoSplitQty, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
@@ -2267,7 +2267,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
       const rows=[];let subTotal=0;
       const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
-      const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+      const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
       // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
       // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
       // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
@@ -2285,12 +2285,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
         let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
         if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
-        rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+        // Print the garment and each decoration on their own rows (as the SO does) when the
+        // line's amount splits cleanly — see splitInvoiceLine; otherwise decorations stay detail.
+        const _split=invPriced?splitInvoiceLine(lineAmt,qty,safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);return Math.round(eq*dp2.sell*depPct*100)/100})):null;const _det=invPriced&&!_split;
+        rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(_split?_split.garmentRate:unitPrice),style:'text-align:right'},{value:_$(_split?_split.garmentAmt:lineAmt),style:'text-align:right;font-weight:600'}]});
         safeDecos(it).forEach(d=>{
           const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
           const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;if(!invPriced)subTotal+=decoAmt;
           const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-          rows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:invPriced?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$(decoAmt),style:'text-align:right'}]});
+          rows.push({_class:'deco-row',cells:[{value:_det?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_det?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(_det?';color:#64748b':'')},{value:_det?'':_$(decoAmt),style:'text-align:right'}]});
         });
       });
       // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
