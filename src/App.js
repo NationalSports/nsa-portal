@@ -1,3 +1,4 @@
+import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
@@ -52,6 +53,7 @@ import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { normalizeOmgSize } from './lib/omgReport';
+import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -291,7 +293,7 @@ const computeOmgSoSync=(so)=>{
 // job (all costs applied). This is the SAFETY-NET window: if no SO has been created
 // this long after the store was brought into the portal, remind accounting anyway so
 // the store is never forgotten. Shared by the reminder effect and the store card.
-const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
+// Closeout tasks are persisted by the database, due SO creation + 35 days.
 // ── Completed-job grace window for production surfaces ──
 // Invoicing / closing an SO sets sticky status='complete' — a FINANCIAL close that routinely
 // lands minutes after the decorator's Done click (SO-1512, 8/18: final invoice 5 minutes after
@@ -1909,13 +1911,6 @@ const _omgLineVal=(text,labelRe)=>{
   return 0;
 };
 // ① Dollar Report → revenue pieces collected from parents.
-const parseOmgDollar=(text)=>({
-  shipping:  _omgLineVal(text,/^\s*\t*Shipping\b/i)||_omgLineVal(text,/\bShipping\b/i),
-  processing:_omgLineVal(text,/Processing/i),
-  tax:       _omgLineVal(text,/Sales\s*Tax/i),
-  fundraise: _omgLineVal(text,/Fundrais/i),
-  grand:     _omgLineVal(text,/Grand\s*Total/i),
-});
 // ② Accounting Report → the fees NSA pays. The top summary box sometimes has
 // labels with no adjacent value (PDF printouts), so we fall back to the
 // "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
@@ -4581,54 +4576,6 @@ export default function App(){
       setWebTaxAgg(Object.values(byKey));
     }catch(e){console.warn('[web tax] error:',e.message)}})();
   },[pg]);
-  // OMG stores are settled from store deposit funds (not a coach payment). Remind
-  // accounting (Andrea Jung) to apply those funds to the store's invoice when the
-  // linked SO's FINAL JOB finishes (production done / shipped) — that's the moment
-  // every job cost is on the SO, so the invoice+commission come out right. If no SO
-  // exists yet, fall back to 6 weeks after the store was brought in (safety net so
-  // an unprocessed store is never forgotten). Stores already present when this
-  // shipped are baselined (no retroactive backlog); tasks are deduped by the
-  // [store-id] tag in the title.
-  React.useEffect(()=>{
-    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-    if(!(omgStores&&omgStores.length))return;
-    const now=Date.now();
-    const seen={...omgFirstSeen};
-    const firstAdoption=Object.keys(seen).length===0;
-    let seenChanged=false;
-    omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
-    if(seenChanged)setOmgFirstSeen(seen);
-    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
-    const toAdd=[];
-    omgStores.forEach(s=>{
-      if(!s||!s.id)return;
-      const rec=seen[s.id];
-      if(!rec||rec.baseline)return;
-      const tag='['+s.id+']';
-      if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
-      const so=sos.find(x=>x.omg_store_id===s.id&&!x.deleted_at);
-      // Fire when the SO's production is finished (all job costs applied). The 6-week
-      // safety net applies REGARDLESS of whether an SO exists — a stuck, cancelled, or
-      // fully-outsourced SO (no jobs → never 'ready_to_invoice') must not hide the
-      // store's deposit funds from accounting forever.
-      let done=false;
-      if(so){
-        done=so.status==='complete';
-        if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
-      }
-      if(!done&&now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
-      // Settlement-aware: if the store's SO is invoiced and every invoice is
-      // already paid, the funds have been applied — no reminder needed.
-      if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
-      const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
-      const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
-      const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
-        +`Collected per OMG — Grand total: ${$(grand)} · Fundraise: ${$(fund)} · Fees (ship/proc/tax): ${$(fees)}.`
-        +(so?`\nSales order: ${so.id}`:'\n(No sales order created from this store yet.)');
-      toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
-    });
-    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen,invs]);
   // Webstore settlement funds — per batched sales order, sum the PREPAID
   // (Stripe, payment_mode='paid') order totals net of refunds vs the TEAM-TAB
   // (payment_mode='unpaid') totals still owed. The Invoices settlement queue
@@ -5715,8 +5662,6 @@ export default function App(){
   // React state does not update until the next render. These synchronous guards
   // close the double-click window that duplicated SO-2277 and both invoices.
   const omgSoCreating=useRef(new Set());
-  const omgInvoiceCreating=useRef(new Set());
-  const webstoreInvoiceCreating=useRef(new Set());
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -7153,9 +7098,9 @@ export default function App(){
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
       if(_bn&&_bn.webstore_batch_no!=null)newSO.webstore_batch_no=_bn.webstore_batch_no;
     }catch{}
-    // Claim the selected customer orders and record invoice/payment + fundraising
-    // credit in ONE database transaction. A closed browser can no longer interrupt
-    // the accounting half after production has been created. The RPC is idempotent,
+    // Claim customer orders, derive checkout money and record fundraising credit
+    // in one transaction. Invoice/payment creation is deferred to Close Store.
+    // The RPC is idempotent,
     // so retry once; after an ambiguous error, verify the committed records directly.
     let finalized=null;let finalizeErr=null;
     for(let attempt=0;attempt<2&&!finalized?.ok;attempt++){
@@ -7173,7 +7118,7 @@ export default function App(){
           supabase.from('invoices').select('id').eq('so_id',id).limit(1).maybeSingle(),
           Number(fundraise_cost)>0?supabase.from('customer_credits').select('id').eq('id','cr_fund_so_'+id).maybeSingle():Promise.resolve({data:{id:'none'}})
         ]);
-        if(_linked===(order_ids||[]).length&&_inv&&_credit)finalized={ok:true,invoice_id:_inv.id,linked_count:_linked};
+        if(_linked===(order_ids||[]).length&&_credit)finalized={ok:true,invoice_id:_inv?.id||null,linked_count:_linked};
       }catch{}
     }
     if(!finalized?.ok){
@@ -7202,7 +7147,7 @@ export default function App(){
       if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);
       Object.assign(newSO,_patch);
       const _gap=Number(_sm.rounding_gap)||0;
-      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — the batch invoice bills the lines as they are.','error');
+      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — reconcile this before Close Store.','error');
     }
     // Accounting changed the server revision. Publish the confirmed baseline
     // before state; its fee/version echo must not launch another full save.
@@ -7210,7 +7155,7 @@ export default function App(){
     setSOs(prev=>prev.map(s=>s.id===id?newSO:s));
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
-    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));
+    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s). Close Store after fulfillment and cost review.');
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
@@ -7620,43 +7565,6 @@ export default function App(){
       nf(so.id+' closed — fully invoiced and production complete');
     });
   },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
-  // ── Webstore settle-on-finish ──
-  // When a webstore-batched SO's FINAL JOB finishes (calcSOStatus hits ready_to_invoice),
-  // every job cost is on the SO — that's the moment to invoice and apply the store's
-  // collected funds so commissions carry all costs. Creates an accounting to-do (Andrea
-  // Jung) deduped by the [settle-SOID] tag. OMG stores get the equivalent via the
-  // "Apply OMG funds" effect above; this covers source='webstore' SOs (webstore_id set,
-  // no omg_store_id). Fully-outsourced SOs (decos, no jobs) never reach
-  // ready_to_invoice, so a 6-week-age safety net fires the reminder regardless —
-  // including for SOs manually closed to 'complete' — unless every invoice is already
-  // paid. (Verified against prod at ship time: only 3 legacy SOs qualified, all
-  // genuinely unsettled.)
-  React.useEffect(()=>{
-    if(dbLoading||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
-    const toAdd=[];
-    sos.forEach(so=>{
-      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at)return;
-      // "Done" = final job finished (ready_to_invoice) or the SO was closed (complete —
-      // how fully-outsourced SOs end, since with no jobs they never hit
-      // ready_to_invoice). Safety net: an SO stuck un-done for 6+ weeks fires anyway so
-      // its store funds are never hidden from accounting indefinitely.
-      let done=so.status==='complete';
-      if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
-      if(!done&&!(Date.now()-new Date(so.created_at).getTime()>=OMG_FUNDS_WINDOW_MS))return;
-      const tag='[settle-'+so.id+']';
-      if(assignedTodos.some(t=>t.title&&t.title.includes(tag)))return;
-      // Already fully settled (invoiced and every invoice paid) → nothing to do.
-      const soInvs=(invs||[]).filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
-      if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;
-      const nowIso=new Date().toISOString();
-      toAdd.push({id:'todo-settle-'+so.id+'-'+Date.now(),title:`Apply store funds & invoice — ${so.id} ${tag}`,
-        description:`The final job on webstore sales order ${so.id} has finished, so all job costs are applied. Invoice the order and apply the store's collected funds (see the Invoices settlement queue) so commissions reflect full costs.${so.memo?'\n'+so.memo:''}`,
-        created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so.id,customer_id:so.customer_id||null,
-        priority:2,status:'open',created_at:nowIso,updated_at:nowIso,comments:[]});
-    });
-    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[sos,invs,assignedTodos,REPS,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes,opts)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -12029,7 +11937,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -15969,27 +15877,8 @@ export default function App(){
     setViewInvoice(null);
   };
 
-  // ── OMG invoice + settlement in one step ─────────────────────────────
-  // OMG money is collected by the platform before the store is even ported,
-  // so the invoice is an internal accounting document against funds already
-  // in hand — there's nothing to wait for. Builds the same full invoice a
-  // manual create would (blended per-size sells + deco sells + flat shipping,
-  // tax-exempt) and stamps the gross store-funds payment at birth: paid in
-  // full when customer collections cover the total, else paid to exactly
-  // what was collected so a shortfall stays visible as a
-  // partial balance. If the Accounting Report isn't entered yet the invoice
-  // is created open and the settlement queue keeps flagging the store.
-  // Idempotent: skips SOs that already carry any invoice, and the
-  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert. The
-  // customer payment is GROSS. OMG/card fees are separate deposit deductions
-  // (57000/71400); netting them against the invoice would leave a false A/R
-  // balance equal to the fees.
-  // Called at store port (createOmgSO) and from the settlement queue.
-  const createAndSettleOmgInvoice=(so)=>{
-    if(!so||!so.omg_store_id)return null;
-    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
-    if(!acquireOmgCreationGuard(omgInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
-    const store=(omgStores||[]).find(x=>x.id===so.omg_store_id);
+  // Reuse the existing OMG pricing engine; the server owns invoice/payment identity.
+  const buildOmgCloseoutInvoice=so=>{
     const c=cust.find(x=>x.id===so.customer_id);
     const af=safeArt(so);
     const artQty={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
@@ -16004,90 +15893,43 @@ export default function App(){
     const sub=lineItems.reduce((a,l)=>a+l.amount,0);
     const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
     const total=Math.round((sub+ship)*100)/100;
-    const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
-    const applied=calculateOmgInvoicePayment(acct,total);
-    const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
-    const dateStr=new Date().toLocaleDateString('en-CA');
-    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
-    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
-    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:omgInvoiceIdempotencyKey(so),
-      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
-      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
-      memo:'Invoice — '+(so.memo||so.id),_rep:so.created_by||cu?.id||null,
-      tax:0,tax_rate:0,tax_exempt:true,shipping:ship,
-      ...(so.po_number?{_po_number:so.po_number}:{}),
-      line_items:lineItems,
-      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
-      payments:applied>0?[{amount:applied,method:'store',ref:'OMG '+saleCode,date:payDate,cc_fee:0}]:[],
-      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
-    setInvs(prev=>[inv,...prev]);
-    logChange('create','Invoice',inv.id,'Auto-created from OMG store '+saleCode+(applied>0?' — $'+applied.toFixed(2)+' store funds applied':''));
-    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from store funds 🏫':applied>0?' — $'+applied.toFixed(2)+' store funds applied, shortfall left open':' — open (Accounting Report not entered yet)'));
-    return inv;
+    return {line_items:lineItems,total,shipping:ship};
   };
-
-  // ── Webstore invoice + settlement in one step ────────────────────────
-  // Webstore card orders are pre-paid via NSA's own Stripe at checkout, so by
-  // batch time the money is in hand. The batcher prices SO items so their sum
-  // reconciles to the PRODUCT (+fundraise) collected; tax/shipping/processing
-  // ride on top of each Stripe charge but aren't SO lines. This builds one
-  // invoice for the whole SO — product lines plus the TEAM-TAB orders' extras
-  // (their tax/ship/processing, carried in the shipping field) — and stamps
-  // the Stripe-collected share as a 'store' payment at birth. Net effect: the
-  // invoice's open balance is EXACTLY the team-tab gross the club still owes
-  // (the production note's "invoice the club for the team-tab total only"),
-  // while the card revenue still flows through the invoice for commissions,
-  // AR and reports. No team-tab → invoice is born fully paid.
-  // settle: {cardTotal, tabTotal, tabExtras} — from the batch flow, or rebuilt
-  // from webstore_orders sums for queue-driven backlog settles. All amounts
-  // are clamped so a data surprise can only under-apply (visible partial),
-  // never overpay. Idempotent: any-invoice guard + the 'WEB <so id>' ref.
-  const createAndSettleWebstoreInvoice=async(so,settle)=>{
-    if(!so||so.omg_store_id)return null;
-    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
-    if(!acquireOmgCreationGuard(webstoreInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
-    const r2=n=>Math.round((+n||0)*100)/100;
-    const c=cust.find(x=>x.id===so.customer_id);
-    const lineItems=safeItems(so).map(it=>{
-      const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
-      if(!qty)return null;
-      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell),amount:r2(qty*safeNum(it.unit_sell)),_sku:it.sku,_name:it.name,_color:it.color};
-    }).filter(Boolean);
-    const itemsTotal=r2(lineItems.reduce((a,l)=>a+l.amount,0));
-    const tabGross=Math.max(0,r2(settle?.tabTotal||0));
-    const tabExtras=Math.min(Math.max(0,r2(settle?.tabExtras||0)),tabGross);
-    const total=r2(itemsTotal+tabExtras);
-    // Card share = whatever of the invoice the team-tab doesn't owe, capped at
-    // what Stripe actually collected.
-    const applied=r2(Math.min(Math.max(0,total-tabGross),Math.max(0,r2(settle?.cardTotal||0))));
-    const dateStr=new Date().toLocaleDateString('en-CA');
-    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
-    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
-    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-    const ref='WEB '+so.id;
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:webstoreInvoiceIdempotencyKey(so),
-      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
-      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
-      memo:'Invoice — '+(so.memo||so.id)+(tabExtras>0?' (shipping line = team-tab tax/ship/processing)':''),
-      _rep:so.created_by||cu?.id||null,
-      tax:0,tax_rate:0,tax_exempt:true,shipping:tabExtras,
-      line_items:lineItems,
-      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
-      payments:applied>0?[{amount:applied,method:'store',ref,date:payDate,cc_fee:0}]:[],
-      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
+  const [storeCloseoutReview,setStoreCloseoutReview]=useState(null);
+  const closeStoreLocks=useRef(new Set());
+  const closeStore=async (so,reviewSubmission=null)=>{
+    if(!so||!supabase||(!so.omg_store_id&&!so.webstore_id))return null;
+    if(!acquireOmgCreationGuard(closeStoreLocks.current,so.id))return null;
     try{
-      const ok=await _dbSaveInvoice(inv);
-      if(!ok){nf('Invoice for '+so.id+' did not finish saving — it remains in the retry queue.','error');return null}
-      setInvs(prev=>prev.some(i=>i.id===inv.id||i.so_id===so.id)?prev:[inv,...prev]);
-      logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
-      nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
-      return inv;
-    }catch(e){console.error('[Webstore] invoice save failed:',e);nf('Invoice for '+so.id+' failed to save: '+(e.message||e),'error');return null}
-    finally{webstoreInvoiceCreating.current.delete(so.id)}
+      const savePending=dirtyRef.current||_dbSavePendingIds.has(so.id)||_dbSaveFailedIds.has(so.id)||[so._itemsHydrated,so._posHydrated,so._decosHydrated,so._jobsHydrated].includes(false);
+      if(reviewSubmission?.action==='close'&&savePending)throw new Error('Save the sales order and wait for saving to finish before Close Store.');
+      const{data:session}=await supabase.auth.getSession();
+      const response=await fetch('/.netlify/functions/close-store',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session?.session?.access_token||'')},body:JSON.stringify({soId:so.id,version:Number(reviewSubmission?.action==='follow_up'?reviewSubmission.version:so._version),action:reviewSubmission?.action||'inspect',review:reviewSubmission,invoice:reviewSubmission?.action==='close'&&so.omg_store_id?buildOmgCloseoutInvoice(so):null})});
+      const result=await response.json();
+      if(result.todo){stageDocumentBaseline(_dbSnap,'assignedTodos',result.todo);setAssignedTodos(prev=>prev.some(t=>t.id===result.todo.id)?prev.map(t=>t.id===result.todo.id?result.todo:t):[result.todo,...prev])}
+      if(!response.ok||!result.ok)throw new Error(result.error||'Closeout was not confirmed. Reload before retrying.');
+      if(!reviewSubmission)return new Promise(resolve=>{setStoreCloseoutReview(previous=>{previous?.resolve(null);return {so,status:{...result.review_status,save_pending:savePending},resolve}})});
+      if(result.follow_up_saved){storeCloseoutReview?.resolve(null);setStoreCloseoutReview(null);nf('Review saved. Rep follow-up assigned; store remains open.');return null}
+      setStoreCloseoutReview(null);
+      const updated={...so,...result.sales_order};
+      storeCloseoutReview?.resolve(updated);
+      const inv={...result.invoice,payments:result.payments,_paymentsHydrated:true};
+      stageDocumentBaseline(_dbSnap,'sos',updated);
+      stageDocumentBaseline(_dbSnap,'invs',inv);
+      setSOs(prev=>prev.map(x=>x.id===so.id?updated:x));
+      setESO(prev=>prev?.id===so.id?updated:prev);
+      setInvs(prev=>prev.some(x=>x.id===inv.id)?prev.map(x=>x.id===inv.id?inv:x):[inv,...prev]);
+      if(result.todo){
+        stageDocumentBaseline(_dbSnap,'assignedTodos',result.todo);
+        setAssignedTodos(prev=>prev.some(t=>t.id===result.todo.id)?prev.map(t=>t.id===result.todo.id?result.todo:t):[result.todo,...prev]);
+      }
+      nf('Store closed — costs confirmed and existing payments reconciled'+(Number(inv.total)>Number(inv.paid)?'. Remaining balance: $'+(Number(inv.total)-Number(inv.paid)).toFixed(2):'.'));
+      return updated;
+    }catch(e){if(reviewSubmission)throw e;nf(e.message||'Close Store failed; reload before retrying.','error');return null}
+    finally{closeStoreLocks.current.delete(so.id)}
   };
-
-;
+  const createAndSettleOmgInvoice=so=>closeStore(so);
+  const createAndSettleWebstoreInvoice=so=>closeStore(so);
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
@@ -19029,9 +18871,7 @@ export default function App(){
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              // OMG funds are already collected, so invoice + settle at port —
-              // paid in full when the net remit covers it, partial otherwise.
-              createAndSettleOmgInvoice(newSO);
+              // Accounting waits for Close Store after fulfillment and cost review.
               // Link the OMG parent orders (shadow webstore) to this SO via their
               // so_id. webstore_id itself now rides the SO object through the
               // normal save path (set at construction above), so no direct
@@ -19143,14 +18983,7 @@ export default function App(){
                 onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
                 📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
             </div>}
-            {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
-              if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
-              if(rec&&!rec.baseline){
-                // With a linked SO the reminder fires when its final job finishes; without
-                // one, the 6-week safety-net countdown applies.
-                if(sos.some(so=>so.omg_store_id===s.id&&!so.deleted_at))return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds when the SO's final job finishes</div>;
-                const days=Math.ceil((OMG_FUNDS_WINDOW_MS-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'} (no SO yet)</div>}
-              return null})()}
+            <div style={{marginTop:6,fontSize:11,color:'#64748b'}}>Close Store from its sales order after shipment and cost review. Outside fulfillment gets a rep closeout check 35 days after SO creation.</div>
           </div>
         </div></div>
 
@@ -39380,6 +39213,7 @@ export default function App(){
       <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setNeedByAsk(null)}>Cancel</button><button className="btn btn-primary" disabled={!_ok} onClick={_go}>{needByAsk.kind==='convert'?'Convert to sales order':'Create sales order'}</button></div>
     </div></div>})()}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
+    {storeCloseoutReview&&<StoreCloseoutReview key={storeCloseoutReview.status.token} status={storeCloseoutReview.status} onCancel={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null)}} onJobs={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null);setESOTab('jobs')}} onSubmit={review=>closeStore(storeCloseoutReview.so,review)}/>}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
       <div className="modal-body">

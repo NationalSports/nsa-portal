@@ -1,3 +1,4 @@
+import { omgCloseoutPlatformCost, omgCloseoutInvoiceMoney } from './lib/storeCloseout';
 import { decoPoEditTotals } from './lib/decoPoEdit';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -216,7 +217,8 @@ export default function CommissionsPage({adminReports=false}={}){
       if(dtl&&cost-_db0-manualPoCost>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0-manualPoCost});
       if(dtl)manualPoRows.forEach(row=>dtl.push({kind:'bucket',label:'Manual PO cost'+(row.po_id?' · '+row.po_id:'')+(row.payment_label?' · Paid by '+row.payment_label:''),rev:0,cost:row.amount}));
       // Shipping revenue (charged to customer)
-      const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+      const omgMoney=omgCloseoutInvoiceMoney(inv,so);
+      const shipRev=omgMoney?omgMoney.shipping:(so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value));
       // Outbound shipping cost from ShipStation — fallback to shipment records
       const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
@@ -228,27 +230,29 @@ export default function CommissionsPage({adminReports=false}={}){
       // WEBSTORE fundraise is already INSIDE item unit_sell (the batcher prices lines from
       // collected = product + fundraise, Webstores.js collectedForLine) and therefore inside
       // invRev — dropping the old fundraiseCost is the whole flip; adding it again here
-      // double-counts. OMG is the opposite: items are priced at retail and the auto-invoice
-      // never bills the fundraise, so it's added on top of invRev.
+      // double-counts. Legacy OMG invoices omit fundraising; new Close Store invoices
+      // contain its frozen net amount and must not add it to invoice revenue again.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
-      const fundraiseRev=safeNum(so._omg_fundraise||0);
+      const fundraiseRev=omgMoney?0:safeNum(so._omg_fundraise||0);
       // WEBSTORE batch checkout money (finalize_webstore_batch writes it onto the SO and
       // bills it on the batch invoice): the processing fee charged to buyers is revenue,
       // shipping charged at checkout is shipping revenue, Stripe's card fees are a real
       // cost. Sales tax stays out — invRev already drops inv.tax. Both sides must move
-      // together or `scale` (invRev ÷ SO revenue) drifts: the invoice now carries the fee,
-      // so the SO revenue it is compared against must too. Webstore only: an OMG store's
-      // auto-invoice bills product only, so its fee columns would skew the scale instead.
+      // together or `scale` (invRev ÷ SO revenue) drifts. New OMG closeouts use the
+      // net components frozen on their invoice; legacy product-only invoices retain
+      // their original treatment.
       const _wm=webstoreCheckoutMoney(so);
-      const storeProcRev=_wm.processing,storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
+      const storeProcRev=_wm.processing+(omgMoney?.processing||0),storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
       if(dtl){
         if(shipRev||shipCost)dtl.push({kind:'bucket',label:'Shipping (charged to customer vs cost)',rev:shipRev,cost:shipCost});
         if(inboundFreight)dtl.push({kind:'bucket',label:'Inbound freight (supplier bills)',rev:0,cost:inboundFreight});
-        if(fundraiseRev)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev,cost:0});
-        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
+        if(fundraiseRev||omgMoney?.fundraise)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev+(omgMoney?.fundraise||0),cost:0});
+        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:omgMoney?'OMG net processing fee charged to buyers':'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
         if(storeShipRev)dtl.push({kind:'bucket',label:'Webstore shipping charged at checkout',rev:storeShipRev,cost:0});
       }
-      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost;
+      const omgPlatformCost=omgCloseoutPlatformCost(so);
+      if(dtl&&omgPlatformCost)dtl.push({kind:'bucket',label:'OMG platform and card fees',rev:0,cost:omgPlatformCost});
+      const totalRev=rev+shipRev+storeProcRev+storeShipRev+(omgMoney?.fundraise||0);const totalCost=cost+shipCost+inboundFreight+storeCardCost+omgPlatformCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
@@ -258,7 +262,7 @@ export default function CommissionsPage({adminReports=false}={}){
     // Commission: 30% of GP if paid within 90 days, 15% if paid after 90 days
     const buildCommLines=(repFilter)=>{
       return invs.filter(inv=>{
-        if(!isCommissionEarnedInvoice(inv))return false;
+        if(!isCommissionEarnedInvoice(inv,sos.find(s=>s.id===inv.so_id)))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
@@ -279,8 +283,9 @@ export default function CommissionsPage({adminReports=false}={}){
         // position does not track chronology — and on a partially-restored invoice the last slot
         // could be an older payment, booking the line to the wrong statement month.
         const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
-        const paidDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
-        const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
+        const paymentDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
+        const paidDate=so?.store_closed_at?new Date(Math.max(new Date(so.store_closed_at).getTime(),paymentDate?.getTime()||0)):paymentDate;
+        const daysToPay=paidDate&&invDate?Math.round((paymentDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
         const ovr=commOverrides[inv.id];
@@ -306,6 +311,8 @@ export default function CommissionsPage({adminReports=false}={}){
 
     const buildOmgCommLines=(repFilter)=>omgComms.filter(row=>{
       if(row.status!=='finalized')return false;
+      // A store ported after its monthly report must not earn again through both paths.
+      if(sos.some(so=>so.omg_store_id===row.store_id&&!so.deleted_at))return false;
       return !repFilter||repFilter==='all'||row.rep_id===repFilter;
     }).map(row=>{
       const period=String(row.period_month||'').slice(0,10);
@@ -332,7 +339,7 @@ export default function CommissionsPage({adminReports=false}={}){
       // the invoice reaches fully paid, at which point buildCommLines moves it into
       // the statement using the final payment date.
       const invLines=invs.filter(inv=>{
-        if(isCommissionEarnedInvoice(inv))return false;
+        if(isCommissionEarnedInvoice(inv,sos.find(s=>s.id===inv.so_id)))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.

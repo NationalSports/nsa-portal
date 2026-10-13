@@ -198,3 +198,11 @@ describe('line mode with no tax rate on the invoice',()=>{
       .toThrow(/no tax rate to reconcile/);
   });
 });
+
+test('OMG net collected tax remains a liability and is not added twice under AST',()=>{
+  const invoice={total:8079.77,tax:569.02,tax_rate:0,shipping:0};
+  const plan=buildQBInvoiceTaxPlan({invoice,state:'CA',partnerTaxEnabled:true});
+  expect(plan).toEqual(expect.objectContaining({tax:569.02,taxable:7510.75,taxLine:true,taxAccountKey:'tax_ca_account',reconciled:false}));
+  expect(buildQBInvoiceTxnTaxDetail(plan)).toBeNull();
+  expect(()=>buildQBInvoiceTaxPlan({invoice,state:'CA',taxRateMap,taxCodes})).toThrow(/no tax rate/);
+});

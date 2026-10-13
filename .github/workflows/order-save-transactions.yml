@@ -7,6 +7,8 @@ on:
       - 'scripts/pgtest/verify_all_school*'
       - 'scripts/pgtest/verify_stripe_payout*'
       - 'scripts/pgtest/document_history_scenarios.cjs'
+      - 'scripts/test-store-closeout-sql.cjs'
+      - 'scripts/pgtest/store*.cjs'
       - 'supabase/tests/document_history_snapshots_regression.sql'
       - 'src/lib/dbEngine.js'
       - '.github/workflows/order-save-transactions.yml'
@@ -34,3 +36,33 @@ jobs:
           node scripts/pgtest/verify_all_school_purchasing.cjs
           node scripts/pgtest/verify_all_school_fulfillment.cjs
           node scripts/pgtest/verify_stripe_payout_claims.cjs
+      - name: Verify store closeout accounting and retries
+        run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/test-store-closeout-sql.cjs
+
+  closeout-concurrency:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: closeout-test-only
+          POSTGRES_DB: closeout_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install isolated PostgreSQL client
+        run: npm install --prefix "$RUNNER_TEMP/closeout-pg" --no-audit --no-fund pg@8.16.3
+      - name: Verify simultaneous closes and lost-response retries
+        env:
+          STORE_TEST_DATABASE_URL: postgres://postgres:closeout-test-only@127.0.0.1:5432/closeout_test
+        run: STORE_PG_MODULE="$RUNNER_TEMP/closeout-pg/node_modules/pg" STORE_PG_ADAPTER="$GITHUB_WORKSPACE/scripts/pgtest/store_postgres_adapter.cjs" node scripts/test-store-closeout-sql.cjs
