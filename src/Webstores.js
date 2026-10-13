@@ -4480,7 +4480,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} customers={cust} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -5040,7 +5040,228 @@ const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#08
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+const STORE_REQUEST_STATUS = {
+  queued: { label: 'Queued', bg: '#fef3c7', fg: '#92400e' },
+  building: { label: 'Building', bg: '#dbeafe', fg: '#1e40af' },
+  ready: { label: 'Ready', bg: '#dcfce7', fg: '#166534' },
+  failed: { label: 'Failed', bg: '#fee2e2', fg: '#b91c1c' },
+  cancelled: { label: 'Cancelled', bg: '#f1f5f9', fg: '#64748b' },
+};
+const STORE_REQUEST_MAX_FILES = 5;
+const STORE_REQUEST_MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+function storeRequestFileMeta(file) {
+  const ext = String(file?.name || '').split('.').pop().toLowerCase();
+  let type = String(file?.type || '').toLowerCase();
+  if (!type && ext === 'pdf') type = 'application/pdf';
+  if (!type && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif'].includes(ext)) {
+    type = `image/${ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext}`;
+  }
+  if (!(type === 'application/pdf' || type.startsWith('image/'))) return { error: `${file?.name || 'File'} is not a PDF or image.` };
+  if (!Number(file?.size) || file.size > STORE_REQUEST_MAX_FILE_BYTES) return { error: `${file?.name || 'File'} must be 20 MB or smaller.` };
+  return { type };
+}
+
+function SummaryInline({ text }) {
+  const parts = String(text || '').split(/(\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((part, i) => {
+    const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+    if (link) return <a key={i} href={link[2]} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>{link[1]}</a>;
+    if (/^\*\*[^*]+\*\*$/.test(part)) return <strong key={i}>{part.slice(2, -2)}</strong>;
+    if (/^`[^`]+`$/.test(part)) return <code key={i} style={{ background: '#f1f5f9', borderRadius: 4, padding: '1px 4px' }}>{part.slice(1, -1)}</code>;
+    return <React.Fragment key={i}>{part}</React.Fragment>;
+  });
+}
+
+function MarkdownSummary({ text }) {
+  const lines = String(text || '').split(/\r?\n/);
+  return (
+    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.55 }}>
+      {lines.map((line, i) => {
+        const heading = line.match(/^#{1,3}\s+(.+)/);
+        if (heading) return <div key={i} style={{ fontWeight: 800, color: '#192853', marginTop: i ? 7 : 0 }}><SummaryInline text={heading[1]} /></div>;
+        const bullet = line.match(/^\s*[-*]\s+(.+)/);
+        if (bullet) return <div key={i} style={{ display: 'flex', gap: 7, marginLeft: 4 }}><span>•</span><span><SummaryInline text={bullet[1]} /></span></div>;
+        return line ? <div key={i}><SummaryInline text={line} /></div> : <div key={i} style={{ height: 6 }} />;
+      })}
+    </div>
+  );
+}
+
+function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName, onOpen }) {
+  const [requestText, setRequestText] = useState('');
+  const [customerId, setCustomerId] = useState('');
+  const [files, setFiles] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const fileRef = useRef(null);
+  const loadSequence = useRef(0);
+  const visibleLoadInFlight = useRef(false);
+
+  const loadRequests = useCallback(async ({ quiet = false } = {}) => {
+    if (quiet && visibleLoadInFlight.current) return;
+    const sequence = ++loadSequence.current;
+    if (!quiet) { visibleLoadInFlight.current = true; setLoading(true); }
+    try {
+      const { data, error } = await supabase.from('webstore_build_requests')
+        .select('*').order('created_at', { ascending: false }).limit(20);
+      if (sequence !== loadSequence.current) return;
+      if (error) setLoadError(error.message);
+      else { setRequests(data || []); setLoadError(''); }
+    } catch (error) {
+      if (sequence === loadSequence.current) setLoadError(error?.message || 'Could not load store requests.');
+    } finally {
+      if (!quiet) {
+        visibleLoadInFlight.current = false;
+        if (sequence === loadSequence.current) setLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRequests();
+    const timer = setInterval(() => loadRequests({ quiet: true }), 15000);
+    return () => clearInterval(timer);
+  }, [loadRequests]);
+
+  const submit = async () => {
+    const cleanText = requestText.trim();
+    if (!cleanText && !files.length) return;
+    const invalid = files.map(storeRequestFileMeta).find((meta) => meta.error);
+    if (invalid) { setActionError(invalid.error); return; }
+    setSubmitting(true); setActionError('');
+    try {
+      const attachmentUrls = [];
+      for (const file of files) {
+        const meta = storeRequestFileMeta(file);
+        attachmentUrls.push({
+          url: await cloudUpload(file, 'nsa-webstore-build-requests'),
+          name: file.name,
+          type: meta.type,
+          size: file.size,
+        });
+      }
+      const { data, error: insertError } = await supabase.from('webstore_build_requests').insert({
+        created_by: cu.id,
+        customer_id: customerId || null,
+        request_text: cleanText,
+        attachment_urls: attachmentUrls,
+        status: 'queued',
+      }).select('*').single();
+      if (insertError) throw insertError;
+      loadSequence.current += 1;
+      setRequests((prev) => [data, ...prev].slice(0, 20));
+      setRequestText(''); setCustomerId(''); setFiles([]);
+      if (fileRef.current) fileRef.current.value = '';
+    } catch (submitError) {
+      setActionError(submitError?.message || 'Could not queue the store request.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const cancel = async (request) => {
+    if (!window.confirm('Cancel this queued store request?')) return;
+    const { data, error: cancelError } = await supabase.from('webstore_build_requests')
+      .update({ status: 'cancelled' }).eq('id', request.id).eq('status', 'queued')
+      .select('id,status').maybeSingle();
+    if (cancelError) { setActionError(cancelError.message); return; }
+    if (!data) { setActionError('This request was already claimed. Refreshing its current status.'); await loadRequests(); return; }
+    loadSequence.current += 1;
+    setActionError('');
+    setRequests((prev) => prev.map((row) => row.id === request.id ? { ...row, status: 'cancelled', updated_at: new Date().toISOString() } : row));
+  };
+
+  const pickFiles = (picked) => {
+    const next = Array.from(picked || []);
+    if (next.length > STORE_REQUEST_MAX_FILES) {
+      setFiles([]); setActionError(`Attach up to ${STORE_REQUEST_MAX_FILES} files.`); return;
+    }
+    const invalid = next.map(storeRequestFileMeta).find((meta) => meta.error);
+    if (invalid) { setFiles([]); setActionError(invalid.error); return; }
+    setFiles(next); setActionError('');
+  };
+
+  const sortedCustomers = useMemo(() => [...customers].sort((a, b) => (a.name || '').localeCompare(b.name || '')), [customers]);
+  const canSubmit = !submitting && (!!requestText.trim() || files.length > 0);
+  return (
+    <div style={{ background: '#fff', border: '1px solid #D8DEEA', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', marginBottom: 22, overflow: 'visible' }}>
+      <div style={{ padding: '16px 18px', borderBottom: '1px solid #EEF1F6', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.6px', fontWeight: 800, fontSize: 20, color: '#192853' }}>Start a store</div>
+          <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 2 }}>Paste the coach or rep request and attach any item list. The store will be built as a draft.</div>
+        </div>
+        <span style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.6px', color: '#962C32', background: '#fbebec', borderRadius: 5, padding: '3px 8px' }}>Admin only</span>
+      </div>
+      <div style={{ padding: 18 }}>
+        <label htmlFor="webstore-build-request-text" style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 5 }}>Store request</label>
+        <textarea id="webstore-build-request-text" className="form-input" rows={5} value={requestText} onChange={(e) => setRequestText(e.target.value)}
+          placeholder="Paste the request here — team, products, colors, pricing, dates, delivery details, and anything else the builder should know…"
+          style={{ width: '100%', resize: 'vertical', minHeight: 104, lineHeight: 1.5, boxSizing: 'border-box' }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px,1fr) auto auto', alignItems: 'start', gap: 10, marginTop: 10 }}>
+          <CustomerPicker customers={sortedCustomers} value={customerId} onChange={setCustomerId} placeholder="Optional customer — search by name or tag…" />
+          <input ref={fileRef} type="file" accept="application/pdf,image/*" multiple style={{ display: 'none' }}
+            onChange={(e) => pickFiles(e.target.files)} />
+          <button className="btn btn-secondary" onClick={() => fileRef.current?.click()} disabled={submitting}>📎 Attach item list</button>
+          <button className="btn btn-primary" onClick={submit} disabled={!canSubmit}>{submitting ? 'Uploading & queuing…' : 'Queue store request'}</button>
+        </div>
+        {files.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 9 }}>
+          {files.map((file) => <span key={`${file.name}-${file.size}`} style={{ fontSize: 11.5, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '3px 8px' }}>📎 {file.name}</span>)}
+          <button onClick={() => { setFiles([]); if (fileRef.current) fileRef.current.value = ''; }} style={{ border: 0, background: 'none', color: '#b91c1c', fontSize: 11.5, cursor: 'pointer' }}>Clear</button>
+        </div>}
+        {actionError && <div role="alert" style={{ marginTop: 10, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>{actionError}</div>}
+        {loadError && <div role="alert" style={{ marginTop: 10, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>Could not load requests: {loadError}</div>}
+      </div>
+
+      <div style={{ borderTop: '1px solid #EEF1F6', padding: '14px 18px 16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 9 }}>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: 17, textTransform: 'uppercase', letterSpacing: '.5px', color: '#192853' }}>Store requests</div>
+          <button onClick={() => loadRequests()} disabled={loading} style={{ background: 'none', border: 0, color: '#2A6FDB', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+        </div>
+        {!loading && requests.length === 0 && !loadError && <div style={{ color: '#94a3b8', fontSize: 12.5 }}>No store requests yet.</div>}
+        <div style={{ display: 'grid', gap: 8 }}>
+          {requests.map((request) => {
+            const status = STORE_REQUEST_STATUS[request.status] || STORE_REQUEST_STATUS.queued;
+            const linkedStore = request.store_id && stores.find((store) => store.id === request.store_id);
+            const attachments = Array.isArray(request.attachment_urls) ? request.attachment_urls : [];
+            const preview = request.request_text || (attachments.length ? 'Attachment-only request' : 'No request text');
+            return (
+              <div key={request.id} style={{ border: '1px solid #E2E6EE', borderRadius: 8, padding: '10px 12px', background: '#FAFBFD' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.4px', color: status.fg, background: status.bg, borderRadius: 5, padding: '2px 7px' }}>{status.label}</span>
+                  <span style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>{repName(request.created_by)}</span>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{new Date(request.created_at).toLocaleString()}</span>
+                  {request.customer_id && <span style={{ fontSize: 12, color: '#64748b' }}>· {custName(request.customer_id)}</span>}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {request.status === 'queued' && <button className="btn btn-sm btn-secondary" onClick={() => cancel(request)} style={{ color: '#b91c1c' }}>Cancel</button>}
+                    {request.store_id && (linkedStore
+                      ? <button className="btn btn-sm btn-primary" onClick={() => onOpen(linkedStore)}>Open draft store →</button>
+                      : <a className="btn btn-sm btn-primary" href={`?pg=webstores&store=${encodeURIComponent(request.store_id)}`} style={{ textDecoration: 'none' }}>Open draft store →</a>)}
+                  </div>
+                </div>
+                <div title={request.request_text || ''} style={{ fontSize: 12.5, color: '#334155', marginTop: 7, whiteSpace: 'pre-wrap' }}>{preview.length > 280 ? preview.slice(0, 280) + '…' : preview}</div>
+                {attachments.length > 0 && <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 7 }}>
+                  {attachments.map((attachment, i) => {
+                    const url = typeof attachment === 'string' ? attachment : attachment?.url;
+                    const name = typeof attachment === 'string' ? `Attachment ${i + 1}` : (attachment?.name || `Attachment ${i + 1}`);
+                    return url ? <a key={url || i} href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11.5, color: '#1d4ed8' }}>📎 {name}</a> : null;
+                  })}
+                </div>}
+                {request.result_summary && <div style={{ marginTop: 9, padding: '8px 10px', background: '#fff', borderLeft: '3px solid #1B7F4B', borderRadius: '0 6px 6px 0' }}><MarkdownSummary text={request.result_summary} /></div>}
+                {request.error && <div style={{ marginTop: 8, fontSize: 12, color: '#b91c1c', background: '#fef2f2', borderRadius: 6, padding: '6px 9px' }}>{request.error}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ListView({ stores, customers = [], custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
@@ -5334,6 +5555,8 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
       {/* ══════════ STORES VIEW ══════════ */}
       {view === 'stores' && (
         <>
+          {(cu?.role === 'admin' || cu?.role === 'super_admin') && <StoreRequestPanel customers={customers} stores={stores} cu={cu} repName={repName} custName={custName} onOpen={onOpen} />}
+
           {/* Summary stats strip */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14, marginBottom: 22 }}>
             {summaryStats.map((st) => (
@@ -5805,6 +6028,8 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
   const selected = customers.find((c) => c.id === value);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const listId = React.useId();
   // Searchable haystack per customer: its OWN name + alpha PLUS its parent's name
   // + alpha. That lets a team (child) be found by the parent org's tag too — e.g.
   // "OLU football" -> Orange Lutheran Football, "DHHS football" -> Dana Hills Football.
@@ -5829,6 +6054,15 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
     }
     return out;
   }, [q, index]);
+  useEffect(() => { setActiveIndex(0); }, [q]);
+  const choose = (customer) => { onChange(customer.id); setOpen(false); setQ(''); setActiveIndex(0); };
+  const onPickerKeyDown = (e) => {
+    if (e.key === 'Escape') { setOpen(false); return; }
+    if (!matches.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActiveIndex((i) => Math.min(i + 1, matches.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); setActiveIndex((i) => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter' && open) { e.preventDefault(); choose(matches[activeIndex] || matches[0]); }
+  };
   if (selected && !open) {
     return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div className="form-input" style={{ flex: 1, display: 'flex', alignItems: 'center', background: '#f8fafc' }}>{selected.name}{selected.alpha_tag ? ` (${selected.alpha_tag})` : ''}</div>
@@ -5837,10 +6071,15 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
   }
   return (
     <div style={{ position: 'relative' }}>
-      <input className="form-input" autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder={placeholder || 'Search by name…'} onFocus={() => setOpen(true)} />
+      <input className="form-input" role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={listId}
+        aria-activedescendant={open && matches[activeIndex] ? `${listId}-${activeIndex}` : undefined}
+        autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder={placeholder || 'Search by name…'}
+        onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 120)} onKeyDown={onPickerKeyDown} />
       {open && matches.length > 0 && (
-        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
-          {matches.map((c) => <div key={c.id} onClick={() => { onChange(c.id); setOpen(false); setQ(''); }} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid #f1f5f9' }}>{c.name}{c.alpha_tag ? <span style={{ color: '#94a3b8' }}>{` · ${c.alpha_tag}`}</span> : ''}</div>)}
+        <div id={listId} role="listbox" style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+          {matches.map((c, i) => <button type="button" id={`${listId}-${i}`} role="option" aria-selected={i === activeIndex} key={c.id}
+            onMouseDown={(e) => { e.preventDefault(); choose(c); }} onMouseEnter={() => setActiveIndex(i)}
+            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', cursor: 'pointer', fontSize: 13, border: 0, borderBottom: '1px solid #f1f5f9', background: i === activeIndex ? '#f8fafc' : '#fff', color: '#0f172a' }}>{c.name}{c.alpha_tag ? <span style={{ color: '#94a3b8' }}>{` · ${c.alpha_tag}`}</span> : ''}</button>)}
         </div>
       )}
       {open && q.trim().length >= 1 && matches.length === 0 && <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, padding: '8px 12px', fontSize: 12, color: '#94a3b8' }}>No matches.</div>}
