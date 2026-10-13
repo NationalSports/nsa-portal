@@ -1,8 +1,10 @@
 const {
+  compareStyleIds,
   fetchWithBackoff,
   retryDelayMs,
   stylesAfterCursor,
 } = require('../../netlify/functions/_background-workers/ss-adidas-sync-core');
+const ssWorker = require('../../netlify/functions/_background-workers/ss-adidas-sync-background');
 const health = require('../../netlify/functions/adidas-inventory-sync-health');
 
 const response = (status, body, headers = {}) => ({
@@ -36,6 +38,12 @@ describe('S&S Adidas sync reliability helpers', () => {
     }).map((style) => style.styleID)).toEqual(['20', '200']);
   });
 
+  test('keeps distinct zero-padded style IDs in deterministic order', () => {
+    expect(compareStyleIds('09', '9')).not.toBe(0);
+    const styles = [{ styleID: '9' }, { styleID: '09' }, { styleID: '10' }];
+    expect(stylesAfterCursor(styles, {}).map((style) => style.styleID)).toEqual(['09', '9', '10']);
+  });
+
   test('honors Retry-After and retries 429 responses', async () => {
     const waits = [];
     const makeRequest = jest.fn()
@@ -65,6 +73,33 @@ describe('S&S Adidas sync reliability helpers', () => {
     expect(result.status).toBe(429);
     expect(makeRequest).toHaveBeenCalledTimes(1);
     expect(waits).toEqual([]);
+  });
+
+  test('retries a transient network rejection', async () => {
+    const makeRequest = jest.fn()
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(response(200, { ok: true }));
+
+    const result = await fetchWithBackoff(makeRequest, { sleep: async () => {} });
+    expect(result.status).toBe(200);
+    expect(makeRequest).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('S&S background invocation authentication', () => {
+  const originalEnv = process.env;
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  test('rejects callers without the shared trigger secret before external I/O', async () => {
+    process.env = { ...originalEnv, ADIDAS_SYNC_TRIGGER_SECRET: 'expected-secret' };
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const result = await ssWorker.handler({ headers: { 'x-adidas-sync-secret': 'wrong-secret' } });
+    expect(result.statusCode).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
 
@@ -97,10 +132,14 @@ describe('Adidas inventory sync health check', () => {
         ]);
       }
       if (String(url).includes('adidas_inventory_sync_runs')) {
-        return response(200, [
-          { source: 'api-materials', status: 'success', error_count: 0, finished_at: now, started_at: now },
-          { source: 'ss_activewear', status: 'completed', error_count: 0, finished_at: now, started_at: now },
-        ]);
+        const source = String(url).includes('source=eq.api-materials') ? 'api-materials' : 'ss_activewear';
+        return response(200, [{
+          source,
+          status: source === 'api-materials' ? 'success' : 'completed',
+          error_count: 0,
+          finished_at: now,
+          started_at: now,
+        }]);
       }
       if (String(url).includes('adidas_inventory_guard_drops')) return response(200, []);
       throw new Error(`Unexpected fetch: ${url}`);
@@ -109,7 +148,7 @@ describe('Adidas inventory sync health check', () => {
     const result = await health.handler();
     expect(result.statusCode).toBe(200);
     expect(JSON.parse(result.body).ok).toBe(true);
-    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(global.fetch).toHaveBeenCalledTimes(6);
   });
 
   test('emails when a source is stale or guard drops are observed', async () => {
@@ -124,10 +163,15 @@ describe('Adidas inventory sync health check', () => {
         ]);
       }
       if (value.includes('adidas_inventory_sync_runs')) {
-        return response(200, [
-          { source: 'api-materials', status: 'failed', error_count: 1, finished_at: stale, started_at: stale },
-          { source: 'ss_activewear', status: 'success', error_count: 0, finished_at: now, started_at: now },
-        ]);
+        const source = value.includes('source=eq.api-materials') ? 'api-materials' : 'ss_activewear';
+        if (value.includes('status=in.') && source === 'api-materials') return response(200, []);
+        return response(200, [{
+          source,
+          status: source === 'api-materials' ? 'failed' : 'success',
+          error_count: source === 'api-materials' ? 1 : 0,
+          finished_at: source === 'api-materials' ? stale : now,
+          started_at: source === 'api-materials' ? stale : now,
+        }]);
       }
       if (value.includes('adidas_inventory_guard_drops')) {
         return response(200, [{ source: 'api-materials', reason: 'raw_size_code', drop_count: 4 }]);
@@ -143,6 +187,6 @@ describe('Adidas inventory sync health check', () => {
     expect(body.findings.map((finding) => finding.issue).join(' ')).toMatch(/No successful run in 24h/);
     expect(body.findings.map((finding) => finding.issue).join(' ')).toMatch(/coverage is behind/);
     expect(body.findings.map((finding) => finding.issue).join(' ')).toMatch(/4 inventory row/);
-    expect(global.fetch).toHaveBeenCalledTimes(4);
+    expect(global.fetch).toHaveBeenCalledTimes(7);
   });
 });

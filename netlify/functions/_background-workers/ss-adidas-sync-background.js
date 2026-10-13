@@ -1,16 +1,19 @@
-const { randomUUID } = require('node:crypto');
+const { randomUUID, timingSafeEqual } = require('node:crypto');
 const { vendorCostSnapshot } = require('../../../src/lib/vendorCostSnapshot.shared');
 const {
+  compareStyleIds,
   fetchWithBackoff,
   styleKey,
   stylesAfterCursor,
 } = require('./ss-adidas-sync-core');
 
-// Netlify background functions are capped at 15 minutes. Leave three minutes for
+// Env: SS_ACCOUNT_NUMBER, SS_API_KEY, REACT_APP_SUPABASE_URL,
+// SUPABASE_SERVICE_ROLE_KEY, ADIDAS_SYNC_TRIGGER_SECRET.
+// Netlify background functions are capped at 15 minutes. Leave four minutes for
 // the final batch, checkpoint, run audit update, and lock release.
-const TIME_BUDGET_MS = 12 * 60 * 1000;
+const TIME_BUDGET_MS = 11 * 60 * 1000;
 const LOCK_TTL_SECONDS = 20 * 60;
-const STYLE_BATCH_SIZE = 5;
+const STYLE_BATCH_SIZE = 3;
 const SS_CDN = 'https://cdn.ssactivewear.com/';
 const SOURCE = 'ss_activewear';
 const timeoutSignal = (ms) => (
@@ -44,9 +47,21 @@ function mapCategory(title, baseCategory) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const secretsMatch = (provided, expected) => {
+  if (!provided || !expected) return false;
+  const left = Buffer.from(String(provided));
+  const right = Buffer.from(String(expected));
+  return left.length === right.length && timingSafeEqual(left, right);
+};
 
-exports.handler = async () => {
+exports.handler = async (event = {}) => {
   const startedMs = Date.now();
+  const triggerSecret = process.env.ADIDAS_SYNC_TRIGGER_SECRET;
+  const providedSecret = event.headers?.['x-adidas-sync-secret'] || event.headers?.['X-Adidas-Sync-Secret'];
+  if (!secretsMatch(providedSecret, triggerSecret)) {
+    console.error('[ss-adidas-sync] rejected unauthorized invocation');
+    return { statusCode: 401, body: 'Unauthorized' };
+  }
   const ssAccount = process.env.SS_ACCOUNT_NUMBER;
   const ssKey = process.env.SS_API_KEY;
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
@@ -62,7 +77,7 @@ exports.handler = async () => {
     Authorization: `Bearer ${sbKey}`,
   };
   const sbFetch = (path, init = {}) => {
-    const signal = init.signal || timeoutSignal(15_000);
+    const signal = init.signal || timeoutSignal(10_000);
     return fetch(`${sbUrl}/rest/v1/${path}`, {
       ...init,
       headers: { ...sbHeaders, ...(init.headers || {}) },
@@ -79,6 +94,13 @@ exports.handler = async () => {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  const guardDropTotal = async () => {
+    const since = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await sbJson(
+      `adidas_inventory_guard_drops?source=eq.${encodeURIComponent(SOURCE)}&last_seen_at=gte.${encodeURIComponent(since)}&select=drop_count`
+    );
+    return (rows || []).reduce((sum, row) => sum + Number(row.drop_count || 0), 0);
+  };
 
   if (!ssAccount || !ssKey) {
     const message = 'SS_ACCOUNT_NUMBER or SS_API_KEY is missing';
@@ -225,25 +247,32 @@ exports.handler = async () => {
       const inventoryToWrite = [...new Map(inventoryBatch.map((row) => [`${row.sku}\0${row.size}`, row])).values()];
       if (productsToWrite.length) {
         for (let index = 0; index < productsToWrite.length; index += 250) {
+          const chunk = productsToWrite.slice(index, index + 250);
           await sbJson('products?on_conflict=id', {
             method: 'POST',
             headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-            body: JSON.stringify(productsToWrite.slice(index, index + 250)),
+            body: JSON.stringify(chunk),
           });
+          productsUpserted += chunk.length;
         }
       }
       if (inventoryToWrite.length) {
         for (let index = 0; index < inventoryToWrite.length; index += 500) {
+          const chunk = inventoryToWrite.slice(index, index + 500);
+          const dropsBefore = await guardDropTotal();
           await sbJson('adidas_inventory?on_conflict=sku,size', {
             method: 'POST',
             headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-            body: JSON.stringify(inventoryToWrite.slice(index, index + 500)),
+            body: JSON.stringify(chunk),
           });
+          const dropped = Math.max(0, (await guardDropTotal()) - dropsBefore);
+          inventoryRows += Math.max(0, chunk.length - dropped);
+          if (dropped) {
+            throw new Error(`Database size guard rejected ${dropped} S&S inventory row(s); cursor was preserved`);
+          }
         }
       }
 
-      productsUpserted += productsToWrite.length;
-      inventoryRows += inventoryToWrite.length;
       const checkpoint = await rpc('checkpoint_adidas_inventory_sync', {
         p_source: SOURCE,
         p_owner: lockOwner,
@@ -267,7 +296,7 @@ exports.handler = async () => {
 
       const style = pendingStyles[index];
       const currentStyleId = styleKey(style);
-      if (!highWaterStyleId || currentStyleId.localeCompare(highWaterStyleId, 'en', { numeric: true }) > 0) {
+      if (!highWaterStyleId || compareStyleIds(currentStyleId, highWaterStyleId) > 0) {
         highWaterStyleId = currentStyleId;
       }
       try {
@@ -356,6 +385,11 @@ exports.handler = async () => {
       await flush();
     }
     if (!pendingStyles.length) {
+      if (retryStyleIds.size) {
+        throw new Error(
+          `${retryStyleIds.size} retry style(s) were absent from the latest S&S catalog; cursor was preserved`
+        );
+      }
       cycleCompleted = true;
       highWaterStyleId = '';
       await flush({ completeCycle: true });

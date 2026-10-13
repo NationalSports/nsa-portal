@@ -1,9 +1,15 @@
 const styleKey = (style) => String(style?.styleID ?? style?.styleId ?? '');
+const compareStyleIds = (a, b) => {
+  const left = String(a);
+  const right = String(b);
+  const natural = left.localeCompare(right, 'en', { numeric: true });
+  return natural || left.localeCompare(right, 'en');
+};
 
 function sortStyles(styles) {
   return [...(styles || [])]
     .filter((style) => styleKey(style))
-    .sort((a, b) => styleKey(a).localeCompare(styleKey(b), 'en', { numeric: true }));
+    .sort((a, b) => compareStyleIds(styleKey(a), styleKey(b)));
 }
 
 function stylesAfterCursor(styles, cursor) {
@@ -12,7 +18,7 @@ function stylesAfterCursor(styles, cursor) {
   const retries = new Set((cursor?.retry_style_ids || []).map(String));
   const retryStyles = sorted.filter((style) => retries.has(styleKey(style)));
   const after = lastStyleId
-    ? sorted.filter((style) => styleKey(style).localeCompare(lastStyleId, 'en', { numeric: true }) > 0)
+    ? sorted.filter((style) => compareStyleIds(styleKey(style), lastStyleId) > 0)
     : sorted;
   return [...new Map([...retryStyles, ...after].map((style) => [styleKey(style), style])).values()];
 }
@@ -36,8 +42,15 @@ async function fetchWithBackoff(makeRequest, {
 } = {}) {
   let response;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    response = await makeRequest();
-    if (response.status !== 429 && response.status < 500) return response;
+    try {
+      response = await makeRequest();
+    } catch (error) {
+      if (attempt === maxAttempts - 1) throw error;
+      await sleep(retryDelayMs(null, attempt, now()));
+      continue;
+    }
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+    if (!retryable) return response;
     if (attempt === maxAttempts - 1) return response;
     const delayMs = retryDelayMs(response, attempt, now());
     // A long vendor cooldown cannot fit inside a Netlify invocation. Return
@@ -49,6 +62,7 @@ async function fetchWithBackoff(makeRequest, {
 }
 
 module.exports = {
+  compareStyleIds,
   fetchWithBackoff,
   retryDelayMs,
   sortStyles,

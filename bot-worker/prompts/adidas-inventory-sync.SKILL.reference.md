@@ -105,19 +105,26 @@ of a run:
 4. If the claimed state's cursor contains `remaining_skus`, resume that queue
    verbatim before building a new daily/weekly queue. The cursor shape is:
    `{remaining_skus:[...], cycle_mode:"daily"|"weekly", items_total:N}`.
-5. After each successful batch (maximum 25 SKUs), call
+5. After each successful batch (maximum 25 SKUs), and at least every 5 minutes
+   even when fewer SKUs have finished, call
    `checkpoint_adidas_inventory_sync` with the still-unprocessed queue. Keep the
    current/in-flight SKU in `remaining_skus` until its inventory upsert and
    read-back verification both succeed. The checkpoint refreshes the expiring
    lock; if it returns `updated:false`, stop immediately because lock ownership
-   was lost.
+   was lost. Bound each CLICK API call to 2 minutes so one hung request cannot
+   outlive the 20-minute lease without a heartbeat.
 6. Always finish the run row with `finished_at`, `styles_total` (SKU count),
    `styles_processed`, `inventory_rows`, `error_count`, `errors`, and
    `cycle_completed`. Use `success` for an error-free daily slice, `completed`
    for an error-free full sweep, `partial` for any non-auth item failures,
    `auth_required` for a 401, and `failed` for a fatal error. A run with errors
    must never be labeled success.
-7. Always call `release_adidas_inventory_sync` in cleanup with the same source
+7. When the final SKU of a full sweep has passed its write/read-back check,
+   call `checkpoint_adidas_inventory_sync` with `p_cursor:{}` and
+   `p_cycle_completed:true` before marking the run `completed`. This clears the
+   old queue and stamps `last_cycle_completed_at`; an empty queue with the RPC's
+   default `false` is not a completed cycle.
+8. Always call `release_adidas_inventory_sync` in cleanup with the same source
    and owner. Expiry is only a crash backstop.
 
 Before writing a batch, read the current 24-hour aggregate from

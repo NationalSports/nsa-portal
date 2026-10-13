@@ -2,12 +2,27 @@
 -- This migration is intentionally service-role only: sync state, lock tokens,
 -- and failure details must not be exposed through the public Data API.
 
--- The original 00045 migration declared a serial id and omitted source, while
--- every current writer and the live table use text ids plus a source marker.
--- Repair clean migration-chain installs and make the guard below portable.
-alter table public.adidas_inventory alter column id drop default;
-alter table public.adidas_inventory alter column id type text using id::text;
+-- The original 00045 migration now declares the same text id/source shape as
+-- the live table. Add source forward for older installs, and fail loudly rather
+-- than attempting a destructive type change underneath dependent storefront
+-- views if an unsupported serial-id schema somehow reaches this migration.
 alter table public.adidas_inventory add column if not exists source text;
+
+do $$
+begin
+  if exists (
+    select 1
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'adidas_inventory'
+       and column_name = 'id'
+       and data_type <> 'text'
+  ) then
+    raise exception
+      'adidas_inventory.id must be text before applying sync reliability migration';
+  end if;
+end;
+$$;
 
 create table public.adidas_inventory_sync_state (
   source text primary key

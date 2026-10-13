@@ -57,12 +57,23 @@ exports.handler = async () => {
   let states;
   let runs;
   let drops;
+  let latestSuccessBySource;
   try {
-    [states, runs, drops] = await Promise.all([
+    const results = await Promise.all([
       get('adidas_inventory_sync_state?select=source,cycle_started_at,last_progress_at,last_cycle_completed_at,locked_until'),
-      get('adidas_inventory_sync_runs?select=source,status,styles_total,styles_processed,inventory_rows,error_count,cycle_completed,started_at,finished_at&order=started_at.desc&limit=100'),
       get(`adidas_inventory_guard_drops?select=source,reason,drop_count,last_seen_at,sample_sku,sample_size&last_seen_at=gte.${encodeURIComponent(dayAgo)}&order=last_seen_at.desc`),
+      ...SOURCES.map((source) => get(
+        `adidas_inventory_sync_runs?source=eq.${encodeURIComponent(source)}&select=source,status,styles_total,styles_processed,inventory_rows,error_count,cycle_completed,started_at,finished_at&order=started_at.desc&limit=20`
+      )),
+      ...SOURCES.map((source) => get(
+        `adidas_inventory_sync_runs?source=eq.${encodeURIComponent(source)}&status=in.(success,completed)&error_count=eq.0&finished_at=not.is.null&select=source,status,finished_at&order=finished_at.desc&limit=1`
+      )),
     ]);
+    [states, drops] = results;
+    runs = results.slice(2, 2 + SOURCES.length).flat();
+    latestSuccessBySource = Object.fromEntries(
+      SOURCES.map((source, index) => [source, results[2 + SOURCES.length + index]?.[0] || null])
+    );
   } catch (error) {
     console.error('[adidas-sync-health] query failed', error);
     return { statusCode: 502, body: error.message };
@@ -74,11 +85,7 @@ exports.handler = async () => {
   for (const source of SOURCES) {
     const sourceRuns = (runs || []).filter((run) => run.source === source);
     const latest = sourceRuns[0] || null;
-    const latestSuccess = sourceRuns.find((run) =>
-      ['success', 'completed'].includes(run.status)
-      && Number(run.error_count || 0) === 0
-      && run.finished_at
-    ) || null;
+    const latestSuccess = latestSuccessBySource[source];
     const state = stateBySource[source] || {};
     const lastSuccessAt = latestSuccess?.finished_at || null;
     const coverageAt = state.last_cycle_completed_at || null;

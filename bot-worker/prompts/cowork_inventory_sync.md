@@ -22,8 +22,13 @@ tables introduced by migration `20261013035411_adidas_inventory_sync_reliability
   errors are `partial`; HTTP 401/no SID is `auth_required`; fatal setup/write
   failures are `failed`.
 - Persist the unprocessed queue in `adidas_inventory_sync_state.cursor` after no
-  more than 25 successful SKUs. Keep the in-flight SKU queued until its upsert
-  and read-back succeed. Resume a stored queue before discovering a new one.
+  more than 25 successful SKUs and at least every 5 minutes. Bound each CLICK
+  request to 2 minutes so the 20-minute lease cannot expire during a hung call.
+  Keep the in-flight SKU queued until its upsert and read-back succeed. Resume a
+  stored queue before discovering a new one.
+- After the final SKU in a full sweep, checkpoint `{}` with
+  `p_cycle_completed:true` before marking the run `completed`; this resets the
+  queue and stamps full-catalog coverage.
 - On 401, checkpoint first, record `auth_required`, release the lock, and ask
   Steve to log back into account `0000270384`. Never discard the queue.
 - Compare `adidas_inventory_guard_drops` before/after each write batch. A rise
