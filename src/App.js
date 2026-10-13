@@ -6,6 +6,8 @@ import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
 import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
+import { planOrderSave } from './lib/artJobsSaveRouting';
+import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -575,9 +577,11 @@ import {
   _isDocumentConflictCooling,
   _hasActiveDocumentSave,
   _dbSaveEstimate,
-  _dbSaveSO,
+  _dbSaveSO as _dbSaveSOFull,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
+  _dbSaveArtJobs,
+  _soTouchAvailable,
   _dbSaveInvoice,
   _dbNotify,
   _dataLossAlert,
@@ -2672,6 +2676,30 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // ─── Order save routing (SO-2444, 2026-10-12) ───
+  // Every order save in this component goes through here: the [sos] diff save, savSONow, and the Art
+  // Dashboard's direct calls. A save that changes ONLY art files and/or jobs relative to the last
+  // database-synced copy (`opts.before`; default: this order's _dbSnap entry) takes the light path —
+  // just those rows are written and the order is touched without a version bump (migration
+  // so_touch_without_version_bump), so an artist's upload no longer re-saves every line item or
+  // moves the version under a rep's open edit, while every other screen still refreshes. Stale
+  // job/art rows are three-way merged at save time (lib/staleRowMerge). Anything else, any special
+  // save option, or a database without the touch RPC is the unchanged full save; a failed light save
+  // falls back to it (the full save carries the retry/outbox machinery).
+  const _dbSaveSO=(so,opts)=>{
+    const before=opts&&('before' in opts)?opts.before:(_dbSnap.current?.sos||[]).find(x=>x&&so&&x.id===so.id);
+    const plan=planOrderSave(before,so,{opts,touchAvailable:_soTouchAvailable()});
+    if(plan.kind==='full')return _dbSaveSOFull(so,plan.fullOpts);
+    // Record this as synced so the [sos] diff save doesn't ALSO send it as a full save.
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===so.id))_dbSnap.current.sos=snap.map(x=>x.id===so.id?so:x);
+    const light=plan.kind==='artJobs'?_dbSaveArtJobs(so,{quiet:true}):_dbSaveArtFiles(so,{quiet:true});
+    return Promise.resolve(light).then(ok=>{
+      if(ok===false)return _dbSaveSOFull(so);// the full save carries the retry/outbox machinery
+      _markRecentlyPulled(so.id);// a poll read from before this commit must not revert it
+      return ok;
+    });
+  };
   // Inventory merge-save baseline (00239): DIRECT _dbSaveProduct callers (editor
   // Save, Auto Inventory upload) read their pre-edit baseline from the prod
   // snapshot at call time — the diff-save effect hasn't advanced it yet at that
@@ -3925,7 +3953,7 @@ export default function App(){
   };
 
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
-  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
+  React.useEffect(()=>{_diffSave(sos,'sos',(s,old)=>_dbSaveSO(s,{before:old}),_soDiffCmp)},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i),_invDiffCmp)},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
@@ -5218,13 +5246,15 @@ export default function App(){
   const _eSOSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eSO){
     const fresh=sos.find(s=>s.id===eSO.id);if(!fresh)return;
-    const snapKey=fresh.id+':'+(fresh._version??'')+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    const snapKey=fresh.id+':'+(fresh._version??'')+':'+childVersionSig(fresh)+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
     if(snapKey===_eSOSnapRef.current)return;
     _eSOSnapRef.current=snapKey;
     // A newer server _version alone must reach the editor too (SO-2444): another session's item-only
     // save changed none of the fields below, so the open editor never learned the order had moved and
     // its next edit was rejected as stale. The editor decides what to do with it (adopt when clean).
-    if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
+    // Same for a newer job/artwork row: Art Dashboard saves write only those rows and touch the order
+    // without a version bump, so the order's own _version can't tell the editor about them.
+    if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||childVersionSig(fresh)!==childVersionSig(eSO)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
   }},[sos]);
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
@@ -7494,10 +7524,12 @@ export default function App(){
     const sl=savSO(s,opts);
     if(!sl||!sl.id)return Promise.resolve(false);
     setESO(prev=>prev&&prev.id===sl.id?sl:prev);
+    const _syncedBefore=(_dbSnap.current?.sos||[]).find(x=>x.id===sl.id);// routing base, captured before staging
     stageDocumentBaseline(_dbSnap,'sos',sl);
     if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
-    const _p=_dbSaveSO(sl);
+    // Unload / forced re-auth saves stay full saves (they are staged in the outbox above).
+    const _p=opts?.stageOutbox?_dbSaveSOFull(sl):_dbSaveSO(sl,{before:_syncedBefore});
     Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{(!_hasActiveDocumentSave(sl.id)&&_dbSavePendingIds.delete(sl.id))});
     return _p;
   };

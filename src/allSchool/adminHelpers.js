@@ -78,7 +78,7 @@ export const applySportDesign = (rows, stock, logo) => (rows || []).map((row) =>
   ...row,
   image_url: null, image_back_url: null,
   transfer_codes: [stock.code], transfer_code: null,
-  decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: 'dtf', transfer_code: stock.code, baked: false }],
+  decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: stock.decoration_type || 'dtf', transfer_code: stock.code, baked: false }],
 }));
 
 export const stockLinkedArtError = (item, decorations) => {

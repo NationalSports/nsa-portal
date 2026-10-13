@@ -9,7 +9,7 @@ const stable = value => JSON.stringify(value, (key, v) => v && typeof v === 'obj
 // supplier contacts, approval actor IDs or private storage paths.
 export function frozenPurchasedMocks(item, lines, safeUrl) {
   const recipe = item.recipe_snapshot;
-  if (!recipe || recipe.version !== 1) return [];
+  if (!recipe || ![1, 2].includes(recipe.version)) return [];
   const ids = new Set(arr(item.source_webstore_item_ids).map(String));
   const bought = lines.filter(line => ids.has(String(line.id)) && !line.is_bundle_parent);
   const decorations = arr(recipe.decorations).filter(Boolean).map(d => {

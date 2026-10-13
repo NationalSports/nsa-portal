@@ -26,7 +26,32 @@ export function shouldAdoptServerCopy(local, server, { dirty, pendingSizing, sav
   const lv = num(local._version);
   // A local copy that never read a version back (brand-new, unsaved) is not "behind".
   if (!Number.isFinite(lv)) return false;
-  return sv > lv;
+  if (sv > lv) return true;
+  // Same order version, newer job/artwork rows: an Art Dashboard save writes only those rows and
+  // touches the order without a version bump (migration so_touch_without_version_bump), so the
+  // order's _version alone no longer says whether this copy is current.
+  return sv === lv && childRowsNewer(local, server);
+}
+
+// "JOB-1:19,JOB-2:4|af1:30" — changes whenever any job or artwork row is written. The editor's
+// external-sync key and App's open-order refresh include it so row-only saves reach an open order.
+export function childVersionSig(order) {
+  const sig = rows => (Array.isArray(rows) ? rows : []).filter(Boolean).map(r => r.id + ':' + (r._version ?? '')).sort().join(',');
+  return sig(order?.jobs) + '|' + sig(order?.art_files);
+}
+
+// Does the server hold a newer version of any job/artwork row this copy also holds? Rows only one
+// side has, or without a version on either side, never count (an unsaved local job is not behind).
+export function childRowsNewer(local, server) {
+  const newer = (localRows, serverRows) => {
+    const lv = new Map((Array.isArray(localRows) ? localRows : []).filter(r => r && r.id).map(r => [r.id, num(r._version)]));
+    return (Array.isArray(serverRows) ? serverRows : []).some(r => {
+      if (!r || !lv.has(r.id)) return false;
+      const a = lv.get(r.id), b = num(r._version);
+      return Number.isFinite(a) && Number.isFinite(b) && b > a;
+    });
+  };
+  return newer(local?.jobs, server?.jobs) || newer(local?.art_files, server?.art_files);
 }
 
 // Session-only bookkeeping that must survive the swap: deletion tombstones (so a stale

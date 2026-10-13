@@ -135,6 +135,7 @@ const near = (actual, expected, label) => assert.ok(
     await db.exec(read('supabase/migrations/20261012062607_all_school_shared_supplier_queue.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
 await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numbers.sql'));
+    await db.exec(read('supabase/migrations/20261013045559_at_once_variant_placement.sql'));
     const teamshopMint = (await db.query("select pg_get_functiondef('public.create_teamshop_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     const uniformMint = (await db.query("select pg_get_functiondef('public.convert_uniform_order_to_sales_order(uuid)'::regprocedure) definition")).rows[0].definition;
     assert.match(teamshopMint, /SO-/); assert.doesNotMatch(teamshopMint, /247-/);
@@ -146,9 +147,10 @@ await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numb
     // same immutable fields the conversion RPC consumes after successful
     // checkout; no network/payment operation is attempted here.
     const recipe = {
+      version: 2,
       webstore_product_id: '20000000-0000-0000-0000-000000000001',
       product_id: 'GARMENT', sku: 'PC61', color: 'Navy',
-      decorations: [], // One stocked transfer design, not an additional custom-art job.
+      decorations: [{art_id:'crest',type:'dtf',transfer_code:'SCHOOL-CREST',placement:'full_back',side:'back',art_url:'navy-knockout.png'}], // Overlay and stock make one job.
       transfer_codes: ['SCHOOL-CREST'],
       transfer_inventory: [{ code: 'SCHOOL-CREST', label: 'School crest',
         decoration_type: 'dtf', application_method: 'heat_press', width_in: 4,
@@ -194,6 +196,8 @@ await db.exec(read('supabase/migrations/20261012135710_at_once_xpo_purchase_numb
     near(invoice.paid,60,'automatically applied checkout payment');
     assert.equal((await db.query('select count(*)::int n from invoice_payments where invoice_id=$1',[invoice.id])).rows[0].n,1);
     assert.equal((await db.query('select status from webstore_orders where id=$1',[oid])).rows[0].status,'batched');
+    const purchasedDecos=(await db.query('select d.placement,d.side,d.web_url from so_item_decorations d join so_items i on i.id=d.so_item_id where i.so_id=$1',[conversion.so_id])).rows;
+    assert.deepEqual(purchasedDecos,[{placement:'full_back',side:'back',web_url:'navy-knockout.png'}]);
     console.log('PASS fake paid All School checkout converts once to 1010043 + paid invoice/payment; replay preserves the ID');
 
     snapshots.push(await snapshot(db,conversion.so_id,'converted','need_order',60));
