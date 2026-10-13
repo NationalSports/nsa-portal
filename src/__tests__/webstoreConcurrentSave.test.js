@@ -63,4 +63,16 @@ describe('webstore settings concurrent saves', () => {
     expect(saveSource).toContain("query.eq('updated_at', latest.updated_at)");
     expect(saveSource).toContain('webstoreSaveConflicts(originalStore, latest, form)');
   });
+
+  test('close-time edits persist through close_at and every database writer advances the revision', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'Webstores.js'), 'utf8');
+    const migration = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20261013070500_webstores_updated_at_trigger.sql'), 'utf8');
+    const closeTimeInput = source.split('\n').find((line) => line.includes('data-tour-id="ws-close-time"'));
+
+    expect(closeTimeInput).toContain("dirtyFields.current.add('close_at')");
+    expect(migration).toContain('where updated_at is null');
+    expect(migration).toContain('alter column updated_at set not null');
+    expect(migration).toContain('create trigger trg_webstores_updated');
+    expect(migration).toContain('execute function public.set_updated_at()');
+  });
 });

@@ -6207,7 +6207,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
           <Row label="Close date (optional)"><input className="form-input" data-tour-id="ws-close-date" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
           <Row label="Close time (Pacific)">
-            <input className="form-input" data-tour-id="ws-close-time" type="time" value={f.close_time || DEFAULT_CLOSE_TIME} onChange={(e) => set('close_time', e.target.value || DEFAULT_CLOSE_TIME)} disabled={!f.close_at} />
+            <input className="form-input" data-tour-id="ws-close-time" type="time" value={f.close_time || DEFAULT_CLOSE_TIME} onChange={(e) => { change({ close_time: e.target.value || DEFAULT_CLOSE_TIME }); dirtyFields.current.add('close_at'); }} disabled={!f.close_at} />
           </Row>
         </div>
         <div style={{ fontSize: 12, color: '#8A93A8', marginTop: -6, marginBottom: 10 }}>
