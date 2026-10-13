@@ -69,7 +69,7 @@ import * as fabric from 'fabric';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates } from './lib/logoDetail';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, soLineQty, splitInvoiceLine, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -2104,7 +2104,12 @@ const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.a
 function buildInvoicePdfRows(inv, so, fmt){
   const soArt=so?safeArt(so):[];
   const soItems=so?safeItems(so):[];
-  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
+  // Split-art designs (one of 2-3 logos sharing a line's sizes) count only their own pieces
+  // toward the design's price tier, and reversibles count twice — same as the order editor.
+  // Counting the whole line here priced split prints at a bigger break than the SO billed
+  // (SO-1131's FRIARS print showed +$3.80/ea on INV-64435; the order billed $4.10).
+  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){const sp=decoSplitQty(d);aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+(sp!=null?sp:q)*(d.reversible?2:1)}})});
+  const depPct=inv&&inv.inv_type==='deposit'?(safeNum(inv.deposit_pct)||50)/100:1;
   let lineItems=(inv&&inv.line_items)||[];
   if(!lineItems.length&&so){
     lineItems=soItems.map((it,idx)=>{
@@ -2124,14 +2129,25 @@ function buildInvoicePdfRows(inv, so, fmt){
     const szStr=soIt?sizeBreakdownStr(safeSizes(soIt),soIt.is_footwear):'';
     if(szStr)itemName+='<br/><span>'+szStr+'</span>';
     if(soIt?.notes&&String(soIt.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(soIt.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(safeNum(li.rate)),style:'text-align:right'},{value:fmt(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
-    const decos=soIt?safeDecos(soIt):[];
-    decos.forEach(d=>{
-      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+    // Decorations price at the SO line's own qty (pq) so a partial line never drops into a
+    // different tier; the billed count (eq) scales to what this invoice line bills.
+    const pq=soIt?soLineQty(soIt):qty;
+    const decos=(soIt?safeDecos(soIt):[]).map(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+      const sp=decoSplitQty(d);const nq=dp2._nq!=null?dp2._nq:(sp!=null&&d.kind==='art'?sp*(d.reversible?2:1):null);
+      const eq=nq!=null?(pq>0&&qty!==pq?Math.round(nq*qty/pq):nq):(d.reversible?qty*2:qty);
+      const sell=safeNum(dp2.sell);
+      return{d,eq,sell,amt:Math.round(eq*sell*depPct*100)/100};
+    });
+    // Print the garment and each decoration on their own rows (as the SO does) when the line's
+    // amount splits cleanly; otherwise keep the combined rate with decorations as detail.
+    const split=splitInvoiceLine(li.amount,qty,decos.map(x=>x.amt));
+    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(split?split.garmentRate:safeNum(li.rate)),style:'text-align:right'},{value:fmt(split?split.garmentAmt:safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
+    decos.forEach(({d,eq,sell,amt})=>{
       const artF=soArt.find(a2=>a2.id===d.art_file_id);
       const decoLabel=pdfDecoLabel(d,artF);
       const posLabel=d.position?' — '+d.position:'';
-      rows.push({_class:'deco-row',cells:[{value:'',style:''},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:'+'+fmt(safeNum(dp2.sell))+'/ea',style:'text-align:right;color:#64748b'},{value:'',style:''}]});
+      rows.push({_class:'deco-row',cells:[{value:split?eq:'',style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:split?fmt(sell):'+'+fmt(sell)+'/ea',style:'text-align:right'+(split?'':';color:#64748b')},{value:split?fmt(amt):'',style:'text-align:right'}]});
     });
   });
   return{rows,subtotal};
