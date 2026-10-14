@@ -15,7 +15,7 @@ import {shouldAdoptServerCopy,adoptServerCopy,childVersionSig} from './lib/edito
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import { skusMissingRevColorWays, missingRevColorWaysMsg } from './safeHelpers';
 import JobGarmentMocks from './JobGarmentMocks';
-import { logoDetailCustomerUpdates } from './lib/logoDetail';
+import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
@@ -7314,7 +7314,18 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     {/* stitch: the live DST drawn in each color way's threads, beside/under its card */}
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}
                       stitch={art.deco_type==='embroidery'?(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-                        return{dstUrl,onEnlarge:setMockupLightbox,onSetPreview:async blob=>{const folderId=art.id;nf('Uploading preview...');try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_stitch_preview.png',{type:'image/png'}),'nsa-art-previews');await saveArtFilesNow((oRef.current.art_files||[]).map(fa=>fa.id===folderId?{...fa,preview_url:url}:fa),'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}}}})():null}/>
+                        return{dstUrl,onEnlarge:setMockupLightbox,onUseAsLogo:async(blob,cw)=>{
+                          // The stitch render becomes this color way's web logo = its logo detail (stores, mockups,
+                          // production sheet). Same save + Art Library sync as a logo uploaded from the job.
+                          const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
+                          const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
+                          if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this stitch render?'))return;
+                          nf('Saving web logo...');
+                          try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-web-logos');
+                            const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:'Stitch render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+                            if(!(await saveArtFilesNow(arts,'Web logo')))return;
+                            await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
+                          catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}}}})():null}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>

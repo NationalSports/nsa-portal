@@ -69,7 +69,7 @@ function drawDst(canvas, design, inks, bg, size) {
 // One color way's render. `compact` = sitting beside/under its own color-way card in
 // ColorWaysEditor, so the card already shows the CW badge and thread list — the tile
 // is just the picture plus actions. Otherwise it carries its own header + stop list.
-function DstTile({ design, cw, idx, onEnlarge, onSetPreview, busy, compact = false, width = 220 }) {
+function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = false, width = 220 }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = cw?.inks || [];
@@ -111,7 +111,7 @@ function DstTile({ design, cw, idx, onEnlarge, onSetPreview, busy, compact = fal
         </div>
       </>}
       <div style={{ display: 'flex', gap: 6 }}>
-        {onSetPreview && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as the art folder's preview image" onClick={async () => onSetPreview(await exportBlob())}>{busy ? 'Saving…' : '★ Set preview'}</button>}
+        {onUseAsLogo && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as this color way's web logo — used on webstores and as the logo detail on mockups and production sheets" onClick={async () => onUseAsLogo(await exportBlob(), cw)}>{busy ? 'Saving…' : '★ Web logo'}</button>}
         <button type="button" style={btn} title="Download a transparent PNG to drop into mockups" onClick={download}>⬇ PNG</button>
       </div>
     </div>
@@ -152,12 +152,12 @@ function StitchNotes({ design, err, colorWays }) {
 const StitchLoading = ({ width = 220 }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>Loading stitch file…</div>;
 
 // Standalone block (customer art library): header + one tile per color way + notes.
-export default function DstPreview({ dstUrl, colorWays, onEnlarge, onSetPreview }) {
+export default function DstPreview({ dstUrl, colorWays, onEnlarge, onUseAsLogo }) {
   const { design, err } = useDstDesign(dstUrl);
   const [busy, setBusy] = useState(false);
   if (!dstUrl) return null;
   const cws = (colorWays || []).length ? colorWays : [null];
-  const setPreview = onSetPreview && (async blob => { setBusy(true); try { await onSetPreview(blob); } finally { setBusy(false); } });
+  const useAsLogo = onUseAsLogo && (async (blob, cw) => { setBusy(true); try { await onUseAsLogo(blob, cw); } finally { setBusy(false); } });
   return <div style={{ marginBottom: 8 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 0.3 }}>STITCH PREVIEW</span>
@@ -166,13 +166,33 @@ export default function DstPreview({ dstUrl, colorWays, onEnlarge, onSetPreview 
     </div>
     {!err && !design && <StitchLoading />}
     {design && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-      {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onSetPreview={setPreview} busy={busy} />)}
+      {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onUseAsLogo={useAsLogo} busy={busy} />)}
     </div>}
     <StitchNotes design={design} err={err} colorWays={colorWays} />
   </div>;
 }
 
-export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading };
+// Embroidery logo detail source: the folder's live DST + the color way's threads, or null.
+function stitchSourceFor(art, colorWayId) {
+  if (!art || art.deco_type !== 'embroidery') return null;
+  const dst = artLiveDsts(art).slice(-1)[0];
+  const dstUrl = dst ? (typeof dst === 'string' ? dst : (dst.url || '')) : '';
+  if (!/^https?:\/\//i.test(dstUrl)) return null;
+  const cw = (art.color_ways || []).find(c => c && c.id === colorWayId) || ((art.color_ways || []).length === 1 ? art.color_ways[0] : null);
+  return { dstUrl, inks: cw?.inks || [], label: cw?.garment_color || '' };
+}
+// Transparent stitch render sized to its box (logo detail frame paints the garment color behind).
+function StitchCanvas({ design, inks, style }) {
+  const ref = useRef(null);
+  useEffect(() => { if (ref.current && design) drawDst(ref.current, design, inks || [], null, 520); }, [design, (inks || []).join('|')]);
+  return <canvas ref={ref} style={{ display: 'block', aspectRatio: '1 / 1', maxWidth: '100%', maxHeight: '100%', ...style }} />;
+}
+// Full-resolution transparent PNG File of a design in the given threads (for logo uploads).
+function stitchPngFile(design, inks, name) {
+  return new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks || [], null, 1200); c.toBlob(b => res(new File([b], name || 'stitch-render.png', { type: 'image/png' })), 'image/png'); });
+}
+
+export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchSourceFor, StitchCanvas, stitchPngFile };
 
 // ── For printed sheets (production sheet, job art sheet) ──
 // Draws each embroidery design's live DST in every color way's threads as a PNG

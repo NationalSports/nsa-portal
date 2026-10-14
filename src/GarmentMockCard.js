@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { fileDisplayName, _isImgUrl, _cloudinaryPdfThumb, openFile } from './utils';
 import { sizeProgressCell } from './JobGarmentProgress';
 import { cloudinaryPreviewUrl } from './lib/cloudinaryPreview';
+import { useDstDesign, StitchCanvas, stitchPngFile } from './DstPreview';
 import './GarmentMockCard.css';
 
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
@@ -167,6 +168,10 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
   const [drag, setDrag] = useState(false);
   const [bgMode, setBgMode] = useState(null);
   const [hasWhite, setHasWhite] = useState(null);
+  // Embroidery with a DST: until a logo PNG is saved, show the stitch render in this color way's
+  // threads and offer it as the logo detail (same upload path + transparency check as a dropped PNG).
+  const stitchOn = !!(sourceLogo.stitch && !sourceLogo.url && sourceLogo.onUpload && !sourceLogo.blockedReason && !choosingVersion);
+  const { design: stitchDesign } = useDstDesign(stitchOn ? sourceLogo.stitch.dstUrl : null);
   const assign = async () => {
     if (!sourceLogo.onAssign || busy || uploadLock.current) return;
     if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? If another garment already uses a different version, nothing is changed. Reversible sides remain separate.')) return;
@@ -232,6 +237,10 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
     <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
+        : stitchOn && stitchDesign ? <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }}>
+          <StitchCanvas design={stitchDesign} inks={logo.stitch.inks} style={{ height: '100%' }} />
+          <span style={{ position: 'absolute', left: 8, top: 8, fontSize: 10, fontWeight: 700, color: '#6d28d9', background: 'rgba(245,243,255,0.92)', border: '1px solid #ddd6fe', borderRadius: 6, padding: '2px 7px' }}>Stitch render · not saved yet</span>
+        </div>
         : <span className="logo-empty">{logo.blockedReason ? 'Decoration missing on the sales order' : logo.needsColorWay ? 'Choose and save an artwork version below' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
@@ -260,7 +269,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
         {editingVersion && !assignmentUnconfirmed && <button type="button" disabled={busy} onClick={() => { setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); }}>Cancel</button>}</div>
     </div>}
     {!choosingVersion && assigned && <p className="panel-hint">Artwork: <strong>{assigned.label}</strong>{assigned.colors && <> · Ink / thread: {assigned.colors}</>}</p>}
-    {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.</p>}
+    {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">{stitchOn && stitchDesign ? 'Drawn from the DST in this color way’s threads. Use it as the logo detail, or upload a PNG instead.' : 'Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.'}</p>}
     {!logo.url && !choosingVersion && !!logo.productionPngs?.length && !!logo.onUseProductionPng && <div className="production-logo-options">
       <p className="panel-hint">Already uploaded under Production Files? Choose a transparent PNG for this artwork version:</p>
       {logo.productionPngs.map(file => <button key={file.url} type="button" disabled={busy} onClick={() => useProductionPng(file)}>Use {file.name} as logo detail</button>)}
@@ -268,6 +277,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     {logo.blockedReason && <p role="alert" className="mock-error">{logo.blockedReason}</p>}
     {logo.needsColorWay && !sourceLogo.onAssign && !logo.blockedReason && <p className="panel-hint">Choose the artwork version in Art Library → Apply to items first.</p>}
     {logo.onUpload && <div className="panel-actions">
+      {stitchOn && stitchDesign && <button type="button" className="mock-primary" disabled={busy} onClick={async () => upload([await stitchPngFile(stitchDesign, logo.stitch.inks, 'stitch-render' + (logo.stitch.label ? '-' + logo.stitch.label.replace(/[^\w-]+/g, '_') : '') + '.png')])}>Use stitch render</button>}
       <button type="button" disabled={busy || choosingVersion} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
       {!choosingVersion && sourceLogo.onAssign && <button type="button" onClick={() => { setSelectedColorWay(sourceLogo.colorWayId || ''); setEditingVersion(true); }} disabled={busy}>Change artwork version</button>}
       {logo.url && logo.onRemove && <button type="button" className="mock-remove" disabled={busy || choosingVersion} onClick={() => { if (window.confirm('Remove this logo detail?')) run(() => logo.onRemove(logo.url)); }}>Remove</button>}

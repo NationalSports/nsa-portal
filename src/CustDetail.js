@@ -1805,7 +1805,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Stitch preview — the live DST drawn in each color way's threads */}
         {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox}/></div>})()}
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} onUseAsLogo={saveArt?async(blob,cw)=>{
+            // Stitch render → this color way's web logo (stores + logo detail). Newest first replaces it.
+            const nm=(cw?.garment_color||'').trim();
+            const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
+            if(existing&&!window.confirm('Replace the current web logo for '+(nm||'all garments')+' with this stitch render?'))return;
+            nf&&nf('Saving web logo...');
+            let url;try{url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+(nm||'all').replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+            const entry=nm?{url,color_way:nm,source:'stitch'}:{url,color_way:'',is_default:true,source:'stitch'};
+            saveWebLogos([entry,...webLogos.filter(w=>w!==existing)],nm?_cwsWith([nm]):undefined);
+            nf&&nf('Web logo saved for '+(nm||'all garments'));
+          }:undefined}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>

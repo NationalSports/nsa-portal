@@ -5,6 +5,7 @@ import { jobMockCardGroups } from './lib/jobMockCards';
 import { assignLogoArtwork, logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, productionLogoCandidates } from './lib/logoDetail';
 import { safeArt, safeNum, safeSizes, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile, _isImgUrl } from './utils';
+import { stitchSourceFor } from './DstPreview';
 
 const sizesOf = (gi, item) => gi?.sizes ? { ...gi.sizes }
   : Object.fromEntries(Object.entries(safeSizes(item)).filter(([, v]) => safeNum(v) > 0).map(([sz, v]) => [sz, safeNum(v)]));
@@ -50,6 +51,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
     url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, colorWayId: slot.cwId, colorWays: logoColorWayOptions(slot.artFile), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
     productionPngs: productionLogoCandidates(slot.artFile),
+    stitch: stitchSourceFor(slot.artFile, slot.cwId), // embroidery: offer the DST stitch render as the logo detail
     onAssign: onSaveOrder && (choice => run(async () => {
       const { order: updated } = assignLogoArtwork(getOrder(), { ...choice, artId: slot.artId, garmentKey: garmentMockKey(item), side: slot.side });
       return onSaveOrder(updated, 'Artwork version assignment');

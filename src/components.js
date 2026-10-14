@@ -728,7 +728,7 @@ function ThreadQuickPicks({colors,onPick}){
 // sync. `onChange` receives the full updated color_ways array. Garment/ink swatches are a
 // best-effort lookup (threadHex covers common apparel + thread names, pantoneHex for inks).
 
-// `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onSetPreview} — draws each color way's stitch
+// `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
 // preview beside its card (one color way) or under it (several, so previews line up with their cards).
 function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null}){
   const isEmb=decoType==='embroidery';
@@ -740,10 +740,10 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   const{design:stDesign,err:stErr}=useDstDesign(isEmb&&stitch?stitch.dstUrl:null);
   const[stBusy,setStBusy]=useState(false);
   const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
-  const stSetPreview=stitch?.onSetPreview&&(async blob=>{setStBusy(true);try{await stitch.onSetPreview(blob)}finally{setStBusy(false)}});
+  const stUseAsLogo=stitch?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await stitch.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
   // One color way → preview to the right of the card; several → each preview under its own card.
   const stSide=showStitch&&cws.length<=1;
-  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onSetPreview={stSetPreview} busy={stBusy}/>:(stErr?null:<StitchLoading width={width}/>);
+  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={stUseAsLogo} busy={stBusy}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
