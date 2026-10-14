@@ -1,4 +1,4 @@
-import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork } from './priorArtReview';
+import { newJobArtStatus, startPriorArtReview, reviewChangedArtwork } from './priorArtReview';
 
 // Outside-decoration art flow (opt-in).
 //
@@ -103,10 +103,8 @@ export function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isS
     const changedArt = !!ex && ex.key !== g.key;
     const artF = g.artFileId ? arts.find((a) => a.id === g.artFileId) : null;
     const derived = artF && artStatusOf ? artStatusOf(artF, g.decoType) : 'needs_art';
-    // Same rules as the in-house builder: a brand-new job whose design is ALREADY approved
-    // (reused art) waits for the rep to confirm it for this order; human-advanced states are
-    // kept; an unassigned / missing design always reads needs_art.
-    const fresh = !ex && !isStoreOrder && derived !== 'needs_art' && derived !== 'waiting_approval' ? PRIOR_ART_REVIEW : derived;
+    // Keep the same provenance-based gate as in-house jobs.
+    const fresh = !ex ? newJobArtStatus(derived, artF ? [artF] : [], isStoreOrder) : derived;
     const artStatus = !artF ? 'needs_art' : (ex && ex.art_status && ex.art_status !== 'needs_art' ? ex.art_status : fresh);
     let id = ex && ex.id;
     if (id && !used.has(id)) used.add(id); else if (!id || used.has(id)) id = mint();

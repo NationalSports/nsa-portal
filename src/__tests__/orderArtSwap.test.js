@@ -12,7 +12,7 @@ test('replacing a shared TBD group keeps all assigned decorations and clears sta
   };
   const source = { id: 'prior', name: 'School Crest', deco_type: 'embroidery', status: 'approved', color_ways: [{ id: 'cw1' }], mockup_files: [{ url: 'old-mock.png' }], prod_files: [{ url: 'sew.dst' }], _so_id: 'SO-1', _version: 99 };
   const next = replaceTbdArt(order, 'tbd', source);
-  expect(next.art_files[0]).toMatchObject({ id: 'tbd', name: 'School Crest', _version: 7, prod_files: [{ url: 'sew.dst' }], mockup_files: [] });
+  expect(next.art_files[0]).toMatchObject({ id: 'tbd', name: 'School Crest', reused_from_so: 'SO-1', _version: 7, prod_files: [{ url: 'sew.dst' }], mockup_files: [] });
   expect(next.art_files[0]._so_id).toBeUndefined();
   expect(next.items[0].decorations[0]).toMatchObject({ art_file_id: 'tbd', color_way_id: null, sell_override: null });
   expect(next.items[1].decorations.map(d => d.art_file_id)).toEqual(['tbd', 'other']);
@@ -39,6 +39,7 @@ test('a renamed TBD can still be swapped for previous art, and the swap clears t
   const next = replaceTbdArt(order, 'tbd', { id: 'prior', name: 'School Crest', is_tbd: true });
   expect(next.art_files[0].name).toBe('School Crest');
   expect(next.art_files[0].is_tbd).toBeUndefined();
+  expect(next.art_files[0].reused_from_so).toBe('Library');
 });
 
 test('a mixed-art job stays in Needs Art if its other design is still pending', () => {

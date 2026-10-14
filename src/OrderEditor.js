@@ -18,7 +18,7 @@ import PriorArtReviewPanel from './PriorArtReviewPanel';
 import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
-import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
+import { PRIOR_ART_REVIEW, newJobArtStatus, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
 import { splitPriorArtwork } from './lib/splitPriorArtwork';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
@@ -777,7 +777,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),reused_from_so:art._so_id||null,uploaded:new Date().toLocaleDateString()};
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),reused_from_so:art._so_id||'Library',uploaded:new Date().toLocaleDateString()};
     delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that
@@ -4617,17 +4617,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       let id=existing?.id;
       if(!id||_usedIds.has(id))id=_nextJobId();else _usedIds.add(id);
       if(existing)_matchedExistingById.set(id,existing);
-      // Reused/pre-approved art must be CONFIRMED by the rep for THIS order before it reads as
-      // approved. A brand-new job whose art is already approved (status carried in from another
-      // order) lands at needs_art_review so the rep decides whether the design works
-      // for this garment before choosing a mock or sending it to the coach. Existing
-      // jobs keep their human-advanced status via the merge below.
-      // EXCEPT store-pull SOs (OMG pull / webstore batch): there the sale IS the customer's
-      // approval — createOmgSO and batchOrders stamp the art 'approved' by design — so the
-      // re-confirm gate must not drag every store job back into the artist/coach pipeline
-      // (it generated phantom "Mockup ready for review — Artist uploaded proof" to-dos, SO-1590).
+      // Only deliberate reuse enters previous-art review. A new job using this
+      // order's approved art still needs its normal garment-proof approval.
       const _isStoreSO=!!(o.omg_store_id||o.webstore_id||o.source==='webstore');
-      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?PRIOR_ART_REVIEW:j.art_status;
+      const _jobArtIds=j._art_ids?.length?j._art_ids:[j.art_file_id];
+      const _newArtSt=existing?j.art_status:newJobArtStatus(j.art_status,af.filter(a=>_jobArtIds.includes(a.id)),_isStoreSO);
       // Preserve human-advanced states; 'needs_art' is the auto-computed default and
       // must be re-derived so a fixed art file immediately unlocks to art_complete.
       // (_healUnresolvedArt below still downgrades a preserved completed-ish status
