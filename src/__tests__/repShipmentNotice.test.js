@@ -2,6 +2,10 @@
 const { notifyShipmentRep, drainRepShipmentEmails } = require('../../netlify/functions/_repShipmentNotice');
 let mockDb;
 let mockAuth=true;
+let mockCoach=null;
+jest.mock('../../netlify/functions/so-shipment-notify',()=>({
+  sendShipmentNotice:async(_admin,opts)=>mockCoach?mockCoach(opts):{status:500,payload:{error:'unavailable'}},
+}));
 jest.mock('../../netlify/functions/_shared',()=>({
   corsHeaders:()=>({}),verifyUser:async()=>mockAuth?{ok:true,admin:mockDb}:{ok:false,status:401,error:'Sign in'},
 }));
@@ -35,7 +39,7 @@ beforeEach(()=>{
     customers:[{id:'c1',name:'Team',primary_rep_id:'customer-rep'}],
     team_members:[{id:'order-rep',name:'Assigned Rep',email:'rep@example.com'},{id:'customer-rep',name:'Customer Rep',email:'other@example.com'}],
     so_rep_shipment_outbox:[],
-  };mockDb=db();mockAuth=true;process.env.BREVO_API_KEY='fake';
+  };mockDb=db();mockAuth=true;mockCoach=null;process.env.BREVO_API_KEY='fake';
   global.fetch=jest.fn(async()=>({ok:true,status:201,json:async()=>({messageId:'message-1'})}));
 });
 afterEach(()=>{delete global.fetch});
@@ -109,4 +113,22 @@ test('a genuinely unassigned order fails clearly without sending',async()=>{
   rows.customers[0].primary_rep_id=null;
   await expect(notifyShipmentRep(mockDb,{soId:'SO-1'})).rejects.toThrow(/Assign a rep/);
   expect(fetch).not.toHaveBeenCalled();
+});
+
+test('uses the coach email layout with a rep-only banner, rendered as a preview only',async()=>{
+  const seen=[];
+  mockCoach=async opts=>{seen.push(opts);return{status:200,payload:{ok:true,html:'<html><body><div>COACH LAYOUT</div></body></html>'}}};
+  await notifyShipmentRep(mockDb,{soId:'SO-1'});
+  expect(seen).toEqual([{soId:'SO-1',shipmentIds:['pickup'],preview:true}]);
+  const html=JSON.parse(fetch.mock.calls[0][1].body).htmlContent;
+  expect(html).toContain('COACH LAYOUT');
+  expect(html).toContain('coach was NOT emailed');
+  expect(html).toContain('Picked up by rep');
+  expect(html).toContain('Team &lt;special&gt;');
+  expect(html.indexOf('coach was NOT emailed')).toBeLessThan(html.indexOf('COACH LAYOUT'));
+});
+test('falls back to the plain summary when the coach layout cannot be built',async()=>{
+  mockCoach=async()=>{throw new Error('boom')};
+  await notifyShipmentRep(mockDb,{soId:'SO-1'});
+  expect(JSON.parse(fetch.mock.calls[0][1].body).htmlContent).toContain('Warehouse shipment records');
 });

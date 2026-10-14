@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import InvoicesPage from '../InvoicesPage';
 import { AppDataProvider } from '../AppContext';
 
@@ -9,7 +9,7 @@ const noop = () => {};
 const cust = [{ id: 'C1', name: 'Alpha Athletics', contacts: [] }];
 const PAY_METHODS = [{ id: 'check', label: 'Check', icon: '📝' }];
 
-function renderDetail(viewInvoice, { invs = [], histInvs = [] } = {}) {
+function renderDetail(viewInvoice, { invs = [], histInvs = [], overrides = {} } = {}) {
   const value = {
     CC_FEE_PCT: 0.029, PAY_METHODS, REPS: [], canDelete: false, changeLog: [], companyInfo: { name: 'NSA' },
     createAndSettleOmgInvoice: noop, createAndSettleWebstoreInvoice: noop, cu: { id: 'A', role: 'accounting', name: 'A' }, cust,
@@ -19,6 +19,7 @@ function renderDetail(viewInvoice, { invs = [], histInvs = [] } = {}) {
     setEditingInvRep: noop, setHistInvs: noop, setInvBackPg: noop, setInvEditModal: noop, setInvF: noop, setInvSendModalDirect: noop,
     setInvSort: noop, setInvs: noop, setPayModal: noop, setPdBulkModal: noop, setPg: noop, setSplitModal: noop, setViewInvoice: noop,
     sos: [], splitInvoice: noop, splitModal: null, viewInvoice, webstoreSettle: {},
+    ...overrides,
   };
   return render(<AppDataProvider value={value}><InvoicesPage /></AppDataProvider>);
 }
@@ -47,4 +48,19 @@ test('NetSuite invoice explains where payments live; unknown balance is not show
   const unknown = { ...ns, id: 'INV60332', open_balance: null, netsuite_internal_id: 'ns2' };
   renderDetail(unknown, { histInvs: [unknown] });
   expect(screen.getByText('unknown')).toBeTruthy();
+});
+
+test('Customer Homepage button opens the invoice customer page (portal and NetSuite invoices)', () => {
+  for (const inv of [
+    { id: 'INV-3', customer_id: 'C1', date: '09/01/2026', total: 500, paid: 0, status: 'open', payments: [] },
+    { id: 'INV60333', customer_id: 'C1', date: '01/01/2026', total: 800, open_balance: 250, status: 'open', _hist: true, netsuite_internal_id: 'ns3' },
+  ]) {
+    const setSelC = jest.fn(), setPg = jest.fn(), setViewInvoice = jest.fn();
+    const { unmount } = renderDetail(inv, inv._hist ? { histInvs: [inv], overrides: { setSelC, setPg, setViewInvoice } } : { invs: [inv], overrides: { setSelC, setPg, setViewInvoice } });
+    fireEvent.click(screen.getByText('Customer Homepage'));
+    expect(setSelC).toHaveBeenCalledWith(cust[0]);
+    expect(setPg).toHaveBeenCalledWith('customers');
+    expect(setViewInvoice).toHaveBeenCalledWith(null);
+    unmount();
+  }
 });
