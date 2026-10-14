@@ -29,6 +29,7 @@ export function replaceTbdArt(order, tbdId, source) {
   delete replacement._artDeletes;
   delete replacement.is_tbd;
   replacement.id = tbdId;
+  replacement.reused_from_so = source._so_id || 'Library';
   replacement.design_id = previousArtReuseDesignId(source, source._srcCustId);
   if (current._version != null) replacement._version = current._version;
   else delete replacement._version;

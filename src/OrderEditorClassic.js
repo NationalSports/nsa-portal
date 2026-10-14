@@ -792,7 +792,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),uploaded:new Date().toLocaleDateString()};
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),reused_from_so:art._so_id||'Library',uploaded:new Date().toLocaleDateString()};
     delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that

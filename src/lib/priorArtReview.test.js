@@ -1,4 +1,4 @@
-import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './priorArtReview';
+import { PRIOR_ART_REVIEW, newJobArtStatus, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './priorArtReview';
 
 test('a split inherits the design but none of the prior approval', () => {
   const source = { id: 'JOB-1', art_file_id: 'af1', art_status: 'art_complete', sent_to_coach_at: 'yesterday', coach_approved_at: 'today', sent_history: [{ sent_at: 'yesterday' }] };
@@ -18,9 +18,9 @@ test('previous art stays in review until a decision and a confirmed coach send',
 
 test('an older unsent reused job still requires the art decision, even with a mock', () => {
   const job = { art_status: 'waiting_approval', sent_to_coach_at: null };
-  expect(priorArtDecisionPending(job, [{ status: 'approved' }], ['White tee'])).toBe(true);
-  expect(priorArtDecisionPending(job, [{ status: 'approved' }], [])).toBe(true);
-  expect(priorArtDecisionPending({ ...job, sent_to_coach_at: 'today' }, [{ status: 'approved' }], ['White tee'])).toBe(false);
+  expect(priorArtDecisionPending(job, [{ status: 'approved', reused_from_so: 'SO-previous' }], ['White tee'])).toBe(true);
+  expect(priorArtDecisionPending(job, [{ status: 'approved', reused_from_so: 'SO-previous' }], [])).toBe(true);
+  expect(priorArtDecisionPending({ ...job, sent_to_coach_at: 'today' }, [{ status: 'approved', reused_from_so: 'SO-previous' }], ['White tee'])).toBe(false);
 });
 
 test('relinking approved art keeps an open artist request in the art queue', () => {
@@ -40,4 +40,24 @@ test('approved replacement art without an open request needs a new review', () =
     coach_approved_at: null, art_reuse_confirmed: false, art_requests: [],
   });
   expect(reviewChangedArtwork(oldJob, healed, [{ id: 'replacement', status: 'waiting_for_art' }])).toBeNull();
+});
+
+
+test('new art awaiting approval is not previous art after garments are added', () => {
+  const art = { id: 'new-art', status: 'approved', design_id: 'design-new' };
+  expect(priorArtDecisionPending({ art_status: 'waiting_approval' }, [art])).toBe(false);
+  expect(newJobArtStatus('art_complete', [art])).toBe('waiting_approval');
+  expect(newJobArtStatus('production_files_needed', [art])).toBe('waiting_approval');
+  expect(newJobArtStatus('waiting_approval', [art])).toBe('waiting_approval');
+  expect(newJobArtStatus('needs_art', [art])).toBe('needs_art');
+  expect(newJobArtStatus('art_complete', [art], true)).toBe('art_complete');
+});
+
+test('explicit library or order reuse and legacy reuse IDs retain previous-art review', () => {
+  for (const provenance of [{ reused_from_so: 'SO-previous' }, { reused_from_so: 'Library' }, { design_id: 'reuse:team:logo' }]) {
+    const art = { status: 'approved', ...provenance };
+    expect(priorArtDecisionPending({ art_status: 'waiting_approval' }, [art])).toBe(true);
+    expect(newJobArtStatus('art_complete', [art])).toBe(PRIOR_ART_REVIEW);
+    expect(newJobArtStatus('art_complete', [art], true)).toBe('art_complete');
+  }
 });
