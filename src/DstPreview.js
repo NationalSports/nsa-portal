@@ -190,7 +190,8 @@ function stitchSourceFor(art, colorWayId) {
 function StitchCanvas({ design, inks, style }) {
   const ref = useRef(null);
   useEffect(() => { if (ref.current && design) drawDst(ref.current, design, inks || [], null, 520); }, [design, (inks || []).join('|')]);
-  return <canvas ref={ref} style={{ display: 'block', aspectRatio: '1 / 1', maxWidth: '100%', maxHeight: '100%', ...style }} />;
+  // object-fit keeps the square render undistorted in any box shape (tall logo-detail frames).
+  return <canvas ref={ref} style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain', ...style }} />;
 }
 // Full-resolution transparent PNG File of a design in the given threads (for logo uploads).
 function stitchPngFile(design, inks, name) {

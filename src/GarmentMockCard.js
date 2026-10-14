@@ -238,8 +238,8 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
         : stitchOn && stitchDesign ? <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }}>
-          <StitchCanvas design={stitchDesign} inks={logo.stitch.inks} style={{ height: '100%' }} />
-          <span style={{ position: 'absolute', left: 8, top: 8, fontSize: 10, fontWeight: 700, color: '#6d28d9', background: 'rgba(245,243,255,0.92)', border: '1px solid #ddd6fe', borderRadius: 6, padding: '2px 7px' }}>Stitch render · not saved yet</span>
+          <StitchCanvas design={stitchDesign} inks={logo.stitch.inks} />
+          <span style={{ position: 'absolute', left: 8, top: 8, maxWidth: 'calc(100% - 16px)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10, fontWeight: 700, color: '#6d28d9', background: 'rgba(245,243,255,0.92)', border: '1px solid #ddd6fe', borderRadius: 6, padding: '2px 7px' }}>Stitch render · unsaved</span>
         </div>
         : <span className="logo-empty">{logo.blockedReason ? 'Decoration missing on the sales order' : logo.needsColorWay ? 'Choose and save an artwork version below' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
