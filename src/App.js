@@ -5,7 +5,7 @@ import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
-import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
+import { batchEntryLinkState, orphanedBatchEntries, unloadedBatchOrders, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
 import { planOrderSave } from './lib/artJobsSaveRouting';
 import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
@@ -11776,6 +11776,9 @@ export default function App(){
     await supabase.rpc('finish_all_school_regular_batch',{p_token:claim.token,p_po_number:claim.poNumber,p_state:'unknown',p_api_order_id:null,p_vendor_lines:[]});
     nf('The vendor result is uncertain. All School quantities are held for reconciliation; do not re-order this batch. '+(error?.message||''),'error');
   };
+  // Refuse to order/clear a batch while any of its orders loaded without item lines: the order save that
+  // records the PO would be refused, but the vendor order and queue change would still go through.
+  const _blockUnloadedBatch=entries=>{const ids=unloadedBatchOrders(entries,sos);if(!ids.length)return false;nf('Not done — '+ids.join(', ')+(ids.length===1?" hasn't":" haven't")+' finished loading. Reload the page, then try again.','error');return true};
   const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
@@ -15532,7 +15535,7 @@ export default function App(){
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
-        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
@@ -15571,7 +15574,7 @@ export default function App(){
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
-        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -15653,7 +15656,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(_blockUnloadedBatch(vg.pos))return;if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
                   setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>
