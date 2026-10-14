@@ -107,10 +107,13 @@ function publicStoreRow(row) {
   store.org_type = row.org_type || null;
   if (row.shipping_settings) store.shipping_settings = { mode: row.shipping_settings.mode, free_over_cents: row.shipping_settings.free_over_cents ?? null };
   if (row.org_type === 'all_school') store.all_school_settings = publicAllSchoolSettings(row.all_school_settings);
+  else if ((row.org_type || 'team') === 'team' && row.all_school_settings?.first_logo_by_style && Object.keys(row.all_school_settings.first_logo_by_style).length) {
+    store.all_school_settings = { first_logo_by_style: publicAllSchoolSettings(row.all_school_settings).first_logo_by_style };
+  }
   return store;
 }
 
-async function enrichSchoolProducts(sb, storeId, products) {
+async function enrichSchoolProducts(sb, storeId, products, schoolDetails = true) {
   const ids = [...new Set(products.map((p) => p.webstore_product_id).filter(Boolean))];
   if (!ids.length) return products;
   let result = await sb.from('webstore_products').select('id,school_program_ids,school_shared,personalization_template,school_style_group_id,school_design_label').eq('store_id', storeId).in('id', ids);
@@ -124,6 +127,9 @@ async function enrichSchoolProducts(sb, storeId, products) {
   const byId = new Map((result.data || []).map((p) => [p.id, p]));
   return products.map((product) => {
     const school = byId.get(product.webstore_product_id);
+    if (!schoolDetails) return { ...product,
+      school_style_group_id: school?.school_style_group_id || null,
+      school_design_label: safeText(school?.school_design_label, 80) || null };
     const template = school && school.personalization_template && typeof school.personalization_template === 'object' ? school.personalization_template : {};
     return { ...product, school_program_ids: uniqueTextList(school && school.school_program_ids, 100, 80), school_shared: !school || school.school_shared !== false,
       school_style_group_id: school?.school_style_group_id || null, school_design_label: safeText(school?.school_design_label, 80) || null,
@@ -228,6 +234,7 @@ async function publicStorefront(sb, body) {
     3000,
   );
   if (store.org_type === 'all_school') products = await enrichSchoolProducts(sb, store.id, products);
+  else if ((store.org_type || 'team') === 'team') products = await enrichSchoolProducts(sb, store.id, products, false);
   const bundleIds = products.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id);
   let bundleItems = [];
   if (bundleIds.length) {
@@ -1065,6 +1072,7 @@ async function placeOrder(sb, body) {
     if (sold) return bad(409, `Sorry — these just sold out while you were shopping: ${sold[1].trim()}. Please remove or change them and try again.`);
     if (/NSA_COUPON_USED/.test(msg)) return bad(409, 'That code has already been used.');
     if (/NSA_COUPON_INVALID/.test(msg)) return bad(409, 'That code is no longer valid for this store.');
+    if (/NSA_STORE_CONVERTED/.test(msg)) return bad(409, 'This store was just converted to 24/7 fulfillment. Reload the store and review your cart before ordering.', { code: 'store_converted' });
     if (clientRef && /duplicate|unique/i.test(msg) && /client_ref/.test(msg)) {
       // Concurrent double-submit lost the transaction race — return the winner's order.
       const winner = await findOrderByClientRef(sb, clientRef);

@@ -17,6 +17,8 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './all
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
 import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import TeamStoreConversionModal from './allSchool/TeamStoreConversionModal';
+import { conversionRpcActions } from './allSchool/teamStoreConversion';
 import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
 import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
@@ -50,6 +52,7 @@ import ShipFromPicker, { useDecoShipFromLocations } from './ui/ShipFromPicker';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import { normalizeOmgSize } from './lib/omgReport';
+import { supportsLogoChoices } from './lib/webstoreLogoChoices';
 import QuickMockBuilder from './QuickMockBuilder';
 import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, reportBlockingIssues, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
@@ -2467,6 +2470,30 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setTemplateFor(null);
   }, [templateFor, duplicateStore]);
 
+  const convertTeamStoreToAllSchool = useCallback(async (store, plan) => {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-convert-all-school', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          store_id: store.id,
+          settings: plan.storePatch.all_school_settings,
+          actions: conversionRpcActions(plan),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.store) throw new Error(data.error || 'Conversion failed');
+      setStores((previous) => previous.map((row) => row.id === store.id ? data.store : row));
+      setSel(data.store);
+      await loadDetail(data.store);
+      flash(`Converted to 24/7. ${data.products_mapped_to_dtf || 0} item(s) mapped to DTF; ${data.products_hidden || 0} incompatible item(s) hidden.`);
+      return true;
+    } catch (error) {
+      flash(error?.message || 'Conversion failed; the team store was not changed.');
+      return false;
+    }
+  }, [flash, loadDetail]);
+
   // Remove a template: un-flags it (is_template=false) so it's no longer a template and
   // returns to the normal store list as a draft. Non-destructive — never deletes a store.
   const toggleTemplate = useCallback(async (store) => {
@@ -2592,7 +2619,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       kit_name: (shared.kit_name != null ? shared.kit_name : primary.kit_name) || null,
       required: !!(shared.required != null ? shared.required : primary.required),
       options: Array.isArray(primary.options) ? primary.options : [],
-      ...(sel.org_type === 'all_school' && !shared.separate ? { school_program_ids: primary.school_program_ids || [], school_shared: !!primary.school_shared, school_style_group_id: primary.school_style_group_id || null, school_design_label: primary.school_design_label || null, personalization_template: primary.personalization_template || null } : {}),
+      ...(supportsLogoChoices(sel) && !shared.separate ? { school_program_ids: primary.school_program_ids || [], school_shared: !!primary.school_shared, school_style_group_id: primary.school_style_group_id || null, school_design_label: primary.school_design_label || null, personalization_template: primary.personalization_template || null } : {}),
       active: true, sort_order: base + i,
       ...variantGroupFields(groupId, shared.separate),
     }));
@@ -2756,8 +2783,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, detail, flash, loadDetail]);
 
   const saveAllSchoolSettings = useCallback(async (settings) => {
-    const { data, error } = await supabase.from('webstores').update({ all_school_settings: settings, updated_at: new Date().toISOString() }).eq('id', sel.id).eq('org_type', 'all_school').select().single();
-    if (error || !data) { flash('Sports not saved: ' + (error?.message || 'No editable store found')); return false; }
+    if (!supportsLogoChoices(sel)) return false;
+    let query = supabase.from('webstores').update({ all_school_settings: settings, updated_at: new Date().toISOString() }).eq('id', sel.id);
+    query = sel.org_type ? query.eq('org_type', sel.org_type) : query.is('org_type', null);
+    const { data, error } = await query.select().single();
+    if (error || !data) { flash('Store settings not saved: ' + (error?.message || 'No editable store found')); return false; }
     setSel(data); setStores((prev) => prev.map((store) => store.id === data.id ? data : store));
     return true;
   }, [sel, flash]);
@@ -2768,7 +2798,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash(`Created ${data.length} sport offerings`); loadDetail(sel); return true;
   }, [sel, flash, loadDetail]);
   const createSchoolLogoOption = useCallback(async (source, currentLabel, newLabel, stock, logo, visualEntries) => {
-    if (sel?.org_type !== 'all_school' || !source?.id) return false;
+    if (!supportsLogoChoices(sel) || !source?.id) return false;
     const sourceGroup = source.variant_group_id || source.id;
     const sourceRows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === sourceGroup);
     if (!sourceRows.length) return false;
@@ -2776,14 +2806,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const designGroupId = crypto.randomUUID();
     let copies = logoDesignCopies(sourceRows, sel.id, styleGroupId, designGroupId, newLabel, stock, logo);
     if (visualEntries) copies = visualLogoCopies(copies, sourceRows, visualEntries);
-    const { data: updated, error: linkError } = await supabase.from('webstore_products').update({ school_style_group_id: styleGroupId, school_design_label: currentLabel }).eq('store_id', sel.id).in('id', sourceRows.map((row) => row.id)).select('id');
-    if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
-    const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
-    if (insertError || inserted?.length !== copies.length) { flash('Logo option not saved: ' + (insertError?.message || 'Could not create every color')); loadDetail(sel); return false; }
-    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return inserted[0].id;
+    const { data, error } = await supabase.rpc('create_webstore_logo_option', {
+      p_store_id: sel.id,
+      p_source_ids: sourceRows.map((row) => row.id),
+      p_style_group_id: styleGroupId,
+      p_current_label: currentLabel,
+      p_copies: copies,
+    });
+    if (error || !data?.ok || data.ids?.length !== copies.length) { flash('Logo option not saved: ' + (error?.message || 'The atomic write was not confirmed')); loadDetail(sel); return false; }
+    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return data.ids[0];
   }, [sel, detail, flash, loadDetail]);
   const updateSchoolLogoOption = useCallback(async (item, fields) => {
-    if (sel?.org_type !== 'all_school' || !item?.id) return false;
+    if (!supportsLogoChoices(sel) || !item?.id) return false;
     const key = item.variant_group_id || item.id;
     const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
     if (!rows.length) return false;
@@ -4471,7 +4505,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         <StoreDetail onRefreshInventory={() => loadDetail(sel)} store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
-          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
+          onEdit={() => setEditing(sel)} onConvertAllSchool={convertTeamStoreToAllSchool} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
           onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onSaveAllSchoolSettings={saveAllSchoolSettings} onCopySchoolOfferings={copySchoolOfferings} onCreateSchoolLogoOption={createSchoolLogoOption} onUpdateSchoolLogoOption={updateSchoolLogoOption} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
@@ -6103,7 +6137,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           {onImportFromOmg && <button type="button" onClick={onImportFromOmg} title="Skip this blank form — paste a shared OMG report link instead and build the store from its items" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>📥 Import from OMG instead</button>}
           <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
             {['team', 'club', 'all_school'].map((t) => (
-              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t === 'all_school' ? 'All School' : t}</button>
+              <button key={t} type="button" disabled={!!store && (store.org_type || 'team') === 'team' && t === 'all_school'} title={!!store && (store.org_type || 'team') === 'team' && t === 'all_school' ? 'Use “Convert to 24/7” from the store page so products and decoration setup are reviewed first.' : ''} onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none', opacity: !!store && (store.org_type || 'team') === 'team' && t === 'all_school' ? 0.45 : 1 }}>{t === 'all_school' ? 'All School' : t}</button>
             ))}
           </div>
         </div>
@@ -6677,18 +6711,24 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   );
 }
 
-function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onRemoveOrderShipping, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onConvertAllSchool, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onRemoveOrderShipping, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [catalogFocusId, setCatalogFocusId] = useState(null);
   useEffect(() => { if (tab !== 'catalog') setCatalogFocusId(null); }, [tab]);
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [conversionOpen, setConversionOpen] = useState(false);
   const [emailLinkOpen, setEmailLinkOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
   const schoolLogoOptions = [...new Map([...(s.store_art || []), ...(detail?.libraryArt || [])].filter((art) => art?.id).map((art) => [art.id, { ...art, name: art.name || 'Logo', url: webLogoDefault(art) || art.web_logo_url || art.preview_url }])).values()].filter((logo) => logo.url);
+  const logoChoicesEnabled = supportsLogoChoices(s);
+  if (!logoChoicesEnabled) {
+    onCreateSchoolLogoOption = null;
+    onUpdateSchoolLogoOption = null;
+  }
   const firstSchoolLogoByStyle = s.all_school_settings?.first_logo_by_style || {};
   const setFirstSchoolLogo = async (row) => {
     const styleId = row?.school_style_group_id;
@@ -6696,7 +6736,8 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
     if (!styleId || !designId) return false;
     const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
     if (!colors.length || colors.some((color) => color.active === false || !hasSchoolMockup(color))) return false;
-    return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
+    const settings = s.org_type === 'all_school' ? normalizeAllSchoolSettings(s.all_school_settings) : { ...(s.all_school_settings || {}) };
+    return onSaveAllSchoolSettings({ ...settings, first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
   };
   const roster = detail?.roster || [];
   const bundleItems = detail?.bundleItems || [];
@@ -6755,7 +6796,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Categories' }] : []),
-    { id: 'catalog', label: `Catalog (${s.org_type === 'all_school' ? catalogGroups(catalog, true, firstSchoolLogoByStyle).length : catalog.length})` },
+    { id: 'catalog', label: `Catalog (${logoChoicesEnabled ? catalogGroups(catalog, true, firstSchoolLogoByStyle).length : catalog.length})` },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
@@ -6863,11 +6904,13 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
           {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button data-tour-id="ws-launch-store" className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
+          {(cu?.role === 'admin' || cu?.role === 'super_admin') && (s.org_type || 'team') === 'team' && !s.is_template && s.source !== 'omg' && <button className="btn btn-sm btn-secondary" onClick={() => setConversionOpen(true)}>Convert to 24/7…</button>}
           <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
 
       {launchOpen && <LaunchStoreModal store={s} readinessLoading={s.org_type === 'all_school' && loading} readinessError={s.org_type === 'all_school' ? schoolLaunchError(catalog.map(row => ({...row,color:stockByWp[row.id]?.color || row.color})), detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) : ''} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
+      {conversionOpen && <TeamStoreConversionModal store={s} catalog={catalog} transfers={detail?.transfers || []} art={[...(s.store_art || []), ...(detail?.libraryArt || [])]} stockByWp={stockByWp} inventorySourceByProductId={detail?.invSrcByPid || {}} orders={orders} onClose={() => setConversionOpen(false)} onConfirm={async (plan) => { const ok = await onConvertAllSchool(s, plan); if (ok) setConversionOpen(false); return ok; }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
@@ -7076,7 +7119,8 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const groups = catalogGroups(catalog, isAllSchool, firstSchoolLogoByStyle);
+  const logoChoicesEnabled = isAllSchool || (isTeam && !!onCreateSchoolLogoOption);
+  const groups = catalogGroups(catalog, logoChoicesEnabled, firstSchoolLogoByStyle);
   const repsList = groups.map((g) => g.rep);
   const colorsForRep = (id) => catalogEditorRows(groups, id);
   // Up/down on a card moves the whole group (by its representative) past the next card.
@@ -7127,7 +7171,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-    const sel = editId === p.id || (isAllSchool && groups.find((g) => g.rep.id === p.id)?.allRows.some((row) => row.id === editId));
+    const sel = editId === p.id || (logoChoicesEnabled && groups.find((g) => g.rep.id === p.id)?.allRows.some((row) => row.id === editId));
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
     const archived = p.active === false;
@@ -7155,8 +7199,8 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
           ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}{isAllSchool && designs?.length > 1 ? ` · ${designs.length} logo choices` : ''}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{logoChoicesEnabled && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}{logoChoicesEnabled && designs?.length > 1 ? ` · ${designs.length} logo choices` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
       </div>
@@ -8977,7 +9021,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
-      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
+      {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <SchoolLogoOptionsEditor productionSetup={isAllSchool} item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>

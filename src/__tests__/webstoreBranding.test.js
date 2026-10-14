@@ -1,14 +1,15 @@
 /** @jest-environment node */
 const { publicStorefront } = require('../../netlify/functions/webstore-checkout');
 
-function database(store, customers) {
+function database(store, customers, productRows = [], storefrontRows = []) {
   const calls = [];
   return { calls, from(table) {
     let id;
-    const q = { select: () => q, eq: (key, value) => { if (key === 'id') id = value; return q; }, limit: () => q, order: () => q, range: () => q,
+    const q = { select: () => q, eq: (key, value) => { if (key === 'id') id = value; return q; }, in: () => q, limit: () => q, order: () => q, range: () => q,
       then(resolve, reject) {
         calls.push({ table, id });
-        const data = table === 'webstores' ? [store] : table === 'customers' ? customers.filter(c => c.id === id) : [];
+        const data = table === 'webstores' ? [store] : table === 'customers' ? customers.filter(c => c.id === id)
+          : table === 'webstore_products' ? productRows : table === 'webstore_storefront_products' ? storefrontRows : [];
         return Promise.resolve({ data, error: null }).then(resolve, reject);
       } };
     return q;
@@ -91,4 +92,28 @@ test('a partial store override is combined with the missing customer default', a
   )).body).store;
   expect(result.primary_color).toBe('#1B2A4A');
   expect(result.accent_color).toBe('#cf1723');
+});
+
+test('team storefront receives logo grouping fields without all-school personalization defaults', async () => {
+  const team = { ...store, org_type: 'team', all_school_settings: { first_logo_by_style: { hoodie: 'arch' } } };
+  const result = JSON.parse((await publicStorefront(database(
+    team,
+    [],
+    [{ id: 'wp', school_style_group_id: 'hoodie', school_design_label: 'Arched crest', personalization_template: { max_length: 40 } }],
+    [{ webstore_product_id: 'wp', name: 'Hoodie' }],
+  ), { slug: 'school' })).body);
+  expect(result.store.all_school_settings).toEqual({ first_logo_by_style: { hoodie: 'arch' } });
+  expect(result.products[0]).toMatchObject({ school_style_group_id: 'hoodie', school_design_label: 'Arched crest' });
+  expect(result.products[0].personalization_template).toBeUndefined();
+  expect(result.products[0].school_shared).toBeUndefined();
+});
+
+test('team storefront with no logo options keeps its ordinary product behavior', async () => {
+  const team = { ...store, org_type: 'team', all_school_settings: {} };
+  const result = JSON.parse((await publicStorefront(database(
+    team, [], [{ id: 'wp', school_style_group_id: null, school_design_label: null }], [{ webstore_product_id: 'wp', name: 'Tee' }],
+  ), { slug: 'school' })).body);
+  expect(result.store.all_school_settings).toBeUndefined();
+  expect(result.products[0]).toMatchObject({ name: 'Tee', school_style_group_id: null, school_design_label: null });
+  expect(result.products[0].personalization_template).toBeUndefined();
 });
