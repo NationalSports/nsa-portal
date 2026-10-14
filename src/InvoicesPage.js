@@ -40,7 +40,7 @@ function AutoRunOnce({run}){
 
 export default function InvoicesPage(){
   const [invoiceStripe,setInvoiceStripe]=React.useState(null);
-  const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSelC,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -480,7 +480,9 @@ export default function InvoicesPage(){
           </div>
 
 
-          {!inv._hist&&<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe}/>}
+          {/* One click to the customer's page — handy for applying one payment across several of their invoices. */}
+          {(()=>{const custBtn=ic&&<button className="btn btn-sm btn-secondary" style={{marginLeft:8}} title={'Open '+ic.name+"'s customer page"} onClick={()=>{setViewInvoice(null);setInvBackPg(null);setSelC(ic);setPg('customers')}}>Customer Homepage</button>;
+            return inv._hist?(custBtn&&<div style={{padding:'10px 24px',background:'#f8fafc',fontSize:13}}>{custBtn}</div>):<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe} extra={custBtn}/>})()}
           {/* Rep field */}
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
