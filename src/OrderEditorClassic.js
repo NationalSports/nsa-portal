@@ -104,7 +104,7 @@ import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from '.
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
-import DstPreview from './DstPreview';
+import DstPreview, { stitchPreviewsFor } from './DstPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -13029,7 +13029,13 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
                   if(_jsMockUrl){w.document.write('<div style="text-align:center;margin:12px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_jsMockUrl+'" style="max-width:100%;max-height:350px;object-fit:contain;border-radius:6px"/><div style="font-size:10px;color:#666;margin-top:4px">Mockup Preview</div></div>')}
                   w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[jItemStatus(j)]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+dFul+'/'+dTot+' ('+pct+'%)</div></div>');
-                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
+                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>');
+                    // Color ways: garment + each thread/ink in sew order — what the floor actually runs.
+                    const _esc=t=>String(t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                    const _jsCws=(artF.color_ways||[]).filter(cw=>(cw.inks||[]).some(x=>String(x||'').trim())||String(cw.garment_color||'').trim());
+                    if(_jsCws.length)w.document.write('<h2>Color Ways — '+(artF.deco_type==='embroidery'?'thread stops in sew order':'ink colors')+'</h2><table><thead><tr><th style="text-align:left">Color way</th><th style="text-align:left">'+(artF.deco_type==='embroidery'?'Threads':'Inks')+'</th></tr></thead><tbody>'+_jsCws.map((cw,ci)=>'<tr><td style="text-align:left;font-weight:700">CW '+(ci+1)+' · '+_esc(cw.garment_color||'garment color not set')+'</td><td style="text-align:left">'+(cw.inks||[]).filter(x=>String(x||'').trim()).map((x,xi)=>(artF.deco_type==='embroidery'?'<b>'+(xi+1)+'.</b> ':'')+_esc(x)).join(' &nbsp; ')+'</td></tr>').join('')+'</tbody></table>');
+                    if(artF.deco_type==='embroidery'&&artLiveDsts(artF).length)w.document.write('<div id="nsa-stitch-previews" style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0"></div>');
+                  }
                   w.document.write('<h2>Items & Sizes</h2>');
                   itemDetails.forEach(gi=>{
                     w.document.write('<p style="margin:12px 0 4px;font-weight:700">'+gi.sku+' — '+(gi.name||'Unknown')+' ('+gi.color+')</p>');
@@ -13054,7 +13060,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   }
                   if(j.notes){w.document.write('<h2>Notes</h2><p>'+j.notes+'</p>')}
                   w.document.write('<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:10px;color:#999">Printed '+new Date().toLocaleString()+' · NSA Portal</div>');
-                  w.document.write('</body></html>');w.document.close();w.print();
+                  w.document.write('</body></html>');w.document.close();
+                  // Embroidery: draw the DST in each color way's threads, then print.
+                  const _spBox=w.document.getElementById('nsa-stitch-previews');
+                  if(!_spBox){w.print();return}
+                  stitchPreviewsFor([artF]).then(map=>{(artF.color_ways||[]).length?(artF.color_ways||[]).forEach((cw,ci)=>{const sp=map[artF.id+'|'+cw.id];if(sp)_spBox.insertAdjacentHTML('beforeend','<div style="text-align:center"><div style="width:220px;height:220px;border:1px solid #ddd;border-radius:6px;background:'+(threadHex(cw.garment_color)||'#f8f8f8')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;align-items:center;justify-content:center"><img src="'+sp.url+'" style="max-width:96%;max-height:96%"/></div><div style="font-size:10px;color:#666;margin-top:3px">Stitch preview · CW '+(ci+1)+'</div></div>')}):(map[artF.id+'|']&&_spBox.insertAdjacentHTML('beforeend','<img src="'+map[artF.id+'|'].url+'" style="width:220px;border:1px solid #ddd;border-radius:6px"/>'));setTimeout(()=>w.print(),300)});
                 }}>🖨️ Print Job Sheet</button>
               </div>
             </div>

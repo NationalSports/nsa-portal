@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
-import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
+import { isDstFile, isStaleFile, _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice, splitInvoiceLine } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
@@ -11,7 +11,8 @@ import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from '
 import { mergeWebLogoEdit } from './lib/logoDetail';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
-import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
+import DstPreview from './DstPreview';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, decoSplitQty, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
@@ -1563,16 +1564,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const pdfs=Array.from(fileList||[]).filter(f=>f&&/\.pdf$/i.test(f.name||''));
       for(const f of pdfs){
         let text='';try{text=(await extractPdfText(f))?.fullText||''}catch(e){continue}
-        const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);
-        if(!stitches&&!dimensions)continue;
+        const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);
+        if(!stitches&&!dimensions&&!threads)continue;
+        const got=[];
         let before=null,after=null;
-        if(!updateLibArt(a=>{before=a;after=fillEmbroiderySpecs(a,{dimensions,stitches});return after})||!after)return;
-        setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches}:d);
-        const got=[after.art_size!==before.art_size?after.art_size:'',after.stitches!==before.stitches?Number(after.stitches).toLocaleString()+' stitches':''].filter(Boolean);
-        nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches kept');
+        if((stitches||dimensions)&&updateLibArt(a=>{before=a;after=fillEmbroiderySpecs(a,{dimensions,stitches});return after})&&after){
+          setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches}:d);
+          if(after.art_size!==before.art_size)got.push(after.art_size);
+          if(after.stitches!==before.stitches)got.push(Number(after.stitches).toLocaleString()+' stitches');
+        }
+        // Thread colors fill only empty color-way thread lists (same rule as the order editors).
+        if(threads){const next=fillThreadColorWays(art,threads);if(next!==art){persistColorWays(next.color_ways);got.push(threads.length+' thread color'+(threads.length===1?'':'s'))}}
+        nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches/threads kept');
         return;
       }
-      if(pdfs.length)nf&&nf('No size or stitch count found in that PDF — enter them manually','error');
+      if(pdfs.length)nf&&nf('No size, stitch count or thread colors found in that PDF — enter them manually','error');
     };
     const addMockToArt=async(fileList)=>{
       if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
@@ -1797,6 +1803,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'3px 9px',background:'#f1f5f9',borderRadius:8,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}{(cw.inks||[]).filter(Boolean).length>0&&<span style={{display:'inline-flex',gap:2}}>{(cw.inks||[]).filter(Boolean).map((ink,ii)=><span key={ii} title={ink} style={{width:11,height:11,borderRadius:3,background:pantoneHex(ink)||'#cbd5e1',border:'1px solid #d1d5db'}}/>)}</span>}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
         </div>
+        {/* Stitch preview — the live DST drawn in each color way's threads */}
+        {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
