@@ -16,6 +16,23 @@
 - Let the user review the deploy preview and test before merging.
 - Only merge when the user explicitly approves.
 
+## How to reply to the user
+
+The user is a beginner coder running a team outfitter business. They skip long replies.
+Every reply is one of:
+
+- **A. Plan** — what you're about to do, in a few bullets.
+- **B. Questions** — only what you need from them to proceed.
+- **C. Done** — what you just did, in plain language, a few bullets.
+
+Rules:
+- Enough detail to understand, no more. Plain words, no jargon or file-path dumps
+  unless they need to click something.
+- Always add a short **"Heads up"** line for anything they must know: things that
+  failed or were skipped, risks to money/orders/customer data, something they need
+  to test or approve, or a problem you noticed that they didn't ask about.
+- If there's nothing important to flag, skip the heads-up.
+
 ## General
 
 - Keep changes focused and minimal.
