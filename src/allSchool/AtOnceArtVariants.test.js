@@ -28,7 +28,7 @@ test('only 24/7 DTF use shows color setup; unused folders and chenille do not',(
 });
 test('requires review, saves the art-folder version and zero-stock inventory, then links the matching garment',async()=>{
  const writes=database(),onSaved=jest.fn();render(<AtOnceArtVariants {...props} onSaved={onSaved}/>);fill();
- fireEvent.click(screen.getByRole('button',{name:'Save art-folder variant & inventory'}));expect(supabase.from).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'Save art-folder variant & inventory'}));expect(supabase.from.mock.calls.filter(([t])=>t!=='art_ids')).toHaveLength(0);// Art ID display lookup is read-only
  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Save art-folder variant & inventory'}));
  await waitFor(()=>expect(onSaved).toHaveBeenCalledTimes(1));
  const stock=writes.find(w=>w.table==='webstore_transfers').value;expect(stock).toMatchObject({code:'dtf-crest-new-version',on_hand:0,image_url:'black.png',decoration_type:'dtf'});
@@ -51,4 +51,22 @@ test('concurrent art-folder edits prevent garment assignment',async()=>{
 test('an existing inventory code with a different file cannot be silently reused',async()=>{
  const writes=database({existing:{decoration_type:'dtf',production_file:{...file,path:'wrong.ai'},width_in:10,height_in:8}});render(<AtOnceArtVariants {...props}/>);fill();fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Save art-folder variant & inventory'}));
  await screen.findByText(/different production details/);expect(writes).toHaveLength(0);
+});
+
+test('saving a version numbers it with a permanent Art ID and shows it',async()=>{
+ database();
+ const base=supabase.from.getMockImplementation();
+ let assigned=false;
+ supabase.from.mockImplementation(table=>{
+  if(table==='art_ids')return {select:()=>({in:async()=>({data:[{art_number:42,customer_id:'customer',art_id:'crest'}],error:null})})};
+  if(table==='art_id_versions')return {select:()=>({in:async()=>({data:assigned?[{art_number:42,variant_no:1,revision_no:1,revision_key:'new-version'}]:[],error:null})})};
+  return base(table);
+ });
+ supabase.rpc=jest.fn(async()=>{assigned=true;return {data:'ART-000042-V01-R01',error:null};});
+ const onSaved=jest.fn();render(<AtOnceArtVariants {...props} onSaved={onSaved}/>);
+ expect(await screen.findByText('ART-000042')).toBeTruthy();
+ fill();fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Save art-folder variant & inventory'}));
+ await waitFor(()=>expect(onSaved).toHaveBeenCalledTimes(1));
+ expect(supabase.rpc).toHaveBeenCalledWith('assign_art_code',{p_customer_id:'customer',p_art_id:'crest',p_variant_key:'Black',p_revision_key:'new-version'});
+ delete supabase.rpc;
 });

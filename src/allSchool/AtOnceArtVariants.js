@@ -1,10 +1,13 @@
 import React, {useState} from 'react';
 import {supabase} from '../lib/supabase';
 import {uploadProductionArtwork} from './productionArtwork';
+import {useArtCodes} from '../lib/artIds';
 import {colorKey,variantCode,validProductionFile,webLogos,isAtOnceStore,artworkSetup,sameFile} from './atOnceArtwork.shared';
 
 export default function AtOnceArtVariants({store,catalog=[],stockByWp={},artwork=[],transfers=[],onSaved}) {
-  const [editing,setEditing]=useState(null), [error,setError]=useState(''), [busy,setBusy]=useState(false);
+  const [editing,setEditing]=useState(null), [error,setError]=useState(''), [busy,setBusy]=useState(false), [codesVersion,setCodesVersion]=useState(0);
+  const ownerOf=art=>art._srcCustId || store?.customer_id;
+  const codes=useArtCodes(supabase,isAtOnceStore(store)?[store.customer_id,...artwork.map(a=>a._srcCustId)]:[],codesVersion);
   if (!isAtOnceStore(store)) return null;
   const folders = new Map(artwork.map(a=>[a.id,a]));
   const needs = new Map();
@@ -53,13 +56,17 @@ export default function AtOnceArtVariants({store,catalog=[],stockByWp={},artwork
         const saved=await supabase.from('webstore_products').update({decorations:resolved.decorations,transfer_codes:resolved.transfer_codes,transfer_code:null,image_url:stockByWp[row.id]?.image_front_url || null,image_back_url:stockByWp[row.id]?.image_back_url || null,production_approved_at:null,production_approved_by:null}).eq('id',row.id).eq('store_id',store.id).select('id');
         if(saved.error || !saved.data?.length) throw new Error('Art and inventory saved, but the garment link could not be updated. Refresh and save this version again.');
       }
+      // Number the new version now so staff see the same Art ID the supplier will.
+      // Best effort: the DTF order assigns it again (idempotently) before sending.
+      try { if (typeof supabase.rpc==='function') await supabase.rpc('assign_art_code',{p_customer_id:customerId,p_art_id:current.id,p_variant_key:e.color,p_revision_key:variant.id}); } catch(_) {}
+      setCodesVersion(n=>n+1);
       setEditing(null);await onSaved?.();
     } catch(err){setError(err.message);} finally{setBusy(false);}
   };
   return <section className="card" style={{padding:16,marginBottom:16}} aria-label="24/7 artwork requirements">
     <h3>24/7 Weblogos &amp; DTF color versions</h3>
     <p>Every logo used on this store needs a transparent Weblogo in its art folder. DTF also needs a reviewed print file for each garment color. Twill and chenille keep their own inventory.</p>
-    {[...needs.values()].map(n=>{const v=(n.art.dtf_variants || []).find(v=>colorKey(v.garment_color)===colorKey(n.color));return <div key={`${n.art.id}:${n.color}`} style={{margin:'10px 0'}}><b>{n.art.name} · {n.color || 'Garment color missing'}</b> — {v?`Knockout: ${v.knockout_color}`:'DTF variant required'} <button className="btn btn-sm btn-secondary" onClick={()=>edit(n)}>Set up DTF version</button></div>;})}
+    {[...needs.values()].map(n=>{const v=(n.art.dtf_variants || []).find(v=>colorKey(v.garment_color)===colorKey(n.color));const code=(v&&codes.version(ownerOf(n.art),n.art.id,v.id)) || codes.master(ownerOf(n.art),n.art.id);return <div key={`${n.art.id}:${n.color}`} style={{margin:'10px 0'}}>{code&&<code style={{marginRight:6}}>{code}</code>}<b>{n.art.name} · {n.color || 'Garment color missing'}</b> — {v?`Knockout: ${v.knockout_color}`:'DTF variant required'} <button className="btn btn-sm btn-secondary" onClick={()=>edit(n)}>Set up DTF version</button></div>;})}
     {!needs.size&&<p>No logos currently use DTF on this store. DTF variants are only required when used.</p>}
     {editing&&<div style={{display:'grid',gap:10,maxWidth:600}}>
       <strong>{editing.art.name} — {editing.color}</strong>

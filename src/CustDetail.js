@@ -11,6 +11,7 @@ import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from '
 import { mergeWebLogoEdit } from './lib/logoDetail';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
+import { useArtCodes } from './lib/artIds';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
 import DstPreview from './DstPreview';
 import { ptDateInput } from './lib/storeClock';
@@ -200,6 +201,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
+  const artCodes=useArtCodes(supabase,tab==='artwork'?[customer&&customer.id,customer&&customer.parent_id]:[],tab==='artwork'?((customer&&customer.art_files)||[]).length:0);// permanent ART-###### per art-folder entry
   // An artwork upload awaits Cloudinary for as long as the file takes — a 50MB .ai or a .dst is
   // seconds to minutes, a mockup PNG is instant. The upload handlers then rebuilt the WHOLE customer
   // (and SO) from the snapshot captured BEFORE that await, so anything written meanwhile — a second
@@ -1380,7 +1382,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {art._imgUrl&&_isImgUrl(art._imgUrl)?<img src={art._imgUrl} alt="" style={{width:56,height:56,borderRadius:6,objectFit:'contain',flexShrink:0,background:'white',border:'1px solid #e2e8f0'}}/>:
                 <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
               <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
+                <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}{(art._src==='library'||art._src==='parent')&&artCodes.master(art._srcCustId,art.id)&&<span title="Permanent Art ID — suppliers match files by this" style={{marginLeft:6,fontSize:10,fontWeight:700,fontFamily:'monospace',color:'#1e3a5f',background:'#e0e7ff',borderRadius:4,padding:'1px 6px'}}>{artCodes.master(art._srcCustId,art.id)}</span>}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
                 {isP&&art._appliesToAll&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#dbeafe',color:'#1e40af',borderRadius:8,padding:'1px 7px'}}>↓ All sub-customers</span></div>}
                 {isP&&!art._appliesToAll&&_subLabel&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#f3e8ff',color:'#6d28d9',borderRadius:8,padding:'1px 7px'}}>{_subLabel}</span></div>}
