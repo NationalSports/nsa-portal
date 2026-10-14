@@ -382,6 +382,19 @@ function SearchTagsInput({tags,onChange}){
   </div>);
 }
 
+// Two customers with the same name can't both go to QuickBooks (the sync holds them
+// as duplicate_portal_customer_name), and they're easy to mix up — e.g. Santiago HS in
+// Garden Grove vs. Santiago HS in Corona. Flag the clash and suggest adding the city.
+const _custNameKey=s=>String(s||'').trim().replace(/\s+/g,' ').toLowerCase();
+function sameNameCustomers(name,id,all){const k=_custNameKey(name);if(!k)return[];return(all||[]).filter(c=>c&&c.id!==id&&_custNameKey(c.name)===k)}
+function cityQualifiedName(name,city){
+  const nm=String(name||'').trim().replace(/\s+/g,' ');let ct=String(city||'').trim();if(!nm||!ct)return nm;
+  if(ct===ct.toUpperCase())ct=ct.toLowerCase().replace(/\b\w/g,ch=>ch.toUpperCase());
+  const tag='('+ct+')';if(nm.toLowerCase().includes(tag.toLowerCase()))return nm;
+  // "Santiago HS Softball" -> "Santiago (Corona) HS Softball": the city follows the school's own name.
+  const m=nm.match(/\s(HS|High School|Middle School|MS|Elementary|Academy|College|University)\b/i);
+  return m&&m.index>0?nm.slice(0,m.index)+' '+tag+nm.slice(m.index):nm+' '+tag;
+}
 function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCustomers}){
   const b={parent_id:null,name:'',alpha_tag:'',search_tags:[],contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,uniform_discount_percent:0,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
@@ -420,10 +433,15 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     if(emp(n.logo_url)&&p.logo_url){n.logo_url=p.logo_url;got.push('logo')}
     setInherited(got);if(got.length)setF(n)};
   const pickLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{const file=inp.files&&inp.files[0];if(!file)return;setLogoUp(true);try{const url=await cloudUpload(file,'nsa-school-logos');sv('logo_url',url)}catch(e){setValMsg('Logo upload failed: '+e.message)}finally{setLogoUp(false)}};inp.click()};
+  // Only new customers and renames are checked, so an older pair that already shares a
+  // name doesn't block unrelated edits to either one.
+  const nameClash=(!f.id||_custNameKey(f.name)!==_custNameKey(customer?.name))?sameNameCustomers(f.name,f.id,allCustomers):[];
+  const nameSuggestion=nameClash.length&&f.shipping_city?cityQualifiedName(f.name,f.shipping_city):'';
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
     // Alpha tag must be unique — it's the portal URL identifier.
     const dupTag=f.alpha_tag&&(allCustomers||[]).find(c=>c.id!==f.id&&(c.alpha_tag||'').trim().toLowerCase()===f.alpha_tag.trim().toLowerCase());
     if(dupTag)e.a=1;
+    if(nameClash.length){setErr({...e,n:1});setValMsg('Another customer is already named "'+f.name.trim()+'". Customer names must be different (QuickBooks needs it) — add the city, e.g. "'+cityQualifiedName(f.name,f.shipping_city||'City')+'".');return false}
     setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a&&!dupTag)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');
     if(dupTag)setValMsg('Alpha Tag "'+f.alpha_tag+'" is already used by '+dupTag.name+'. Alpha tags must be unique — they identify the customer portal.');
     else if(missing.length)setValMsg('Missing: '+missing.join(', '));
@@ -444,6 +462,10 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
       <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>(['Steve Peterson','Mike Mercuriali','Jered Hunt','Chase Koissian','Gayle Peterson','Kevin McCormack','Jeff Bianchini','Sharon Day-Monroe','Kelly Bean'].includes(r.name)||r.commission_eligible===true)&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
       <div><label className="form-label">Search Tags</label><SearchTagsInput tags={f.search_tags||[]} onChange={v=>sv('search_tags',v)}/></div></div>
+    {nameClash.length>0&&<div style={{marginTop:6,padding:'6px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+      <span>⚠ Same name as {nameClash.map(c=>`${c.name} (${c.alpha_tag||'no tag'}${c.shipping_city||c.billing_city?', '+(c.shipping_city||c.billing_city):''})`).join('; ')}. Add the city so they're told apart{nameSuggestion?':':' — enter the shipping city below.'}</span>
+      {nameSuggestion&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{sv('name',nameSuggestion);setValMsg('')}}>Use "{nameSuggestion}"</button>}
+    </div>}
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:8,marginBottom:6,textTransform:'uppercase'}}>Contacts</div>
     {(()=>{const inheritedBilling=ct==='sub'&&f.parent_id?getBillingContacts({parent_id:f.parent_id,contacts:[]},allCustomers).filter(b=>b._inherited_from):[];
       return inheritedBilling.length>0?<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'8px 10px',marginBottom:8}}>
@@ -1119,4 +1141,4 @@ function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
 // ─── STANDALONE COACH PORTAL ───
 
 
-export { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal };
+export { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal, sameNameCustomers, cityQualifiedName };
