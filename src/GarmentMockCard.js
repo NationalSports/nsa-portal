@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { fileDisplayName, _isImgUrl, _cloudinaryPdfThumb, openFile } from './utils';
 import { sizeProgressCell } from './JobGarmentProgress';
 import { cloudinaryPreviewUrl } from './lib/cloudinaryPreview';
-import { useDstDesign, StitchCanvas, stitchPngFile } from './DstPreview';
+import { useDstDesign, StitchCanvas, stitchPngFile, composeStitchMock } from './DstPreview';
 import './GarmentMockCard.css';
 
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
@@ -286,7 +286,9 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
   </div>;
 }
 
-export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, onSendToArtist, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg', logo = null, children = null }) {
+// autoMock (embroidery with a DST + garment photo): { garmentUrl, stitch:{dstUrl,inks}, position, artSize } —
+// offers "stitch render on this garment" as the first suggestion; using it uploads the composed image.
+export default function GarmentMockCard({ label, sub, mocks, candidates: baseCandidates, suggest = false, busy, onUse, onRemove, onUpload, onSendToArtist, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg', logo = null, autoMock = null, children = null }) {
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
@@ -295,12 +297,24 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
   const [drag, setDrag] = useState(false);
   const input = useRef(null);
   const choosingExisting = choosing || mocks.length === 0;
+  const autoOn = !!(autoMock && autoMock.garmentUrl && autoMock.stitch && choosingExisting);
+  const { design: autoDesign } = useDstDesign(autoOn ? autoMock.stitch.dstUrl : null);
+  const [auto, setAuto] = useState(null); // { url (object URL), file }
+  const autoKey = autoOn && autoDesign ? [autoMock.garmentUrl, (autoMock.stitch.inks || []).join('|'), autoMock.position, autoMock.artSize].join('~') : '';
+  useEffect(() => {
+    if (!autoKey) { setAuto(null); return; }
+    let live = true, objUrl = '';
+    composeStitchMock(autoDesign, autoMock.stitch.inks, autoMock.garmentUrl, { position: autoMock.position, artSize: autoMock.artSize })
+      .then(file => { if (!live) return; objUrl = URL.createObjectURL(file); setAuto({ url: objUrl, file }); }, () => live && setAuto(null));
+    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [autoKey]); // autoKey captures every input that changes the composed image
+  const candidates = auto ? [{ url: auto.url, name: 'Auto mock — stitch render on this garment (check placement)', _autoFile: auto.file }, ...baseCandidates] : baseCandidates;
   const pool = choosingExisting ? candidates : mocks;
   const showCandidate = choosing || (suggest && mocks.length === 0);
   const files = choosingExisting && !showCandidate ? [] : pool;
   const file = files.find(f => urlOf(f) === selected) || files[0];
   const url = urlOf(file);
-  const thumb = (f, width = 1600) => _isImgUrl(urlOf(f)) ? cloudinaryPreviewUrl(urlOf(f), width) : _cloudinaryPdfThumb(urlOf(f));
+  const thumb = (f, width = 1600) => f && f._autoFile ? f.url : _isImgUrl(urlOf(f)) ? cloudinaryPreviewUrl(urlOf(f), width) : _cloudinaryPdfThumb(urlOf(f));
   const previewUrl = file ? thumb(file) : '';
   useEffect(() => { setLoadedPreview(''); setPreviewError(false); }, [previewUrl]);
   const run = async fn => {
@@ -326,7 +340,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
         {file && choosingExisting && file.requires_mock_review && <p className="panel-hint">From {file.source_art_name}. Confirm this image also matches the artwork for this job.</p>}
         {error && <p role="alert" className="mock-error">{error}</p>}
         <div className="panel-actions">
-          {file && choosingExisting && <button type="button" className="mock-primary" disabled={busy} onClick={() => run(() => onUse(file))}>{busy ? 'Saving…' : 'Use this mock'}</button>}
+          {file && choosingExisting && <button type="button" className="mock-primary" disabled={busy} onClick={() => run(() => file._autoFile ? onUpload([file._autoFile]) : onUse(file))}>{busy ? 'Saving…' : 'Use this mock'}</button>}
           {onSendToArtist && <button type="button" className="mock-artist" disabled={busy} title="None of these mocks are right — pick an artist to build a new mock for this garment" onClick={onSendToArtist}>🎨 Send to Artist</button>}
           {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>{mocks.length ? 'Change mock' : 'Use existing image'}</button>}
           <button type="button" disabled={busy} onClick={() => input.current.click()}>{uploadLabel}</button>

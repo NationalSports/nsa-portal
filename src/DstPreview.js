@@ -197,7 +197,36 @@ function stitchPngFile(design, inks, name) {
   return new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks || [], null, 1200); c.toBlob(b => res(new File([b], name || 'stitch-render.png', { type: 'image/png' })), 'image/png'); });
 }
 
-export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchSourceFor, StitchCanvas, stitchPngFile };
+// ── Auto garment mock: the stitch render placed on the garment photo ──
+// Position text → where the logo center sits on a front photo (percent of an 800×1000 frame,
+// same geometry as the webstore mock presets); size from the art's width (≈5% per inch).
+function mockPlacement(position, artSize) {
+  const p = String(position || '').toLowerCase();
+  const at = /left chest/.test(p) ? [67, 33] : /right chest/.test(p) ? [33, 33] : /left sleeve/.test(p) ? [83, 58] : /right sleeve/.test(p) ? [17, 58]
+    : /full (front|back)|^back|full chest/.test(p) ? [50, 43] : [50, 36];
+  const inches = parseFloat(String(artSize || '').replace(/[^\d.]+/, '')) || 3.5;
+  return { x: at[0], y: at[1], w: Math.max(9, Math.min(45, inches * 5)) };
+}
+async function composeStitchMock(design, inks, garmentUrl, { position, artSize, palette } = {}) {
+  const base = await new Promise((resolve, reject) => {
+    const img = new Image(); const t = setTimeout(() => reject(new Error('Garment image timed out')), 20000);
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { clearTimeout(t); resolve(img); }; img.onerror = () => { clearTimeout(t); reject(new Error('Could not load the garment image')); };
+    img.src = /^(data|blob):/.test(garmentUrl) ? garmentUrl : '/.netlify/functions/image-proxy?url=' + encodeURIComponent(garmentUrl);
+  });
+  const W = 800, H = 1000, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  const s = Math.min(W / base.naturalWidth, H / base.naturalHeight), bw = base.naturalWidth * s, bh = base.naturalHeight * s;
+  ctx.drawImage(base, (W - bw) / 2, (H - bh) / 2, bw, bh);
+  const logo = document.createElement('canvas'); drawDst(logo, design, inks || [], null, 900, palette);
+  const pl = mockPlacement(position, artSize), lw = W * pl.w / 100;
+  ctx.drawImage(logo, W * pl.x / 100 - lw / 2, H * pl.y / 100 - lw / 2, lw, lw);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+  if (!blob) throw new Error('Could not export the mock');
+  return new File([blob], 'auto-mock-stitch-on-garment.jpg', { type: 'image/jpeg' });
+}
+
+export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchSourceFor, StitchCanvas, stitchPngFile, composeStitchMock, mockPlacement };
 
 // ── For printed sheets (production sheet, job art sheet) ──
 // Draws each embroidery design's live DST in every color way's threads as a PNG

@@ -4,6 +4,9 @@ import { resolveLogoColorWay } from './logoDetail';
 // Shared by job detail and both Art Dashboard dialogs. Read all SO artwork,
 // not just artwork currently assigned to the selected job.
 export function garmentSlotCandidates(slot, item, arts, prior = []) {
+  // Numbers / names slots borrow the anchor artwork only for storage — its logo proofs and
+  // production images are NOT numbers mocks, so only previous-order suggestions are offered.
+  if (slot.kind && slot.kind !== 'art') return garmentMockCandidates({ files: prior.flatMap(g => safeArr(g.files)) });
   const a = slot.artFile || {};
   const sameGarment = slot.kind === 'art' && !slot.side ? safeArr(arts).filter(other => other.id !== a.id).flatMap(other =>
     safeArr(other.item_mockups?.[garmentMockKey(item)]).map(f => ({ ...(typeof f === 'string' ? { url: f } : f), source_art_name: other.name || 'Other artwork', requires_mock_review: true }))
