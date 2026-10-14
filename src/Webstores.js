@@ -58,7 +58,7 @@ import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapL
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
-import { webstoreProductionKey } from './lib/storeSkuGrouping';
+import { buildTimedTeamSoArtDecorations, createTimedTeamDecorationLookup, groupTimedTeamLines, timedTeamDecorationReview, timedTeamLineTreatment, timedTeamMockCatalog, timedTeamOverrideSkuCodes } from './lib/timedTeamBatch';
 import { allocateMoneyCents } from './lib/bundleMoney';
 import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise, refundOwed } from './lib/webstoreOrderMoney';
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
@@ -641,14 +641,21 @@ function madeToOrderPids(catalog) {
 // EFFECTIVE SKU and annotate order lines so every consumer agrees.
 function sizeSkuMapOf(catalog) {
   const m = {};
-  (catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) m[c.product_id] = c.size_skus; });
+  (catalog || []).forEach((c) => {
+    if (!c.size_skus || !Object.keys(c.size_skus).length) return;
+    if (c.product_id) m[c.product_id] = c.size_skus;
+    if (c.id) m[`wp:${c.id}`] = c.size_skus;
+  });
   return m;
 }
 // Annotate lines with _effSku (the SKU production will actually source) and
 // _skuOv (true when it differs from the line's own SKU).
 function annotateEffSkus(lines, skuMap) {
   return (lines || []).map((i) => {
-    const raw = i.product_id && skuMap[i.product_id] ? skuMap[i.product_id][i.size || 'OS'] : null;
+    const snapshotSizeSkus = i.decoration_snapshot && !Array.isArray(i.decoration_snapshot) && i.decoration_snapshot.size_skus;
+    const listingSizeSkus = i.webstore_product_id && skuMap[`wp:${i.webstore_product_id}`];
+    const sizeSkus = snapshotSizeSkus || listingSizeSkus || (i.product_id && skuMap[i.product_id]) || {};
+    const raw = sizeSkus[i.size || 'OS'] || null;
     const source = resolveSizeSkuSource({ raw, lineSku: i.sku, lineColor: i.color, baseProduct: { id: i.product_id || null, sku: i.sku || '', color: i.color || '' }, candidates: [] });
     const ov = source.isOverride ? source.sku : '';
     const eff = ov || i.sku || '';
@@ -3962,13 +3969,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // per logo and production gets each logo's own art file. (Mirrors the OMG store→SO
     // mapping in App.js.) Keyed by product_id (fallback sku) to match byProduct.
     // Built here (not inside proceed) so the confirm modal can count logo units too.
-    const decosByKey = {};
-    (detail.catalog || []).forEach((c) => {
-      const arr = Array.isArray(c.decorations) ? c.decorations.filter((d) => d && (d.art_url || d.art_id)) : [];
-      if (!arr.length) return;
-      // Register under both product_id and sku so an order line keyed by either resolves.
-      [c.product_id, c.sku].filter(Boolean).forEach((k) => { (decosByKey[k] = decosByKey[k] || []).push(...arr); });
-    });
+    const timedTeamLookup = createTimedTeamDecorationLookup(detail.catalog || []);
     const artById = {};
     (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
     // Decoration review for the confirm modal: one row per placed store logo with how
@@ -3976,17 +3977,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // the method BEFORE the SO exists — a handful of units often moves screen print →
     // DTF (no screen burn), a big run the other way.
     const decoRowsFor = (selIds) => {
-      const units = {}; const meta = {};
-      lines.forEach((i) => {
-        if (!selIds.has(i.order_id)) return;
-        const seen = new Set();
-        (decosByKey[i.product_id] || decosByKey[i.sku] || []).forEach((d) => {
-          const k = d.art_id || d.art_url; if (!k || seen.has(k)) return; seen.add(k);
-          units[k] = (units[k] || 0) + (i.qty || 1);
-          if (!meta[k]) { const lib = d.art_id ? artById[d.art_id] : null; meta[k] = { key: k, name: (lib && lib.name) || 'Store logo', method: (lib && lib.deco_type) || 'screen_print', img: d.art_url || (lib && lib.web_logo_url) || '' }; }
-        });
+      return timedTeamDecorationReview(lines.filter((i) => selIds.has(i.order_id)), timedTeamLookup).map(({ key, units, decoration }) => {
+        const lib = decoration.art_id ? artById[decoration.art_id] : null;
+        return { key, units, name: (lib && lib.name) || 'Store logo', method: (lib && lib.deco_type) || 'screen_print', img: decoration.art_url || (lib && lib.web_logo_url) || '' };
       });
-      return Object.keys(units).map((k) => ({ ...meta[k], units: units[k] }));
     };
     // Items with no linked catalog product get one more chance BEFORE the SO exists:
     // pre-resolve their bare SKUs so the confirm modal can list anything the catalog
@@ -4091,10 +4085,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Pull every substitute SKU's product candidates too. A SKU can exist under
     // multiple vendors, so resolution below uses the supplier saved with the
     // override (or the base product's supplier for legacy string overrides).
-    const overrideSkus = [...new Set(bLines.map((i) => {
-      const sz = i.size || 'OS';
-      return sizeSkuCode(inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz]);
-    }).filter(Boolean))];
+    const overrideSkus = timedTeamOverrideSkuCodes(bLines, {
+      lookup: timedTeamLookup, legacyPersonalize: personalize, legacyTransfers: productionTransfersByPid,
+      inlineOverrides, skuLinks, legacySizeSkus: sizeSkusByCatPid,
+    });
     const candidatesBySku = {};
     if (overrideSkus.length) {
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id,image_front_url,image_back_url').in('sku', overrideSkus);
@@ -4104,12 +4098,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         (candidatesBySku[k] = candidatesBySku[k] || []).push(p);
       });
     }
-    const byProduct = {};
-    bLines.forEach((i) => {
+    const byProduct = groupTimedTeamLines(bLines, (i) => {
       const sourcePid = i.product_id || null;
       const baseProduct = pinfo[sourcePid] || null;
       const sz = i.size || 'OS';
-      const rawOverride = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz];
+      const treatment = timedTeamLineTreatment(i, timedTeamLookup, personalize, productionTransfersByPid);
+      const rawOverride = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || treatment.sizeSkus[sz] || (sizeSkusByCatPid[i.product_id] || {})[sz];
       const source = resolveSizeSkuSource({ raw: rawOverride, lineSku: i.sku, lineColor: i.color, baseProduct, candidates: candidatesBySku[sizeSkuCode(rawOverride)] || [] });
       // Group by the item the supplier will actually receive plus its production
       // treatment. Stale catalog ids no longer split equivalent SKU/color lines,
@@ -4121,24 +4115,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // from the money collected; a separate line per price makes every qty × rate exact,
       // so the SO, its print and the batch invoice tie to the cent.
       const unitCollected = r2(collectedForLine(i) / q);
-      const baseKey = webstoreProductionKey({
+      return {
+        source_product_id: sourcePid,
+        product_id: source.product_id,
+        vendor_id: source.vendor_id,
         sku: source.sku,
         color: sourceColor,
-        vendorId: source.vendor_id,
-        decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
-        personalize: personalize[sourcePid] || {},
-        transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
-      });
-      const key = baseKey + '§$' + unitCollected.toFixed(2);
-      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[key];
-      const pdef = personalize[sourcePid] || {};
-      g.sizes[sz] = (g.sizes[sz] || 0) + q;
-      g.collected = r2(g.collected + collectedForLine(i));
-      for (let u = 0; u < q; u++) {
-        if (pdef.num) (g.numbers[sz] = g.numbers[sz] || []).push(i.player_number ? String(i.player_number) : '');
-        if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
-      }
+        collected: collectedForLine(i),
+        unitCollected,
+        treatment,
+      };
     });
     // Store lines that never got linked to a catalog product (the builder let a bare
     // typed SKU like "AT105" through) arrive here with product_id null. Resolve them
@@ -4179,16 +4165,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (!b.product_id || !b.transfer_code) return;
       (bundleXfersByPid[b.product_id] = bundleXfersByPid[b.product_id] || new Set()).add(b.transfer_code);
     });
-    // Builder placement → the canonical SO position vocabulary (POSITIONS in settings; the
-    // SO deco editor binds a <select> to it, so the value must be one of those options).
-    const POS_LABEL = { left_chest: 'Left Chest', full_front: 'Front', full_back: 'Back', left_sleeve: 'Left Sleeve', right_sleeve: 'Right Sleeve' };
-    const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
-    const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
     // Capture the decorated storefront preview after resolving the final SO lines.
     // A supplier photo by itself is not a garment mock.
     const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}) } }); };
-    const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     // Store setting "decorated elsewhere" → every decoration lands on the SO already
     // flagged Outside: the whole store is produced off-site, names and numbers
     // included. fulfillment:'outside' is the unified switch (isDecoOutsourced) — it
@@ -4208,7 +4188,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const sourcePid = g.source_product_id || g.product_id;
       const sourceInfo = pinfo[sourcePid] || {};
       const info = pinfo[g.product_id] || skuInfo[g.sku] || sourceInfo;
-      const pdef = personalize[sourcePid] || {};
+      const pdef = g.personalize || {};
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
@@ -4216,54 +4196,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // transient sell_suppressed flag is stripped when decorations are saved.
       if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: 0, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers, ...routing });
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: 0, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
-      // Each builder logo placement → one art deco + its art file on the SO.
-      const seenPlace = new Set();
-      (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {
-        const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
-        const lib = d.art_id ? artById[d.art_id] : null;
-        // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
-        // small run) — wins over the library record's deco_type on both the deco
-        // line and the art file, for this SO only (the library record is untouched).
-        const _ovType = decoMethods[d.art_id || d.art_url] || null;
-        const artId = (lib && lib.id) || d.art_id || ('artweb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
-        if (lib) {
-          // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
-          const base = cleanArt(lib);
-          if (!base.web_logo_url && d.art_url) base.web_logo_url = d.art_url;
-          // Inherited production files must be re-reviewed on THIS order, never auto-confirmed:
-          // a prod_files_attached:true carried over from a prior order/colorway would combine
-          // with the forced 'approved' below to skip the separations stage entirely (audit A8).
-          // Mirrors the manual reuse path (OrderEditor addPrevArt).
-          base.prod_files_attached = false;
-          // Mirror the OMG pull (createOmgSO in App.js): the store sale IS the customer's
-          // approval, so library art lands at least 'approved'. Without this, a library record
-          // still at waiting_for_art/needs_approval — e.g. the OMG-import "attach production
-          // file" shell — drags the SO's job back into the artist/coach approval pipeline.
-          // Production files still gate normally (artProdFilesConfirmed): approval is skipped,
-          // the prod-files stage is not.
-          if (base.status !== 'approved' && base.status !== 'art_complete') { base.status = 'approved'; if (!base.approved_at) base.approved_at = new Date().toISOString(); }
-          addArtFile({ ...base, id: artId, ...(_ovType ? { deco_type: _ovType } : {}) });
-        } else {
-          addArtFile({ id: artId, name: 'Store logo', deco_type: _ovType || 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
-        }
-        // Pin the production colorway. The builder's per-color web-logo pick is the source of
-        // truth when it carries a color_way_id (the rep chose that CW's cutout for this exact
-        // garment color — deterministic, not a guess). Only fall back to matching the CW's
-        // garment_color label against the SO line's color (exact, then contains, then only-CW)
-        // for legacy url-only picks.
-        let cwId = null;
-        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(sourceInfo.color || info.color)];
-        if (_pick && typeof _pick === 'object' && _pick.color_way_id && lib && Array.isArray(lib.color_ways) && lib.color_ways.some((c) => c && c.id === _pick.color_way_id)) {
-          cwId = _pick.color_way_id;
-        }
-        if (!cwId && lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
-          const gc = colorKeyOf(sourceInfo.color || info.color);
-          const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
-          const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
-          cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
-        }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, sourceInfo.color || info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
+      // Each purchased listing logo placement → one art deco + its art file on the SO.
+      const garmentColor = sourceInfo.color || info.color || g.color || '';
+      const artBuild = buildTimedTeamSoArtDecorations({
+        decorations: g.decorations,
+        garmentColor,
+        artById,
+        methodOverrides: decoMethods,
+        routing,
+        decorationUrl: decoUrlForColor,
+        makeArtId: () => 'artweb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        approvedAt: new Date().toISOString(),
+        uploadedDate: new Date().toLocaleDateString(),
       });
+      artBuild.artFiles.forEach(addArtFile);
+      decorations.push(...artBuild.decorations);
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
       // which transfer to apply. One shared art file per transfer code.
@@ -4280,10 +4227,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const item = { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
-      const catalogMatches = (detail.catalog || []).filter(c => sourcePid ? c.product_id === sourcePid : c.sku === item.sku);
-      const placed = [...new Map((decosByKey[sourcePid] || decosByKey[g.sku] || []).map(d => [placeKey(d), d])).values()];
-      storeMockSources.push({ item, product: sourceInfo, catalog: catalogMatches.length === 1 ? catalogMatches[0] : {}, decorations: placed,
-        ambiguous: catalogMatches.length > 1, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
+      const mockCatalog = timedTeamMockCatalog({ webstoreProductId: g.webstore_product_id, lookup: timedTeamLookup, catalog: detail.catalog || [], sourceProductId: sourcePid, sku: item.sku });
+      const placed = [...new Map((g.decorations || []).map(d => [`${d.art_id || d.art_url || ''}@${d.placement || ''}@${d.side || 'front'}`, d])).values()];
+      storeMockSources.push({ item, product: sourceInfo, catalog: mockCatalog.catalog, decorations: placed,
+        ambiguous: mockCatalog.ambiguous, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
       return item;
     });
 
