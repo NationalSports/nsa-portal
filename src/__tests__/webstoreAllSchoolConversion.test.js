@@ -8,6 +8,11 @@ const migration = fs.readFileSync(path.join(root, 'supabase/migrations/202610140
 const conversionSql = migration.split('-- A checkout that read the team store')[0];
 const admin = fs.readFileSync(path.join(root, 'src/Webstores.js'), 'utf8');
 const checkout = fs.readFileSync(path.join(root, 'netlify/functions/webstore-checkout.js'), 'utf8');
+const migrationDir = path.join(root, 'supabase/migrations');
+const effectiveLogoMigration = fs.readdirSync(migrationDir).sort().map((file) => fs.readFileSync(path.join(migrationDir, file), 'utf8'))
+  .filter((sql) => /create or replace function public\.create_webstore_logo_option/i.test(sql)).pop();
+const schemaColumns = JSON.parse(fs.readFileSync(path.join(root, 'supabase/schema-columns.json'), 'utf8')).tables;
+const adminHelpers = fs.readFileSync(path.join(root, 'src/allSchool/adminHelpers.js'), 'utf8');
 
 test('conversion is admin-authenticated and delegates one atomic RPC', () => {
   expect(endpoint).toContain('verifyAdmin(event)');
@@ -36,6 +41,17 @@ test('team logo creation links source colors and inserts copies in one transacti
   expect(admin).toContain("supabase.rpc('create_webstore_logo_option'");
   expect(migration).toMatch(/function public\.create_webstore_logo_option/);
   expect(migration).toMatch(/update public\.webstore_products[\s\S]*insert into public\.webstore_products/);
+});
+
+test('effective logo-option function inserts only real webstore_products columns', () => {
+  const insert = /insert into public\.webstore_products\s*\(([\s\S]*?)\)\s*values/i.exec(effectiveLogoMigration);
+  expect(insert).toBeTruthy();
+  const insertedColumns = insert[1].split(',').map((column) => column.trim()).filter(Boolean);
+  const actualColumns = new Set(schemaColumns.webstore_products);
+  expect(insertedColumns.filter((column) => !actualColumns.has(column))).toEqual([]);
+  expect(insertedColumns).toContain('size_skus');
+  expect(effectiveLogoMigration).not.toMatch(/\bsize_sku_overrides\b/);
+  expect(adminHelpers).not.toMatch(/\bsize_sku_overrides\b/);
 });
 
 test('converted stores reject stale team checkouts at the database boundary', () => {
