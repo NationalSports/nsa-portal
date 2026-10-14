@@ -71,17 +71,17 @@ test('incomplete initial load still blocks writes and retains changed drafts as 
   expect(h.save).not.toHaveBeenCalled();expect(h.snap.current.rows).toEqual([]);expect(h.pending.has('a')).toBe(true);
 });
 
-function pollHarness(){
+function pollHarness({custCount=1}={}){
   const start=source.indexOf('    const runPoll=async()=>{');
   const end=source.indexOf('    schedulePoll();\n    // Expose an early-trigger',start);
   const load=jest.fn(),schedule=jest.fn();
-  const run=Function('_dbLoad','schedulePoll','document',`
+  const run=Function('_dbLoad','schedulePoll','document','_custCount',`
     let cancelled=false,pollRunning=false,_pollConsecutiveFailures=0;
     const _dbReady={current:true},_dbSavingCount=0,_lastFullSyncAt=Date.now(),_FULL_SYNC_MS=1800000;
     const _getPollInterval=()=>300000;
     ${source.slice(start,end)}
     return runPoll;
-  `)(load,schedule,{hidden:false});
+  `)(load,schedule,{hidden:false},{current:custCount});
   return {run,load,schedule};
 }
 test('navigation cannot overlap an in-flight poll; polling resumes after completion',async()=>{
@@ -98,4 +98,11 @@ test('a rejected poll releases the guard and schedules recovery',async()=>{
     const h=pollHarness();h.load.mockRejectedValue(new Error('offline'));
     await h.run();await h.run();expect(h.load).toHaveBeenCalledTimes(2);expect(h.schedule).toHaveBeenCalledTimes(2);
   }finally{warn.mockRestore()}
+});
+test('an empty customer list is refetched before the core load, so a skipped poll cannot block the heal',async()=>{
+  const h=pollHarness({custCount:0});h.load.mockResolvedValue(null);
+  await h.run();
+  expect(h.load).toHaveBeenCalledTimes(2);
+  expect([...h.load.mock.calls[0][0].only]).toEqual(['customers']);
+  expect(h.load.mock.calls[1][0].only).toBeUndefined();
 });
