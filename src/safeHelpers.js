@@ -717,8 +717,15 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
         // original still holds its own prior key (a partial move stamps it), fill it before the
         // replacement so the source isn't drained into its substitute.
         const keySkuColor = li._so_line_key.slice(0, li._so_line_key.lastIndexOf('|'));
+        const skuColorOf = (it) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'');
         const holders = aliasBuckets.get(li._so_line_key);
-        const original = holders.filter(idx => (safeStr(items[idx]?.sku)||'')+'|'+(safeStr(items[idx]?.color)||'') === keySkuColor);
+        let original = holders.filter(idx => skuColorOf(items[idx]) === keySkuColor);
+        // The source was Change SKU'd before the sub, so no holder is still on the invoiced
+        // sku/color. Find it by the key the sub stamped for its own current sku/color — a
+        // replacement only inherits the source's keys — so a replacement merged into a line
+        // above the source can't take the source's units.
+        if (!original.length) original = holders.filter(idx => safeArr(items[idx]?.invoice_line_keys)
+          .some(k => { const s = safeStr(k); return s.slice(0, s.lastIndexOf('|')) === skuColorOf(items[idx]); }));
         pourInto([...original, ...holders.filter(idx => !original.includes(idx))], q);
         return;
       }

@@ -171,6 +171,39 @@ describe('Sub unfilled items keeps already-invoiced units invoiced (SO-2640)', (
     const { moved } = linkMovedLineInvoiceKeys(src, 0, { sku: 'C', color: 'Blue', sizes: { M: 1 } });
     expect(moved.invoice_line_keys).toEqual(['A|Blue|0', 'B|Blue|0']);
   });
+
+  // Invoiced as A, Change SKU'd A → B, then 2 of B's open units subbed to C, merging into an existing
+  // C line (10 own units, never invoiced). The invoice key A|Blue|1 now matches no line exactly, and
+  // neither B nor C is still an A — B must still fill first however the lines are ordered.
+  const reSkuedThenSubbed = (cAbove) => {
+    const inv = [{ id: 'INV-A', inv_type: 'final', line_items: [{ _so_line_key: 'A|Blue|1', _sku: 'A', _color: 'Blue', qty: 31 }] }];
+    const { src, moved } = linkMovedLineInvoiceKeys({ sku: 'B', color: 'Blue', sizes: { M: 31 }, invoice_line_keys: ['A|Blue|1'] }, 1, { sku: 'C', color: 'Blue', sizes: { M: 2 } });
+    const b = { ...src, sizes: { M: 29 } };
+    const c = { sku: 'C', color: 'Blue', sizes: { M: 12 }, invoice_line_keys: moved.invoice_line_keys };
+    const so = { items: cAbove ? [c, b] : [{ sku: 'X', color: 'Red', sizes: { M: 1 } }, b, c] };
+    const m = buildInvoicedQtyMap(so, inv);
+    return Object.fromEntries(so.items.map((it, i) => [it.sku, m.get(soLineKey(it, i))]));
+  };
+
+  test('a re-SKU\'d source fills before a merge target sitting ABOVE it', () => {
+    expect(reSkuedThenSubbed(true)).toEqual({ C: 2, B: 29 });
+  });
+
+  test('a re-SKU\'d source fills before a merge target sitting below it', () => {
+    expect(reSkuedThenSubbed(false)).toEqual({ X: 0, B: 29, C: 2 });
+  });
+
+  test('a line still on the invoiced sku/color keeps first claim over one that only carries its own history', () => {
+    // JM1033 was invoiced at index 2 and has shifted to 1. The AT208 line above it inherited that key
+    // AND carries its own AT208 key from an earlier sub of its own — it must still fill second.
+    const inv = [{ id: 'X', inv_type: 'final', line_items: [{ _so_line_key: 'JM1033|Black|2', _sku: 'JM1033', qty: 31 }] }];
+    const so = { items: [
+      { sku: 'AT208', color: 'Black', sizes: { L: 12 }, invoice_line_keys: ['AT208|Black|5', 'JM1033|Black|2'] },
+      { sku: 'JM1033', color: 'Black', sizes: { L: 29 }, invoice_line_keys: ['JM1033|Black|2'] },
+    ] };
+    const m = buildInvoicedQtyMap(so, inv);
+    expect(so.items.map((it, i) => m.get(soLineKey(it, i)))).toEqual([2, 29]);
+  });
 });
 
 // ─────────────────────────────────────────────
