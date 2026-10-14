@@ -25,8 +25,9 @@ function loadDst(url) {
 
 // Best color for a thread line: an explicit hex wins, then the exact thread
 // name, then the LONGEST known name inside it ("Dark Green (1)" → dark green,
-// not green). Unknown names return null and draw grey so they stand out.
-function inkHex(ink) {
+// not green), then the account's own thread colors (palette = [{name,hex}]), then a known
+// name that starts with it ("Vegas" → vegas gold). Unknown names return null and draw grey.
+function inkHex(ink, palette) {
   const s = String(ink || '').trim();
   const hex = s.match(/#([0-9a-f]{6}|[0-9a-f]{3})\b/i);
   if (hex) return '#' + hex[1];
@@ -35,7 +36,11 @@ function inkHex(ink) {
   if (THREAD_COLORS[n]) return THREAD_COLORS[n];
   let best = null;
   for (const k of Object.keys(THREAD_COLORS)) if (new RegExp('\\b' + k + '\\b').test(n) && (!best || k.length > best.length)) best = k;
-  return best ? THREAD_COLORS[best] : null;
+  if (best) return THREAD_COLORS[best];
+  const own = (palette || []).find(p => p && String(p.name || '').trim().toLowerCase() === n);
+  if (own) { const h = String(own.hex || '').trim(); if (/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(h)) return h[0] === '#' ? h : '#' + h; }
+  const pre = Object.keys(THREAD_COLORS).filter(k => k.startsWith(n + ' ')).sort((a, b) => a.length - b.length)[0];
+  return pre ? THREAD_COLORS[pre] : null;
 }
 const UNKNOWN = '#9ca3af';
 function shade(hex, f) {
@@ -45,7 +50,7 @@ function shade(hex, f) {
 }
 
 // Draw the design centered in a size×size canvas. bg null = transparent (for export).
-function drawDst(canvas, design, inks, bg, size) {
+function drawDst(canvas, design, inks, bg, size, palette) {
   const ctx = canvas.getContext('2d');
   canvas.width = size; canvas.height = size;
   ctx.clearRect(0, 0, size, size);
@@ -56,7 +61,7 @@ function drawDst(canvas, design, inks, bg, size) {
   const lw = Math.max(0.8, 4 * scale); // ~0.4 mm thread
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   design.blocks.forEach((runs, bi) => {
-    const base = inkHex(inks[bi]) || UNKNOWN;
+    const base = inkHex(inks[bi], palette) || UNKNOWN;
     // Two passes — a darker edge, then the thread color — give stitches some texture.
     [[shade(base, 0.72), lw], [base, lw * 0.6]].forEach(([color, w]) => {
       ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
@@ -69,13 +74,13 @@ function drawDst(canvas, design, inks, bg, size) {
 // One color way's render. `compact` = sitting beside/under its own color-way card in
 // ColorWaysEditor, so the card already shows the CW badge and thread list — the tile
 // is just the picture plus actions. Otherwise it carries its own header + stop list.
-function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = false, width = 220 }) {
+function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = false, width = 220, palette }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = cw?.inks || [];
   const garmentHex = inkHex(cw?.garment_color);
-  useEffect(() => { if (ref.current) drawDst(ref.current, design, inks, garmentHex || '#f8fafc', 520); }, [design, inks.join('|'), garmentHex]);
-  const exportBlob = () => new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks, null, 1200); c.toBlob(res, 'image/png'); });
+  useEffect(() => { if (ref.current) drawDst(ref.current, design, inks, garmentHex || '#f8fafc', 520, palette); }, [design, inks.join('|'), garmentHex, palette]);
+  const exportBlob = () => new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks, null, 1200, palette); c.toBlob(res, 'image/png'); });
   const download = async () => { const b = await exportBlob(); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `stitch-preview-cw${idx + 1}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); };
   const stops = design.blocks.map((_, bi) => inks[bi] || '');
   const setCount = stops.filter(x => String(x).trim()).length;
@@ -103,7 +108,7 @@ function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = fals
       {!compact && <>
         <div style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Thread stops</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
-          {stops.map((ink, si) => { const hex = inkHex(ink); return <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: ink ? '#334155' : '#b45309' }}>
+          {stops.map((ink, si) => { const hex = inkHex(ink, palette); return <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: ink ? '#334155' : '#b45309' }}>
             <span style={{ fontSize: 10, color: '#94a3b8', width: 12, textAlign: 'right', flexShrink: 0 }}>{si + 1}</span>
             <span style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: hex || UNKNOWN }} />
             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: ink ? 500 : 600 }}>{ink || 'No thread set'}</span>
@@ -137,13 +142,13 @@ function StitchBadge({ design }) {
   return <span title="Read from the uploaded DST" style={{ fontSize: 9, fontWeight: 700, color: '#6d28d9', background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 8, padding: '0 7px', lineHeight: '16px' }}>🧵 {n} stop{n === 1 ? '' : 's'} · {design.stitches.toLocaleString()} stitches</span>;
 }
 // Load error / stop-count mismatch / unknown thread names, under the previews.
-function StitchNotes({ design, err, colorWays }) {
+function StitchNotes({ design, err, colorWays, palette }) {
   if (err) return <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ Couldn't load the DST for a preview ({err}). The file is still attached — try re-uploading it if this keeps happening.</div>;
   if (!design) return null;
   const blocks = design.blocks.length;
   const cws = colorWays || [];
   const mismatch = cws.some(cw => cw && (cw.inks || []).filter(x => String(x || '').trim()).length !== blocks);
-  const unknown = [...new Set(cws.flatMap(cw => (cw?.inks || []).slice(0, blocks)).filter(x => String(x || '').trim() && !inkHex(x)))];
+  const unknown = [...new Set(cws.flatMap(cw => (cw?.inks || []).slice(0, blocks)).filter(x => String(x || '').trim() && !inkHex(x, palette)))];
   return <>
     {mismatch && <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ This DST has {blocks} thread stops. List one thread per stop, in sew order — repeat a color if it's sewn twice.</div>}
     {unknown.length > 0 && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>No swatch for {unknown.join(', ')} — shown grey. Use a common color name (e.g. Kelly Green) or a hex code like #1b5e20.</div>}
@@ -152,7 +157,7 @@ function StitchNotes({ design, err, colorWays }) {
 const StitchLoading = ({ width = 220 }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>Loading stitch file…</div>;
 
 // Standalone block (customer art library): header + one tile per color way + notes.
-export default function DstPreview({ dstUrl, colorWays, onEnlarge, onUseAsLogo }) {
+export default function DstPreview({ dstUrl, colorWays, onEnlarge, onUseAsLogo, palette }) {
   const { design, err } = useDstDesign(dstUrl);
   const [busy, setBusy] = useState(false);
   if (!dstUrl) return null;
@@ -166,9 +171,9 @@ export default function DstPreview({ dstUrl, colorWays, onEnlarge, onUseAsLogo }
     </div>
     {!err && !design && <StitchLoading />}
     {design && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-      {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onUseAsLogo={useAsLogo} busy={busy} />)}
+      {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onUseAsLogo={useAsLogo} busy={busy} palette={palette} />)}
     </div>}
-    <StitchNotes design={design} err={err} colorWays={colorWays} />
+    <StitchNotes design={design} err={err} colorWays={colorWays} palette={palette} />
   </div>;
 }
 

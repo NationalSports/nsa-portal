@@ -1805,7 +1805,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Stitch preview — the live DST drawn in each color way's threads */}
         {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} onUseAsLogo={saveArt?async(blob,cw)=>{
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'thread_colors')} onUseAsLogo={saveArt?async(blob,cw)=>{
             // Stitch render → this color way's web logo (stores + logo detail). Newest first replaces it.
             const nm=(cw?.garment_color||'').trim();
             const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
