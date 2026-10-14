@@ -209,12 +209,16 @@ function mockPlacement(position, artSize) {
   return { x: at[0], y: at[1], w: Math.max(9, Math.min(45, inches * 5)) };
 }
 async function composeStitchMock(design, inks, garmentUrl, { position, artSize, palette } = {}) {
-  const base = await new Promise((resolve, reject) => {
+  const load = src => new Promise((resolve, reject) => {
     const img = new Image(); const t = setTimeout(() => reject(new Error('Garment image timed out')), 20000);
     img.crossOrigin = 'anonymous';
     img.onload = () => { clearTimeout(t); resolve(img); }; img.onerror = () => { clearTimeout(t); reject(new Error('Could not load the garment image')); };
-    img.src = /^(data|blob):/.test(garmentUrl) ? garmentUrl : '/.netlify/functions/image-proxy?url=' + encodeURIComponent(garmentUrl);
+    img.src = src;
   });
+  // The image proxy covers the main supplier hosts; others (e.g. Under Armour's CDN) are tried
+  // directly, which works when that host sends CORS headers. Neither → no auto mock offered.
+  const base = /^(data|blob):/.test(garmentUrl) ? await load(garmentUrl)
+    : await load('/.netlify/functions/image-proxy?url=' + encodeURIComponent(garmentUrl)).catch(() => load(garmentUrl));
   const W = 800, H = 1000, c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
   const s = Math.min(W / base.naturalWidth, H / base.naturalHeight), bw = base.naturalWidth * s, bh = base.naturalHeight * s;
