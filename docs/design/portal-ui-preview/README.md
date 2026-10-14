@@ -72,3 +72,11 @@ The garment sheet was generated with the image_gen tool from an instruction for 
 ## Current coach appearance + new review flow
 
 The coach preview now carries the current CoachPortal.js visual language: NSA logo on a white header, team stripe, condensed athletic headings, Team HQ quick-access dashboard, and navy Art Locker tiles. The new continuous collection review lives inside that shell. Garment sizes, proof specifications, status/version, scoped changes, conversations and approval actions remain visible. Use Art Locker → Continue review; return to the library without losing sample review state. The CCAA navy/burgundy theme is illustrative. Production customer colors/logo and business logic are unchanged. Desktop/mobile checks passed down to 320px.
+
+
+## Direct browser links
+
+- [Coach portal preview](https://deploy-preview-2511--nsa-portal.netlify.app/design-preview/coach.html) opens directly to the coach proof review.
+- [Local coach preview](http://127.0.0.1:8765/outputs/coach-portal-preview.html) uses the same sample interface when the local server is running.
+
+The hosted page is an isolated static design preview included in this PR. It uses sample data and local interactions only; it does not load the production portal or submit approvals, messages, payments or orders. GitHub's HTML file view displays source; use the browser links above to review the interface.
