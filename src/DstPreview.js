@@ -66,39 +66,50 @@ function drawDst(canvas, design, inks, bg, size) {
   });
 }
 
-function DstTile({ design, cw, idx, onEnlarge, onSetPreview, busy }) {
+// One color way's render. `compact` = sitting beside/under its own color-way card in
+// ColorWaysEditor, so the card already shows the CW badge and thread list — the tile
+// is just the picture plus actions. Otherwise it carries its own header + stop list.
+function DstTile({ design, cw, idx, onEnlarge, onSetPreview, busy, compact = false, width = 220 }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = cw?.inks || [];
   const garmentHex = inkHex(cw?.garment_color);
-  useEffect(() => { if (ref.current) drawDst(ref.current, design, inks, garmentHex || '#f8fafc', 440); }, [design, inks.join('|'), garmentHex]);
+  useEffect(() => { if (ref.current) drawDst(ref.current, design, inks, garmentHex || '#f8fafc', 520); }, [design, inks.join('|'), garmentHex]);
   const exportBlob = () => new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks, null, 1200); c.toBlob(res, 'image/png'); });
   const download = async () => { const b = await exportBlob(); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `stitch-preview-cw${idx + 1}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); };
   const stops = design.blocks.map((_, bi) => inks[bi] || '');
+  const setCount = stops.filter(x => String(x).trim()).length;
   const btn = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'white', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 10, fontWeight: 700, color: '#475569', padding: '5px 6px', cursor: 'pointer' };
-  return <div style={{ width: 220, background: 'white', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+  return <div style={{ width, flexShrink: 0, background: 'white', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
     {/* Header — mirrors the color-way card: CW badge, garment swatch, garment name */}
-    <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '7px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f6' }}>
-      <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: '#475569', borderRadius: 6, padding: '2px 7px', flexShrink: 0 }}>{cw ? `CW ${idx + 1}` : 'Preview'}</span>
-      <span style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, border: '1px solid #cbd5e1', background: garmentHex || 'repeating-linear-gradient(45deg,#f8fafc,#f8fafc 3px,#e2e8f0 3px,#e2e8f0 6px)' }} />
-      <span style={{ fontSize: 11, fontWeight: 600, color: cw?.garment_color ? '#334155' : '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cw?.garment_color || 'Garment color not set'}</span>
-    </div>
-    {/* The stitch render */}
+    {compact
+      ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f6' }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3 }}>Stitch preview</span>
+          <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: setCount === stops.length ? '#6d28d9' : '#b45309' }}>{setCount}/{stops.length} stops set</span>
+        </div>
+      : <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '7px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f6' }}>
+          <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: '#475569', borderRadius: 6, padding: '2px 7px', flexShrink: 0 }}>{cw ? `CW ${idx + 1}` : 'Preview'}</span>
+          <span style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, border: '1px solid #cbd5e1', background: garmentHex || 'repeating-linear-gradient(45deg,#f8fafc,#f8fafc 3px,#e2e8f0 3px,#e2e8f0 6px)' }} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: cw?.garment_color ? '#334155' : '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cw?.garment_color || 'Garment color not set'}</span>
+        </div>}
+    {/* The stitch render — square, scales with the tile */}
     <div style={{ position: 'relative', cursor: onEnlarge ? 'zoom-in' : 'default' }} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       onClick={() => onEnlarge && ref.current && onEnlarge(ref.current.toDataURL('image/png'))} title={onEnlarge ? 'Click to enlarge' : undefined}>
-      <canvas ref={ref} style={{ width: 220, height: 220, display: 'block' }} />
+      <canvas ref={ref} style={{ width: '100%', aspectRatio: '1 / 1', display: 'block' }} />
       {onEnlarge && <span style={{ position: 'absolute', right: 8, bottom: 8, fontSize: 10, fontWeight: 700, color: 'white', background: 'rgba(15,23,42,0.6)', borderRadius: 6, padding: '2px 7px', opacity: hover ? 1 : 0, transition: 'opacity 0.15s' }}>⤢ Enlarge</span>}
     </div>
-    {/* Thread stops in sew order — stop N is drawn in thread line N */}
     <div style={{ padding: '8px 10px', borderTop: '1px solid #eef2f6' }}>
-      <div style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Thread stops</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
-        {stops.map((ink, si) => { const hex = inkHex(ink); return <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: ink ? '#334155' : '#b45309' }}>
-          <span style={{ fontSize: 10, color: '#94a3b8', width: 12, textAlign: 'right', flexShrink: 0 }}>{si + 1}</span>
-          <span style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: hex || UNKNOWN }} />
-          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: ink ? 500 : 600 }}>{ink || 'No thread set'}</span>
-        </div>; })}
-      </div>
+      {/* Thread stops in sew order — stop N is drawn in thread line N */}
+      {!compact && <>
+        <div style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Thread stops</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
+          {stops.map((ink, si) => { const hex = inkHex(ink); return <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: ink ? '#334155' : '#b45309' }}>
+            <span style={{ fontSize: 10, color: '#94a3b8', width: 12, textAlign: 'right', flexShrink: 0 }}>{si + 1}</span>
+            <span style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: hex || UNKNOWN }} />
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: ink ? 500 : 600 }}>{ink || 'No thread set'}</span>
+          </div>; })}
+        </div>
+      </>}
       <div style={{ display: 'flex', gap: 6 }}>
         {onSetPreview && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as the art folder's preview image" onClick={async () => onSetPreview(await exportBlob())}>{busy ? 'Saving…' : '★ Set preview'}</button>}
         <button type="button" style={btn} title="Download a transparent PNG to drop into mockups" onClick={download}>⬇ PNG</button>
@@ -107,39 +118,61 @@ function DstTile({ design, cw, idx, onEnlarge, onSetPreview, busy }) {
   </div>;
 }
 
-export default function DstPreview({ dstUrl, colorWays, onEnlarge, onSetPreview }) {
-  const [design, setDesign] = useState(null);
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+// Load + parse a DST once per url (cached across renders/components).
+function useDstDesign(dstUrl) {
+  const [state, setState] = useState({ design: null, err: '' });
   useEffect(() => {
-    let live = true; setDesign(null); setErr('');
-    if (dstUrl) loadDst(dstUrl).then(d => live && setDesign(d), e => live && setErr(e.message || 'failed'));
+    let live = true; setState({ design: null, err: '' });
+    if (dstUrl) loadDst(dstUrl).then(d => live && setState({ design: d, err: '' }), e => live && setState({ design: null, err: e.message || 'failed' }));
     return () => { live = false; };
   }, [dstUrl]);
+  return state;
+}
+
+const _note = (bg, bd, c) => ({ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, fontWeight: 600, color: c, background: bg, border: '1px solid ' + bd, borderRadius: 6, padding: '7px 10px', marginTop: 8 });
+// Badge for the section header: "4 stops · 13,402 stitches".
+function StitchBadge({ design }) {
+  if (!design) return null;
+  const n = design.blocks.length;
+  return <span title="Read from the uploaded DST" style={{ fontSize: 9, fontWeight: 700, color: '#6d28d9', background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 8, padding: '0 7px', lineHeight: '16px' }}>🧵 {n} stop{n === 1 ? '' : 's'} · {design.stitches.toLocaleString()} stitches</span>;
+}
+// Load error / stop-count mismatch / unknown thread names, under the previews.
+function StitchNotes({ design, err, colorWays }) {
+  if (err) return <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ Couldn't load the DST for a preview ({err}). The file is still attached — try re-uploading it if this keeps happening.</div>;
+  if (!design) return null;
+  const blocks = design.blocks.length;
+  const cws = colorWays || [];
+  const mismatch = cws.some(cw => cw && (cw.inks || []).filter(x => String(x || '').trim()).length !== blocks);
+  const unknown = [...new Set(cws.flatMap(cw => (cw?.inks || []).slice(0, blocks)).filter(x => String(x || '').trim() && !inkHex(x)))];
+  return <>
+    {mismatch && <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ This DST has {blocks} thread stops. List one thread per stop, in sew order — repeat a color if it's sewn twice.</div>}
+    {unknown.length > 0 && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>No swatch for {unknown.join(', ')} — shown grey. Use a common color name (e.g. Kelly Green) or a hex code like #1b5e20.</div>}
+  </>;
+}
+const StitchLoading = ({ width = 220 }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>Loading stitch file…</div>;
+
+// Standalone block (customer art library): header + one tile per color way + notes.
+export default function DstPreview({ dstUrl, colorWays, onEnlarge, onSetPreview }) {
+  const { design, err } = useDstDesign(dstUrl);
+  const [busy, setBusy] = useState(false);
   if (!dstUrl) return null;
   const cws = (colorWays || []).length ? colorWays : [null];
-  const blocks = design ? design.blocks.length : 0;
-  const mismatch = design && cws.some(cw => cw && (cw.inks || []).filter(x => String(x || '').trim()).length !== blocks);
-  const unknown = design ? [...new Set(cws.flatMap(cw => (cw?.inks || []).slice(0, blocks)).filter(x => String(x || '').trim() && !inkHex(x)))] : [];
   const setPreview = onSetPreview && (async blob => { setBusy(true); try { await onSetPreview(blob); } finally { setBusy(false); } });
-  const note = (bg, bd, c) => ({ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, fontWeight: 600, color: c, background: bg, border: '1px solid ' + bd, borderRadius: 6, padding: '7px 10px', marginTop: 8 });
   return <div style={{ marginBottom: 8 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 0.3 }}>STITCH PREVIEW</span>
-      <span style={{ fontSize: 9, color: '#94a3b8' }}>Drawn from the DST — change a thread color above and it updates here</span>
-      {design && <span style={{ fontSize: 9, fontWeight: 700, color: '#6d28d9', background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 8, padding: '0 7px', lineHeight: '16px' }}>{blocks} stop{blocks === 1 ? '' : 's'} · {design.stitches.toLocaleString()} stitches</span>}
+      <span style={{ fontSize: 9, color: '#94a3b8' }}>Drawn from the DST — change a thread color and it updates here</span>
+      <StitchBadge design={design} />
     </div>
-    {err && <div style={note('#fffbeb', '#fde68a', '#b45309')}>⚠ Couldn't load the DST for a preview ({err}). The file is still attached — try re-uploading it if this keeps happening.</div>}
-    {!err && !design && <div style={{ width: 220, height: 120, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>Loading stitch file…</div>}
-    {design && <>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onSetPreview={setPreview} busy={busy} />)}
-      </div>
-      {mismatch && <div style={note('#fffbeb', '#fde68a', '#b45309')}>⚠ This DST has {blocks} thread stops. List one thread per stop, in sew order — repeat a color if it's sewn twice.</div>}
-      {unknown.length > 0 && <div style={note('#f8fafc', '#e2e8f0', '#64748b')}>No swatch for {unknown.join(', ')} — shown grey. Use a common color name (e.g. Kelly Green) or a hex code like #1b5e20.</div>}
-    </>}
+    {!err && !design && <StitchLoading />}
+    {design && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      {cws.map((cw, ci) => <DstTile key={cw?.id || ci} design={design} cw={cw} idx={ci} onEnlarge={onEnlarge} onSetPreview={setPreview} busy={busy} />)}
+    </div>}
+    <StitchNotes design={design} err={err} colorWays={colorWays} />
   </div>;
 }
+
+export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading };
 
 // ── For printed sheets (production sheet, job art sheet) ──
 // Draws each embroidery design's live DST in every color way's threads as a PNG

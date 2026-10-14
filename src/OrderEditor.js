@@ -90,7 +90,7 @@ import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
-import DstPreview, { stitchPreviewsFor } from './DstPreview';
+import { stitchPreviewsFor } from './DstPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -7380,11 +7380,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
-                    <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
+                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card */}
+                    <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}
+                      stitch={art.deco_type==='embroidery'?(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+                        return{dstUrl,onEnlarge:setMockupLightbox,onSetPreview:async blob=>{const folderId=art.id;nf('Uploading preview...');try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_stitch_preview.png',{type:'image/png'}),'nsa-art-previews');await saveArtFilesNow((oRef.current.art_files||[]).map(fa=>fa.id===folderId?{...fa,preview_url:url}:fa),'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}}}})():null}/>
                   </div>
-                  {/* STITCH PREVIEW — the live DST drawn in each color way's threads */}
-                  {art.deco_type==='embroidery'&&(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-                    return<DstPreview dstUrl={dstUrl} colorWays={art.color_ways||[]} onEnlarge={setMockupLightbox} onSetPreview={async blob=>{const folderId=art.id;nf('Uploading preview...');try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_stitch_preview.png',{type:'image/png'}),'nsa-art-previews');await saveArtFilesNow((oRef.current.art_files||[]).map(fa=>fa.id===folderId?{...fa,preview_url:url}:fa),'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}}}/>})()}
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>

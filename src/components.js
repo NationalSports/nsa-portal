@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading } from './DstPreview';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -727,26 +728,36 @@ function ThreadQuickPicks({colors,onPick}){
 // sync. `onChange` receives the full updated color_ways array. Garment/ink swatches are a
 // best-effort lookup (threadHex covers common apparel + thread names, pantoneHex for inks).
 
-function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false}){
+// `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onSetPreview} — draws each color way's stitch
+// preview beside its card (one color way) or under it (several, so previews line up with their cards).
+function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null}){
   const isEmb=decoType==='embroidery';
   const isDtf=decoType==='dtf';
   const cws=colorWays||[];
   const inkLabel=isEmb?'thread':'ink';
   const updCw=(ci,patch)=>onChange(cws.map((cw,x)=>x===ci?{...cw,...patch}:cw));
   const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];const e=inks.findIndex(x=>!x);if(e>=0)inks[e]=v;else inks.push(v);updCw(ci,{inks})};
+  const{design:stDesign,err:stErr}=useDstDesign(isEmb&&stitch?stitch.dstUrl:null);
+  const[stBusy,setStBusy]=useState(false);
+  const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
+  const stSetPreview=stitch?.onSetPreview&&(async blob=>{setStBusy(true);try{await stitch.onSetPreview(blob)}finally{setStBusy(false)}});
+  // One color way → preview to the right of the card; several → each preview under its own card.
+  const stSide=showStitch&&cws.length<=1;
+  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onSetPreview={stSetPreview} busy={stBusy}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
       <span style={{fontSize:9,color:'#94a3b8'}}>{isDtf?'Full-color — color ways optional':isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
       {cws.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#fff',background:'#94a3b8',borderRadius:8,padding:'0 7px',lineHeight:'16px'}}>{cws.length}</span>}
+      {showStitch&&<StitchBadge design={stDesign}/>}
     </div>
     {cws.length===0&&isDtf&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>DTF prints full-color (CMYK) — no color ways needed. Add one only to note a specific garment color.</div>}
     {cws.length===0&&!isDtf&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
-    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8,alignItems:'stretch'}}>
       {cws.map((cw,ci)=>{
         const gHex=threadHex(cw.garment_color);
         const inkCount=(cw.inks||[]).filter(x=>x&&x.trim()).length;
-        return<div key={cw.id} style={{flex:'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
+        const card=<div key={cw.id} style={{flex:showStitch&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
           {/* Header bar — CW number, garment color swatch + name, duplicate, remove */}
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
@@ -770,9 +781,17 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
             <button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color</button>
           </div>
-        </div>})}
+        </div>;
+        if(!showStitch)return card;
+        if(stSide)return[card,<div key={cw.id+'_st'} style={{alignSelf:'flex-start'}}>{stTile(cw,ci,240)}</div>];
+        // Several color ways: card on top, its preview underneath, same column width — columns in a
+        // row stretch to equal height so the previews line up.
+        return<div key={cw.id} style={{flex:'1 1 240px',minWidth:240,maxWidth:380,display:'flex',flexDirection:'column',gap:8}}>{card}<div style={{width:'100%',maxWidth:260}}>{stTile(cw,ci,'100%')}</div></div>})}
+      {showStitch&&cws.length===0&&stTile(null,0,240)}
     </div>
-    <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
+    {showStitch&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws}/></div>}
+    {/* Embroidery: a new color way starts with CW 1's threads (same DST stops) — the rep adjusts. */}
+    <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:isEmb&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
 
