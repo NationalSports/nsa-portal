@@ -1,4 +1,4 @@
-import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit } from '../safeHelpers';
+import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit, artSlotMocks } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
 import { knownGarmentHex } from './artGrid';
 
@@ -48,6 +48,22 @@ export const productionLogoCandidates = art => {
     seen.add(f.url);
     return true;
   });
+};
+
+// What the artist looks at to know WHICH logo a web-logo tile wants: the best picture of the
+// design (this garment's mockup first, then any mockup / preview / image file) plus every art
+// file on the design, so they can open the source (.ai/.eps/.pdf/.png) and export the PNG.
+const _IMG_RE = /\.(png|svg|jpe?g|webp|gif)(?:[?#]|$)/i;
+export const logoReferenceFor = (art, item) => {
+  if (!art) return { thumb: '', files: [] };
+  const u = f => safeStr(typeof f === 'string' ? f : f?.url);
+  const n = f => safeStr(typeof f === 'string' ? '' : f?.name);
+  const cands = [...(item ? artSlotMocks([art], item) : []), ...Object.values(art.item_mockups || {}).flat(),
+    ...safeArr(art.mockup_files), art.preview_url, ...safeArr(art.files), ...safeArr(art.prod_files)].map(u).filter(Boolean);
+  const seen = new Set();
+  const files = [...safeArr(art.files), ...safeArr(art.prod_files)].map(f => ({ url: u(f), name: n(f) || u(f).split('/').pop().split('?')[0] || 'Art file' }))
+    .filter(f => f.url && !seen.has(f.url) && seen.add(f.url));
+  return { thumb: cands.find(x => _IMG_RE.test(x)) || '', files };
 };
 
 // Persist the artist's explicit choice on the actual decorations, not just the PNG.
@@ -352,7 +368,7 @@ export const reusedLogoDetailNeeds = (jobs, sos, customers) => {
           const key = so.id + '|' + art.id + '|' + (cw === undefined ? 'unresolved:'+it.color+':'+side : cw || '');
           if (out.has(key) || logoDetailUrl(art, cw)) return;
           if (!libOf(so.customer_id).some(l => _sameDesign(l, art)) && !seenOn(art, so)) return;
-          out.set(key, { key, so, job: j, art, colorWayId: cw, side, garmentColor: safeStr(it.color),
+          out.set(key, { key, so, job: j, art, item: it, colorWayId: cw, side, garmentColor: safeStr(it.color),
             label: (art.name || 'Artwork') + (cw === undefined ? ' · Choose color way for '+it.color : cw ? ' · ' + _cwLabel(art, cw) : '') });
         });
       });
