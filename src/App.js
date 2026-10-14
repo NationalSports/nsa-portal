@@ -1,3 +1,5 @@
+import StockReceiptDialog from './StockReceiptDialog';
+import {buildStockReceiptLabel, saveStockReceiptState} from './lib/stockReceiptLabels';
 import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
@@ -2759,6 +2761,10 @@ export default function App(){
     }));
     return[...migrated,...inv];
   });// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const stockReceiptPending=useRef([]);
+  const stockReceiptSaving=useRef(new Map());
+  const stockReceiptWindow=useRef(null);
+  const[stockReceiptLabels,setStockReceiptLabels]=useState([]);
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
     return Math.max(ipo,spo,1001);
@@ -5192,7 +5198,22 @@ export default function App(){
   },[dbLoading]); // eslint-disable-line
   // The URL router (section ?pg= + the open record) is defined together further down, once the
   // invoice view-state it depends on has been declared — search "Record-level URL router".
-  React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
+  React.useEffect(()=>{
+    const pending=stockReceiptPending.current.splice(0);
+    if(!pending.length){_saveAppState('inv_pos',invPOs);return}
+    _lsSet('nsa_inv_pos',JSON.stringify(invPOs));
+    const printWindow=stockReceiptWindow.current;stockReceiptWindow.current=null;
+    const save=_initialLoadDone.current&&_dbLoadSuccess.current
+      ?_dbSavingGuard(()=>saveStockReceiptState(supabase,invPOs)):Promise.resolve(false);
+    Promise.resolve(save).then(ok=>{
+      pending.forEach(p=>{stockReceiptSaving.current.delete(p.poId);p.resolve(ok)});
+      if(!ok){if(printWindow&&!printWindow.closed)printWindow.close();nf('Stock PO save could not be confirmed. No label issued — review the saved quantities before receiving again.','error');return}
+      const labels=pending.map(p=>p.label);
+      setStockReceiptLabels(prev=>[...prev,...labels]);
+      if(printWindow&&!printWindow.closed)try{printQrLabels(labels,printWindow)}catch(_){/* Print button remains available. */}
+      nf('Stock PO check-in saved — labels ready');
+    });
+  },[invPOs]);
   React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
@@ -13053,6 +13074,20 @@ export default function App(){
 
   const receiveInvPO=(poId,receivedMap)=>{
     // receivedMap: {itemIdx: {size: qty, ...}, ...}
+    if(stockReceiptSaving.current.has(poId))return stockReceiptSaving.current.get(poId);
+    const po=invPOs.find(p=>p.id===poId);
+    if(!po)return Promise.resolve(false);
+    // Use the same positive quantities for inventory, receipt state, and the printed label.
+    receivedMap=Object.fromEntries(Object.entries(receivedMap||{}).filter(([idx])=>po.items[idx]).map(([idx,sizes])=>[idx,Object.fromEntries(Object.entries(sizes||{}).filter(([,q])=>Number.isFinite(q)&&q>0))]));
+    const label=buildStockReceiptLabel(po,receivedMap,window.location.origin+window.location.pathname);
+    if(!label)return Promise.resolve(false);
+    const saved=new Promise(resolve=>stockReceiptPending.current.push({poId,label,resolve}));
+    stockReceiptSaving.current.set(poId,saved);
+    // Reserve one desktop print window during the click; async window.open is blocked on tablets.
+    if(!mobileMode&&!stockReceiptWindow.current){
+      stockReceiptWindow.current=window.open('','_blank','width=460,height=680');
+      if(stockReceiptWindow.current)stockReceiptWindow.current.document.body.textContent='Saving stock check-in…';
+    }
     setInvPOs(prev=>prev.map(po=>{
       if(po.id!==poId)return po;
       const updatedItems=po.items.map((it,idx)=>{
@@ -13068,8 +13103,6 @@ export default function App(){
       return{...po,items:updatedItems,status:newStatus,received_at:allReceived?new Date().toLocaleString():po.received_at,received_by:allReceived?cu?.name:po.received_by};
     }));
     // Update product inventory
-    const po=invPOs.find(p=>p.id===poId);
-    if(!po)return;
     const adjLogs=[];
     Object.entries(receivedMap).forEach(([idx,szMap])=>{
       const poItem=po.items[parseInt(idx)];if(!poItem)return;
@@ -13086,7 +13119,7 @@ export default function App(){
       setInvAdjLog(prev=>[...adjLogs.map(l=>({...l,id:_newInventoryAdjustmentId()})),...prev].slice(0,2000));
       logChange('po_received','Inventory PO',po.po_number,adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
     }
-    nf('PO '+po.po_number+' items received — inventory updated');
+    return saved;
   };
 
   const printInvPOPackingList=(po)=>{
@@ -38917,7 +38950,8 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  const stockReceiptDialog=<StockReceiptDialog labels={stockReceiptLabels} onPrint={()=>printQrLabels(stockReceiptLabels)} onClose={()=>setStockReceiptLabels([])}/>;
+  if(mobileMode)return<>{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -38942,7 +38976,7 @@ export default function App(){
     splitModal,setSplitModal,splitInvoice,viewInvoice,setViewInvoice,webstoreSettle,
   };
 
-  return(<AppDataProvider value={appData}><div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
+  return(<AppDataProvider value={appData}><div className="app">{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
