@@ -101,7 +101,7 @@ export async function logoUrlProblem(file) {
 
 // Small logo-detail tiles, one per garment color a shared mock covers. A tile whose color way has
 // no logo detail yet can be uploaded right here (its garment has no card of its own).
-// tiles = [{ key, url, bg, label, onUpload? }]
+// tiles = [{ key, url, bg, label, onUpload?, ref?: { thumb, files, source } }] — ref shows which design the tile wants
 export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment color' }) {
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState('');
@@ -126,6 +126,16 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
           : <span className="tile-upload">Needs logo detail</span>}
       </div>
       <div style={{ fontSize: 10.5, color: '#475569', marginTop: 4 }}>{t.label}</div>
+      {t.ref && <div style={{ marginTop: 6, padding: 5, border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', textAlign: 'left' }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: '#64748b', marginBottom: 3 }}>WHICH LOGO</div>
+        {t.ref.thumb ? <img src={t.ref.thumb} alt={'Reference for ' + t.label} title="Click to enlarge" onClick={() => openFile(t.ref.thumb)} style={{ width: '100%', height: 70, objectFit: 'contain', cursor: 'zoom-in', background: '#f8fafc', borderRadius: 4 }} />
+          : <div style={{ fontSize: 10, color: '#94a3b8' }}>No picture on file{t.soId ? ' — open ' + t.soId + ' to see the art' : ''}</div>}
+        {t.ref.source && <a href={t.ref.source.url} target="_blank" rel="noopener noreferrer" title={t.ref.source.name} style={{ display: 'block', marginTop: 3, fontSize: 10, fontWeight: 700, color: '#1e40af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>⬇ {t.ref.source.name}</a>}
+        {(t.ref.files || []).length > 0 && <details style={{ marginTop: 3 }}>
+          <summary style={{ fontSize: 10, color: '#1e40af', cursor: 'pointer' }}>Art files ({t.ref.files.length})</summary>
+          {t.ref.files.map(f => <a key={f.url} href={f.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', fontSize: 10, color: '#1e40af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</a>)}
+        </details>}
+      </div>}
       {t.needsColorWay && <div style={{ marginTop: 6, display: 'grid', gap: 5 }}>
         <select aria-label={'Artwork color way for ' + t.label} value={colorWays[t.key] || ''} disabled={!!busyKey} onChange={e => setColorWays(v => ({ ...v, [t.key]: e.target.value }))} style={{ width: '100%', fontSize: 11 }}>
           <option value="">Choose color way…</option>
