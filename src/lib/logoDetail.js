@@ -55,7 +55,7 @@ export const productionLogoCandidates = art => {
 // file on the design, so they can open the source (.ai/.eps/.pdf/.png) and export the PNG.
 const _IMG_RE = /\.(png|svg|jpe?g|webp|gif)(?:[?#]|$)/i;
 export const logoReferenceFor = (art, item) => {
-  if (!art) return { thumb: '', files: [] };
+  if (!art) return { thumb: '', files: [], source: null };
   const u = f => safeStr(typeof f === 'string' ? f : f?.url);
   const n = f => safeStr(typeof f === 'string' ? '' : f?.name);
   const cands = [...(item ? artSlotMocks([art], item) : []), ...Object.values(art.item_mockups || {}).flat(),
@@ -63,7 +63,10 @@ export const logoReferenceFor = (art, item) => {
   const seen = new Set();
   const files = [...safeArr(art.files), ...safeArr(art.prod_files)].map(f => ({ url: u(f), name: n(f) || u(f).split('/').pop().split('?')[0] || 'Art file' }))
     .filter(f => f.url && !seen.has(f.url) && seen.add(f.url));
-  return { thumb: cands.find(x => _IMG_RE.test(x)) || '', files };
+  // The editable vector the artist exports from: .ai first, then .svg, .eps, .pdf.
+  const ext = f => (f.name.match(/\.([a-z0-9]+)$/i) || f.url.split('?')[0].match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+  const source = ['ai', 'svg', 'eps', 'pdf'].map(e => files.find(f => ext(f) === e)).find(Boolean) || null;
+  return { thumb: cands.find(x => _IMG_RE.test(x)) || '', files, source };
 };
 
 // Persist the artist's explicit choice on the actual decorations, not just the PNG.

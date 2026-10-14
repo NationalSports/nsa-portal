@@ -100,7 +100,7 @@ export async function logoUrlProblem(file) {
 
 // Small logo-detail tiles, one per garment color a shared mock covers. A tile whose color way has
 // no logo detail yet can be uploaded right here (its garment has no card of its own).
-// tiles = [{ key, url, bg, label, onUpload?, ref?: { thumb, files } }] — ref shows which design the tile wants
+// tiles = [{ key, url, bg, label, onUpload?, ref?: { thumb, files, source } }] — ref shows which design the tile wants
 export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment color' }) {
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState('');
@@ -129,6 +129,7 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
         <div style={{ fontSize: 9.5, fontWeight: 700, color: '#64748b', marginBottom: 3 }}>WHICH LOGO</div>
         {t.ref.thumb ? <img src={t.ref.thumb} alt={'Reference for ' + t.label} title="Click to enlarge" onClick={() => openFile(t.ref.thumb)} style={{ width: '100%', height: 70, objectFit: 'contain', cursor: 'zoom-in', background: '#f8fafc', borderRadius: 4 }} />
           : <div style={{ fontSize: 10, color: '#94a3b8' }}>No picture on file{t.soId ? ' — open ' + t.soId + ' to see the art' : ''}</div>}
+        {t.ref.source && <a href={t.ref.source.url} target="_blank" rel="noopener noreferrer" title={t.ref.source.name} style={{ display: 'block', marginTop: 3, fontSize: 10, fontWeight: 700, color: '#1e40af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>⬇ {t.ref.source.name}</a>}
         {(t.ref.files || []).length > 0 && <details style={{ marginTop: 3 }}>
           <summary style={{ fontSize: 10, color: '#1e40af', cursor: 'pointer' }}>Art files ({t.ref.files.length})</summary>
           {t.ref.files.map(f => <a key={f.url} href={f.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', fontSize: 10, color: '#1e40af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</a>)}
