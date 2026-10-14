@@ -277,20 +277,22 @@ export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().to
   return threadHex(s)||null;};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
-export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
-'red':'#dc2626','royal':'#4169e1','royal blue':'#4169e1','silver':'#C0C0C0','green':'#166534','dark green':'#006400',
-'orange':'#EA580C','maroon':'#800000','purple':'#6B21A8','kelly green':'#4CBB17','scarlet':'#FF2400',
-'columbia blue':'#9BDDFF','light blue':'#ADD8E6','vegas gold':'#C5B358','old gold':'#CFB53B',
-'athletic gold':'#FFB81C','charcoal':'#36454F','grey':'#808080','gray':'#808080','light gray':'#C0C0C0',
-'pink':'#FF69B4','hot pink':'#FF1493','brown':'#8B4513','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
-'teal':'#008080','yellow':'#FFD700','bright yellow':'#FFFF00','powder blue':'#B0E0E6','sky blue':'#87CEEB',
-'forest green':'#228B22','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#800020',
+// Team / embroidery-thread shades (close to the Pantone team standards — e.g. forest green is a deep
+// green, not kelly), so swatches and DST stitch previews read like the real thread.
+export const THREAD_COLORS={'cardinal':'#8C1D40','navy':'#1F2A44','gold':'#FFB81C','white':'#FFFFFF','black':'#000000',
+'red':'#C8102E','royal':'#1E4FA8','royal blue':'#1E4FA8','silver':'#A7A8AA','green':'#007A33','dark green':'#154734',
+'orange':'#F26522','maroon':'#6B1F2E','purple':'#4F2683','kelly green':'#00843D','scarlet':'#BA0C2F',
+'columbia blue':'#8BB8E8','light blue':'#9BCBEB','vegas gold':'#C5B358','old gold':'#B3995D',
+'athletic gold':'#FFB81C','charcoal':'#3C4043','grey':'#8D9093','gray':'#8D9093','light gray':'#C0C0C0',
+'pink':'#F4A6C4','hot pink':'#FF1493','brown':'#5C3A21','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
+'teal':'#00778B','yellow':'#FFCD00','bright yellow':'#FFFF00','powder blue':'#A7C6ED','sky blue':'#7BAFD4',
+'forest green':'#1E4D2B','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#7A1F35',
 'rust':'#B7410E','copper':'#B87333','sand':'#C2B280','ivory':'#FFFFF0','slate':'#708090',
 'pewter':'#8E8E8E','graphite':'#383838','midnight':'#191970','cobalt':'#0047AB','cyan':'#00FFFF',
 'turquoise':'#40E0D0','aqua':'#00FFFF','magenta':'#FF00FF','lavender':'#E6E6FA','lilac':'#C8A2C8',
 'violet':'#7F00FF','maize':'#FBEC5D','lemon':'#FFF44F','peach':'#FFCBA4','salmon':'#FA8072',
-'brick':'#CB4154','crimson':'#DC143C','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
-'olive':'#808000','hunter green':'#355E3B','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
+'brick':'#CB4154','crimson':'#A6192E','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
+'olive':'#808000','hunter green':'#2C5234','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
 'seafoam':'#93E9BE','ice blue':'#D6ECEF','baby blue':'#89CFF0','steel blue':'#4682B4',
 'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
 export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
