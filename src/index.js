@@ -9,6 +9,7 @@ import {
 import { DEFAULT_REPS } from './constants';
 import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isMoveCheckinPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 import { qboFunctionCallbackUrl } from './qbOAuthCallback';
+import { prefetchCoachPortalData } from './lib/coachPortalPrefetch';
 
 // Intuit currently returns to /?action=callback. Complete the exchange in the
 // serverless function before mounting the portal, so the code cannot be mistaken
@@ -48,8 +49,8 @@ const _isChunkErr = (err) => {
 };
 const ProductionPacket = React.lazy(() => import('./productionPacket/ProductionPacket'));
 const PayableReviewPage = React.lazy(() => import('./PayableReviewPage'));
-const App = React.lazy(() =>
-  import('./App').catch((err) => {
+const _lazyWithReload = (load) => React.lazy(() =>
+  load().catch((err) => {
     const last = Number(sessionStorage.getItem(_appChunkReloadKey) || 0);
     if (_isChunkErr(err) && Date.now() - last > 10000) {
       sessionStorage.setItem(_appChunkReloadKey, String(Date.now()));
@@ -57,9 +58,13 @@ const App = React.lazy(() =>
       return new Promise(() => {}); // never resolves; page is reloading
     }
     // Already reloaded recently or non-chunk error — retry once after 500ms.
-    return new Promise((res, rej) => setTimeout(() => import('./App').then(res, rej), 500));
+    return new Promise((res, rej) => setTimeout(() => load().then(res, rej), 500));
   })
 );
+const App = _lazyWithReload(() => import('./App'));
+// Public coach portal (/?portal=<alpha_tag>): its own small entry that loads one team's data,
+// instead of the staff App + every customer's data (see src/CoachPortalApp.js).
+const CoachPortalApp = _lazyWithReload(() => import('./CoachPortalApp'));
 
 // Public club storefront lives at /shop/<slug>. Shoppers should never load the
 // full portal bundle or hit the login gate, so we branch on the path here.
@@ -141,13 +146,11 @@ const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // App directly rather than falling through to MainApp → LoginGate.
 const isUniformBuilder = _path === '/uniform-builder' || _path === '/uniform-builder/';
 // Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
-// site at /coach. It's login-free: App short-circuits to the read-only
-// CoachPortal for this param (data via anon RLS), so like the auth flows it must
-// load App directly and skip the staff login gate. Without this it falls through
-// to MainApp → LoginGate, which is exactly what a coach (or the /coach iframe,
-// with no staff session) hits.
+// site at /coach. It's login-free and renders CoachPortalApp (one team's data from
+// netlify/functions/coach-portal-data.js), never the staff App or its login gate.
 const _portalParam = (() => { try { return new URLSearchParams(window.location.search).get('portal'); } catch { return null; } })();
 const isCoachPortal = (_path === '/' || _path === '') && !!_portalParam;
+if (isCoachPortal) prefetchCoachPortalData(_portalParam);
 // Team Shop retail storefront — matched by hostname (nationalteamshop.com) or
 // /teamshop path. Checked AFTER every path-prefix branch above (see the render
 // chain), so /shop/foo, /adidas, /team-stores, auth flows, and the coach portal
@@ -289,7 +292,9 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow || isCoachPortal || isOnboarding || isUniformBuilder
+        : isCoachPortal
+        ? <React.Suspense fallback={<AppFallback />}><CoachPortalApp alphaTag={_portalParam} /></React.Suspense>
+        : isAuthFlow || isOnboarding || isUniformBuilder
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : isTeamShopQueue
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>

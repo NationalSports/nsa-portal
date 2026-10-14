@@ -4,6 +4,7 @@ import { Card, ProductPage } from './Storefront';
 
 const theme = { primary: '#0644a5', paper: '#fff', line: '#ddd', ink: '#123', band: '#0644a5', warm: '#f5f5f5', subText: '#567' };
 const store = { slug: 'serra', name: 'Serra', org_type: 'all_school', delivery_mode: 'ship_home' };
+const teamStore = { slug: 'serra-team', name: 'Serra Team', org_type: 'team', delivery_mode: 'deliver_club' };
 const blue = { webstore_product_id: 'blue', name: 'Hoodie', variant_group_id: 'arch', color: 'Royal', school_design_label: 'Serra arch', retail_price: 50, available_sizes: ['S', 'L'], image_front_url: 'hoodie.png', decorations: [{ art_url: 'arch.png' }] };
 const script = { ...blue, webstore_product_id: 'script', variant_group_id: 'script', school_design_label: 'Serra script', decorations: [{ art_url: 'script.png' }] };
 
@@ -52,4 +53,23 @@ test('closed stores cannot be ordered through the mobile bar', () => {
     fireEvent.click(button);
   });
   expect(onAdd).not.toHaveBeenCalled();
+});
+
+test('team-store cards and product pages use the same per-item logo choice and order label', () => {
+  const onAdd = jest.fn();
+  const { unmount } = render(<Card store={teamStore} theme={theme} p={blue} colorRows={[blue, script]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Serra script' }));
+  expect(screen.getByRole('link', { name: 'Hoodie' }).getAttribute('href')).toBe('/shop/serra-team/p/script');
+  unmount();
+
+  render(<ProductPage store={teamStore} theme={theme} product={blue} colorRows={[blue, script]} isOpen onAdd={onAdd} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Serra script' }));
+  fireEvent.click(screen.getByRole('button', { name: 'L' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add to cart', exact: true }));
+  expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ webstore_product_id: 'script', variant_label: 'Serra script' }));
+});
+
+test('team items without logo options keep the existing single-design UI', () => {
+  render(<ProductPage store={teamStore} theme={theme} product={blue} colorRows={[blue]} isOpen onAdd={jest.fn()} />);
+  expect(screen.queryByRole('group', { name: 'Logo options' })).toBeNull();
 });

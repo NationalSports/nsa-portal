@@ -6,6 +6,7 @@ import * as constants from '../constants';
 import * as matching from '../lib/syncJobsMatch';
 import * as stable from '../lib/stableJobAssignments';
 import * as allSchool from '../lib/allSchoolJobs';
+import * as priorArt from '../lib/priorArtReview';
 import snapshot from './fixtures/stableArtJobCase.json';
 
 const art = (id, deco_type = 'screen_print') => ({ id, name: id, deco_type, status: 'uploaded' });
@@ -18,7 +19,7 @@ const job = (id, aid, rows, extra = {}) => ({ id, key: 'released_screen_print_' 
   assigned_artist: 'artist', items: rows, total_units: rows.reduce((n, r) => n + r.units, 0), fulfilled_units: 0, ...extra });
 
 // Execute the actual editor callback, including all preservation and rebuild passes.
-const deps = { ...helpers, ...business, ...constants, ...matching, ...stable, ...allSchool };
+const deps = { ...helpers, ...business, ...constants, ...matching, ...stable, ...allSchool, ...priorArt };
 delete deps.default;
 const syncFor = file => {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
@@ -144,4 +145,22 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s outside-art ident
     expect(replacement).toHaveLength(1);
     expect(replacement[0]).toMatchObject({ id: previous[0].id, art_file_id: 'B', art_status: 'art_requested', art_requests: previous[0].art_requests });
   });
+});
+
+
+test('new current-order art and added garments do not become previous-art review', () => {
+  const sync = syncFor('OrderEditor.js');
+  const order = { id: 'SO-2640', art_files: [{ ...art('A'), status: 'approved' }],
+    items: [item('HOOD', { M: 4 }, [deco('A')])], jobs: [] };
+  const jobs = sync(order);
+  expect(jobs[0].art_status).toBe('waiting_approval');
+  expect(priorArt.priorArtDecisionPending(jobs[0], order.art_files)).toBe(false);
+  const added = { ...order, jobs, items: [...order.items, item('TEE', { L: 3 }, [deco('A')])] };
+  const next = sync(added);
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({ id: jobs[0].id, total_units: 7, art_status: 'waiting_approval' });
+  expect(priorArt.priorArtDecisionPending(next[0], added.art_files)).toBe(false);
+  expect(sync({ ...added, jobs: next })).toEqual(next);
+  const reused = sync({ ...order, art_files: [{ ...order.art_files[0], reused_from_so: 'SO-previous' }] });
+  expect(reused[0].art_status).toBe('needs_art_review');
 });

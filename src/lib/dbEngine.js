@@ -414,11 +414,16 @@ const _dbLoadHistInvoices=async()=>{
   return{rows:(r.data||[]).map(_mapHistInvoice),status:'ok'};
 };
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
-  if (!supabase) return null;
+  // `source(table, queryOpts)` → {data} supplies each table's rows instead of querying, already in
+  // the order _safeQuery would fetch them (the coach portal: netlify/functions/coach-portal-data.js
+  // returns one team's rows, and this assembles them exactly as it assembles the full load).
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false, source=null} = opts;
+  if (!supabase && !source) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
-    const recoveryOwner=currentDraftOwner();
+    const _q=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):_safeQuery;
+    // A supplied read-only view has no local drafts to reconcile against.
+    const recoveryOwner=source?null:currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
     const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
     _lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();
@@ -451,15 +456,15 @@ const _dbLoad = async (opts={}) => {
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
-      _cold(()=>_safeQuery('team_members',{order:'name'})),
+      _cold(()=>_q('team_members',{order:'name'})),
       // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
       // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
       // Parent and ALL children share the cold flag so a coreOnly load skips them together (group
       // parity); setCust below is .length-guarded and the snapshot is preserved on coreOnly so an
       // empty skip can never wipe customer state or the _diffSave baseline.
-      _grp('customers',()=>_safeQuery('customers',{order:'name'}),true),
-      _grp('customers',()=>_safeQuery('customer_contacts'),true),
-      _cold(()=>_safeQuery('vendors',{order:'name'})),
+      _grp('customers',()=>_q('customers',{order:'name'}),true),
+      _grp('customers',()=>_q('customer_contacts'),true),
+      _cold(()=>_q('vendors',{order:'name'})),
       // products + product_inventory are COLD: a 17k-row catalog that changes only via the daily
       // vendor syncs. Realtime (products channel) + the ~10-min full poll keep them fresh; re-pulling
       // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
@@ -468,29 +473,29 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
-      essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
-      _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
-      _grp('estimates',()=>_safeQuery('estimate_art_files')),
-      _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
-      _grp('estimates',()=>_safeQuery('estimate_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('sales_orders',{order:'id'})),
-      _grp('sales_orders',()=>_safeQuery('so_art_files')),
-      _grp('sales_orders',()=>_safeQuery('so_firm_dates')),
-      _grp('sales_orders',()=>_safeQuery('so_items',{order:'item_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_jobs')),
-      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
-      _grp('invoices',()=>_safeQuery('invoice_payments')),
-      _grp('invoices',()=>_safeQuery('invoice_items')),
-      _grp('invoices',()=>_safeQuery('invoice_credit_memos',{order:'created_at'})),
-      _grp('messages',()=>_safeQuery('messages',{order:'id'})),
-      _grp('messages',()=>_safeQuery('message_reads')),
-      _cold(()=>_safeQuery('omg_stores',{order:'id'})),
-      _cold(()=>_safeQuery('omg_store_products')),
-      _cold(()=>_safeQuery('issues')),
+      essential?_skip:_grp('products',()=>_q('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
+      essential?_skip:_grp('products',()=>_q('product_inventory'),true),
+      _grp('estimates',()=>_q('estimates',{order:'id'})),
+      _grp('estimates',()=>_q('estimate_art_files')),
+      _grp('estimates',()=>_q('estimate_items',{order:'item_index'})),
+      _grp('estimates',()=>_q('estimate_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_q('sales_orders',{order:'id'})),
+      _grp('sales_orders',()=>_q('so_art_files')),
+      _grp('sales_orders',()=>_q('so_firm_dates')),
+      _grp('sales_orders',()=>_q('so_items',{order:'item_index'})),
+      _grp('sales_orders',()=>_q('so_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_q('so_item_pick_lines')),
+      _grp('sales_orders',()=>_q('so_item_po_lines')),
+      _grp('sales_orders',()=>_q('so_jobs')),
+      _grp('invoices',()=>_q('invoices',{order:'id'})),
+      _grp('invoices',()=>_q('invoice_payments')),
+      _grp('invoices',()=>_q('invoice_items')),
+      _grp('invoices',()=>_q('invoice_credit_memos',{order:'created_at'})),
+      _grp('messages',()=>_q('messages',{order:'id'})),
+      _grp('messages',()=>_q('message_reads')),
+      _cold(()=>_q('omg_stores',{order:'id'})),
+      _cold(()=>_q('omg_store_products')),
+      _cold(()=>_q('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
       // A full SELECT * here was ~1.66 MB/call (~14% of DB CPU). Routine poll/realtime reloads apply
@@ -508,7 +513,7 @@ const _dbLoad = async (opts={}) => {
         // same cure, as the `_qb_link_v1_*` exclusion below. `qb_config` is NOT matched by this
         // pattern (`qbo_` vs `qb_`) and still loads, so the QuickBooks page is unaffected.
         const _SCRATCH=['id','like','qbo_*'];
-        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
+        if(fullState&&!essential)return _q('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
         // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
         const not=[['id','in','(so_history,est_history)'],_SCRATCH];
@@ -519,28 +524,28 @@ const _dbLoad = async (opts={}) => {
         // every QBO link on fresh tabs.
         not.push(['id','like','_qb_link_v1_*']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
-        return _safeQuery('app_state',not.length?{not}:undefined);
+        return _q('app_state',not.length?{not}:undefined);
       },
-      _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_credits'),true),
-      _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping_usage'),true),
-      _cold(()=>_safeQuery('rep_csr_assignments')),
-      _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
-      _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
-      _cold(()=>_safeQuery('deco_vendors',{order:'name'})),
-      _cold(()=>_safeQuery('deco_vendor_pricing')),
-      _cold(()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
-      _cold(()=>_safeQuery('quote_request_items',{order:'sort_order'})),
-      _cold(()=>_safeQuery('dismissed_todos')),
-      _cold(()=>_safeQuery('dismissed_notifs')),
+      _grp('customers',()=>_q('customer_promo_programs'),true),
+      _grp('customers',()=>_q('customer_promo_periods'),true),
+      _grp('customers',()=>_q('customer_promo_usage'),true),
+      _grp('customers',()=>_q('customer_credits'),true),
+      _grp('customers',()=>_q('customer_credit_usage'),true),
+      _grp('customers',()=>_q('customer_pending_shipping'),true),
+      _grp('customers',()=>_q('customer_pending_shipping_usage'),true),
+      _cold(()=>_q('rep_csr_assignments')),
+      _grp('assigned_todos',()=>_q('assigned_todos'),true),
+      _grp('assigned_todos',()=>_q('todo_comments'),true),
+      _cold(()=>_q('deco_vendors',{order:'name'})),
+      _cold(()=>_q('deco_vendor_pricing')),
+      _cold(()=>_q('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
+      _cold(()=>_q('quote_request_items',{order:'sort_order'})),
+      _cold(()=>_q('dismissed_todos')),
+      _cold(()=>_q('dismissed_notifs')),
       // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
-      ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
+      ()=>histInvoices?_q('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -749,7 +754,7 @@ const _dbLoad = async (opts={}) => {
     const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
     const recoveryCandidates=await recoveryDrafts;
     for(const [table,documents] of [['sales_orders',sales_orders],['estimates',estimates]]){
-      if(only&&!only.has(table))continue;
+      if(source||(only&&!only.has(table)))continue;
       // Each document's _recoveryHydrated flag covers its own full set of tables.
       // Storage failure keeps the copies; reconciliation never writes cloud data.
       reconcileSavedDocumentDrafts({owner:recoveryOwner,drafts:recoveryCandidates,documents,table,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));

@@ -15,6 +15,7 @@ import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
 import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from '../lib/a11y';
+import { hasStorefrontLogoChoices } from '../lib/webstoreLogoChoices';
 import { AllSchoolHeader, AllSchoolIntro, AllSchoolBrowse, schoolProductMatches, schoolOrderShipmentDate, schoolVariantGroupKey } from '../allSchool/AllSchoolStorefront';
 
 // Stripe publishable key is fetched at runtime from the server so changing
@@ -682,10 +683,12 @@ export default function Storefront() {
   const shownProducts = (playerCtx && playerCtx.position)
     ? products.filter((p) => { const a = (p.roster_audience || 'all'); return a === 'all' || a === playerCtx.position; })
     : products;
+  const allSchool = store.org_type === 'all_school';
+  const logoChoices = hasStorefrontLogoChoices(store, shownProducts);
   // Category list for the sub-nav: ordered by the builder's sort order, "All Gear" first.
   const categories = (() => {
     const seen = new Map();
-    for (const p of groupProducts(shownProducts)) {
+    for (const p of groupProducts(shownProducts, logoChoices, store.all_school_settings?.first_logo_by_style || {})) {
       const c = productCategory(p.rep);
       if (!c) continue;
       if (!seen.has(c)) seen.set(c, p.rep.sort_order || 0);
@@ -694,7 +697,6 @@ export default function Storefront() {
   })();
   // Category clicks always land on the browse grid (sub-nav is persistent chrome).
   const onCat = (c) => { setCat(c); if (route.view !== 'home') navTo('/shop/' + store.slug); else document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }); };
-  const allSchool = store.org_type === 'all_school';
   const resetBrowse = () => { setSchoolProgram('all'); setQuery(''); onCat('all'); };
   const onSchoolProgram = (program) => { setSchoolProgram(program); setCat('all'); setQuery(''); if (route.view !== 'home') navTo('/shop/' + store.slug); setTimeout(() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }), 60); };
   const goSchoolSection = (id) => { if (route.view !== 'home') navTo('/shop/' + store.slug); setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' }), 60); };
@@ -737,7 +739,7 @@ export default function Storefront() {
       <main id={MAIN_ID} style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} schoolProgram={schoolProgram} onSchoolProgram={onSchoolProgram} setQuery={setQuery} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(shownProducts, allSchool, store.all_school_settings?.first_logo_by_style || {}).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const grp = groupProducts(shownProducts, logoChoices, store.all_school_settings?.first_logo_by_style || {}).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} selectedProductId={route.id} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
         })()}
@@ -1175,7 +1177,7 @@ function splitHeadline(name) {
 // ── Home: hero + grid ────────────────────────────────────────────────
 function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, onResetFilters = null, query = '', schoolProgram = 'all', onSchoolProgram, setQuery }) {
   if (store.org_type === 'all_school') return <AllSchoolHome store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={onResetFilters} query={query} program={schoolProgram} onProgram={onSchoolProgram} setQuery={setQuery} />;
-  const grouped = groupProducts(products);
+  const grouped = groupProducts(products, hasStorefrontLogoChoices(store, products), store.all_school_settings?.first_logo_by_style || {});
   // wpById also resolves archived items kept alive only inside a package, so package
   // previews keep their custom photo/name even though those items aren't in the grid.
   const wpById = buildWpById([...products, ...compExtras]);
@@ -1579,7 +1581,7 @@ const buildWpById = (products) => { const m = {}; (products || []).forEach((p) =
 export function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
   const designRows = logoDesignRows(colorRows);
   const [designIndex, setDesignIndex] = useState(0);
-  const cardRow = store.org_type === 'all_school' && designRows.length > 1 ? designRows[designIndex % designRows.length] : p;
+  const cardRow = designRows.length > 1 ? designRows[designIndex % designRows.length] : p;
   const isBundle = p.kind === 'bundle';
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
@@ -1623,9 +1625,9 @@ export function Card({ store, theme, p, colorRows = [], bundleItems = [], compIn
       <div style={{ padding: vs ? '16px 16px 18px' : '14px 15px 16px' }}>
         {vs && catLabel && <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1.8, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>{catLabel}</div>}
         <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: vs ? 800 : 700, fontSize: vs ? 19 : 18, letterSpacing: 0.3, lineHeight: 1.12, color: vs ? theme.band : theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}><a href={`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${cardRow.webstore_product_id}`} onClick={(e) => { e.preventDefault(); e.stopPropagation(); go(); }} style={{ color: 'inherit', textDecoration: 'none' }}>{p.name}</a></div>
-        {designRows.length > 1 && store.org_type === 'all_school' && <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+        {designRows.length > 1 && <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
           <LogoChoicePicker compact rows={designRows} selected={cardRow} color={theme.primary} labelStyle={{ fontSize: 12, fontWeight: 700 }}
-            onSelect={(row) => setDesignIndex(designRows.findIndex((design) => design.webstore_product_id === row.webstore_product_id))} />
+            onSelect={(row) => setDesignIndex(designRows.findIndex((design) => (design.variant_group_id || design.webstore_product_id) === (row.variant_group_id || row.webstore_product_id)))} />
         </div>}
         {!isBundle && <ColorDots rows={colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === (cardRow.variant_group_id || cardRow.webstore_product_id))} theme={theme} />}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: vs ? 10 : 12 }}>
@@ -1782,7 +1784,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
   const designGroups = logoDesignRows(colorRows.length ? colorRows : [rep]).map((row) => [row.variant_group_id || row.webstore_product_id, row]);
   const activeDesignKey = p.variant_group_id || p.webstore_product_id;
-  const activeColorRows = designGroups.length > 1 && store.org_type === 'all_school' ? colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === activeDesignKey) : colorRows;
+  const activeColorRows = designGroups.length > 1 ? colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === activeDesignKey) : colorRows;
   // Fit/gender variants (Adult / Women's / Youth) carry a variant_label and share
   // one image. Unlike colors, they get no picker — each fit renders as its own
   // labeled size row, and a size click resolves to that fit's own SKU.
@@ -1924,7 +1926,7 @@ export function ProductPage({ store, theme, product: rep, colorRows = [], select
           {showFund && <div style={{ fontSize: 13, color: STOCK.in, fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
-          {store.org_type === 'all_school' && <LogoChoicePicker rows={colorRows.length ? colorRows : [rep]} selected={p} color={theme.primary} labelStyle={label}
+          {(store.org_type === 'all_school' || designGroups.length > 1) && <LogoChoicePicker rows={colorRows.length ? colorRows : [rep]} selected={p} color={theme.primary} labelStyle={label}
             onSelect={(next) => { setColorId(next.webstore_product_id); setSize(null); setImg((view) => view.startsWith('detail:') ? view : 'front'); }} />}
           {!isFitGroup && activeColorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
             <div style={label}>Color{p.color ? ` — ${p.color}` : ''}</div>

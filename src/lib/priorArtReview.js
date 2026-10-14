@@ -2,6 +2,16 @@
 // coach-send history are reference material, not approval of the new garment.
 export const PRIOR_ART_REVIEW = 'needs_art_review';
 
+// Approval is a workflow state, not evidence that a design came from an earlier
+// job. Adding garments to new artwork must not turn it into previous artwork.
+export const isReusedArtwork = art => !!(art?.reused_from_so
+  || String(art?.design_id || '').startsWith('reuse:'));
+
+export const newJobArtStatus = (derived, artFiles = [], isStoreOrder = false) => {
+  if (isStoreOrder || !['art_complete', 'production_files_needed', 'upload_emb_files', 'order_dtf_transfers'].includes(derived)) return derived;
+  return artFiles.some(isReusedArtwork) ? PRIOR_ART_REVIEW : 'waiting_approval';
+};
+
 export const startPriorArtReview = job => ({
   ...job,
   art_status: PRIOR_ART_REVIEW,
@@ -42,7 +52,7 @@ export const priorArtDecisionPending = (job, artFiles = []) => {
   // Existing unsent orders can already be parked at waiting_approval by the old
   // sync path. Recognize the reused-art shape even if an old mock is attached.
   return job.art_status === 'waiting_approval'
-    && artFiles.some(a => a?.status === 'approved' || a?.reused_from_so);
+    && artFiles.some(isReusedArtwork);
 };
 
 export const confirmPriorArt = job => ({ ...job, art_status: PRIOR_ART_REVIEW, art_reuse_confirmed: true });
