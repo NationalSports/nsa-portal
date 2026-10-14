@@ -1641,7 +1641,10 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const specs=[{k:'Method',v:methodName}];
   if(frontLoc)specs.push({k:'Placement',v:frontLoc});
   const flags=[];itemDetails.forEach(d=>jobItemDecosOfKind(d.gi,d.it,'art').forEach(dd=>{if(dd.underbase)flags.push('Underbase');if(dd.reversible)flags.push('Reversible')}));
-  const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean));if(d2.length)return[...new Set(d2)];return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(x=>x&&x.trim()))))]})();
+  const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean));if(d2.length)return[...new Set(d2)];
+    // Embroidery with one color way: every thread stop in sew order — a repeated thread is its own stop.
+    const _cwsAll=allArtFiles.flatMap(a=>a.color_ways||[]);if(isEmb&&_cwsAll.length===1)return(_cwsAll[0].inks||[]).filter(x=>x&&x.trim());
+    return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(x=>x&&x.trim()))))]})();
   const colors=colorList.map(name=>({name,code:'',hex:swatch(name)}));
 
   // DST machine-design barcodes (embroidery) — scan-to-load on the floor

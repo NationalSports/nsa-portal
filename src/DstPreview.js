@@ -192,7 +192,9 @@ export async function stitchPreviewsFor(artFiles, { size = 520, timeoutMs = 8000
       .then(design => cws.forEach(cw => {
         const c = document.createElement('canvas');
         drawDst(c, design, cw?.inks || [], null, size);
-        out[a.id + '|' + (cw?.id || '')] = { url: c.toDataURL('image/png'), garment: cw?.garment_color || '' };
+        // WebP (~56KB vs ~150KB PNG) keeps the server-rendered PDF request small; browsers that
+        // can't encode WebP return PNG from the same call.
+        out[a.id + '|' + (cw?.id || '')] = { url: c.toDataURL('image/webp', 0.9), garment: cw?.garment_color || '' };
       }))
       .catch(() => {}));
   });
