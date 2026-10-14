@@ -33,3 +33,27 @@ test('OMG closeout uses frozen net invoice components even when source charges l
   expect(omgCloseoutInvoiceMoney({line_items:[{amount:7020}]},so)).toBeNull();
   expect(omgCloseoutInvoiceMoney(invoice,{webstore_id:'W'})).toBeNull();
 });
+
+describe('storeCommissionPaidDate — closeout never re-pays an already-earned month',()=>{
+  const {storeCommissionPaidDate}=require('../lib/storeCloseout');
+  const closed={omg_store_id:'O',store_closed_at:'2026-10-20T18:00:00Z',store_costs_recorded_at:'2026-10-20T18:00:00Z'};
+  test('invoice paid before the closeout rule keeps its original statement month',()=>{
+    // INV-63103 shape: paid in July, no payment rows (invoice-date fallback), store closed in October.
+    const july=new Date(2026,6,3,12);
+    expect(storeCommissionPaidDate(july,closed)).toBe(july);
+  });
+  test('invoice paid after the rule earns in the closeout month',()=>{
+    const paidOct15=new Date('2026-10-15T12:00:00Z');
+    expect(storeCommissionPaidDate(paidOct15,closed).toISOString()).toBe('2026-10-20T18:00:00.000Z');
+    const paidAfterClose=new Date('2026-10-25T12:00:00Z');
+    expect(storeCommissionPaidDate(paidAfterClose,closed)).toEqual(paidAfterClose);
+  });
+  test('open stores and ordinary orders use the payment date',()=>{
+    const d=new Date(2026,7,14,12);
+    expect(storeCommissionPaidDate(d,{omg_store_id:'O'})).toBe(d);
+    expect(storeCommissionPaidDate(d,null)).toBe(d);
+  });
+  test('no payment date falls back to the closeout date',()=>{
+    expect(storeCommissionPaidDate(null,closed).toISOString()).toBe('2026-10-20T18:00:00.000Z');
+  });
+});

@@ -1,4 +1,4 @@
-import { omgCloseoutPlatformCost, omgCloseoutInvoiceMoney } from './lib/storeCloseout';
+import { omgCloseoutPlatformCost, omgCloseoutInvoiceMoney, storeCommissionPaidDate } from './lib/storeCloseout';
 import { decoPoEditTotals } from './lib/decoPoEdit';
 import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
@@ -284,7 +284,7 @@ export default function CommissionsPage({adminReports=false}={}){
         // could be an older payment, booking the line to the wrong statement month.
         const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
         const paymentDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
-        const paidDate=so?.store_closed_at?new Date(Math.max(new Date(so.store_closed_at).getTime(),paymentDate?.getTime()||0)):paymentDate;
+        const paidDate=storeCommissionPaidDate(paymentDate,so);
         const daysToPay=paidDate&&invDate?Math.round((paymentDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
