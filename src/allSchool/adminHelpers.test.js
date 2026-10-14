@@ -22,11 +22,12 @@ it('copies core blanks with isolated art and group IDs and skips existing overri
   expect(coreOfferingCopies([{ ...core[0], school_program_ids: ['soccer'] }], 'football', 'store')).toEqual([]);
 });
 it('makes an inactive logo group with every source color and its own exact artwork', () => {
-  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, size_skus: { '2XL': 'BLUE-2XL' }, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
   const copies = logoDesignCopies(source, 'store', 'listing', 'arched-colors', 'Arched Serra', { code: 'ARCH' }, { id: 'arch-web', url: 'arch.png' });
   expect(copies.map((row) => row.product_id)).toEqual(['blue-blank', 'black-blank']);
   expect(copies.every((row) => row.school_style_group_id === 'listing' && row.variant_group_id === 'arched-colors' && row.school_design_label === 'Arched Serra' && row.active === false && row.school_template_id === null)).toBe(true);
   expect(copies.every((row) => row.transfer_codes[0] === 'ARCH' && row.decorations[0].art_id === 'arch-web')).toBe(true);
+  expect(copies[0].size_skus).toEqual({ '2XL': 'BLUE-2XL' });
   copies[0].decorations[0].art_id = 'changed'; expect(source[0].decorations[0].art_id).toBe('script');
 });
 it('shows each logo choice once with its own colors and keeps unrelated items separate', () => {
@@ -86,6 +87,7 @@ it('requires exact production files for approval and identifies setup invalidati
   expect(productionSetupError({ ...item, takes_name: true }, [stock])).toMatch(/personalization/);
   expect(changesProductionSetup({ decorations: [] })).toBe(true);
   expect(changesProductionSetup({ personalization_template: {} })).toBe(true);
+  expect(changesProductionSetup({ size_skus: { '2XL': 'TEE-2XL' } })).toBe(true);
   expect(changesProductionSetup({ retail_price: 30 })).toBe(false);
   expect(changesProductionSetup({ production_approved_at: '2026-10-02' })).toBe(false);
 });

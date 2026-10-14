@@ -33,7 +33,7 @@ export const validateAllSchoolSettings = (value) => {
   if (!(Number(s.shipping.package_weight_oz) > 0)) return 'Packaging weight must be greater than zero.';
   return '';
 };
-const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_sku_overrides', 'variant_label', 'personalization_template', 'weight_oz'];
+const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_skus', 'variant_label', 'personalization_template', 'weight_oz'];
 export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => {
   const copies = (sources || []).map((row, index) => {
     const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
@@ -89,7 +89,7 @@ export const stockLinkedArtError = (item, decorations) => {
   return '';
 };
 
-export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_sku_overrides', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
+export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_skus', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
 
 // Keep one visual card per shopper listing, and edit the selected art's own colors.
 export const schoolArtGroups = (catalog, stockByWp, artId) => {

@@ -51,6 +51,9 @@ const WRITES = {
   _soCols: ['sales_orders'],
   _msgCols: ['messages'],
 };
+// Function-level write tests also consume this snapshot. Keep these tables in
+// --dump output even though they are not driven by a constants.js write list.
+const EXTRA_SCHEMA_TABLES = ['webstore_products'];
 
 function writtenColumns() {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'constants.js'), 'utf8');
@@ -75,7 +78,7 @@ function fetchLive() {
     console.error('SUPABASE_DB_URL is required for --live / --dump.');
     process.exit(2);
   }
-  const tables = [...new Set(Object.values(WRITES).flat())].map((t) => `'${t}'`).join(',');
+  const tables = [...new Set([...Object.values(WRITES).flat(), ...EXTRA_SCHEMA_TABLES])].map((t) => `'${t}'`).join(',');
   const sql = `select coalesce(json_object_agg(table_name, cols), '{}') from (
       select table_name, json_agg(column_name order by column_name) cols from information_schema.columns
       where table_schema='public' and table_name in (${tables}) group by table_name) t`;
