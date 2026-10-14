@@ -15,7 +15,7 @@ import {shouldAdoptServerCopy,adoptServerCopy,childVersionSig} from './lib/edito
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
 import PriorArtReviewPanel from './PriorArtReviewPanel';
-import { logoDetailCustomerUpdates } from './lib/logoDetail';
+import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { PRIOR_ART_REVIEW, newJobArtStatus, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
@@ -43,7 +43,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeQtyIn, sizeKeyIn, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, artLiveDsts, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeQtyIn, sizeKeyIn, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, linkMovedLineInvoiceKeys, scopeSoItemsToInvoice, splitInvoiceLine, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
@@ -89,7 +89,8 @@ import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
-import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
+import { stitchPreviewsFor } from './DstPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -3843,7 +3844,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   _embInvoicedRef.current=(allInvoices||[]).some(inv=>inv&&inv.so_id===o.id);
   const _readStitchesFromPdfFile=async(file)=>{
     if(!extractPdfText||!file)return null;
-    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);return stitches||dimensions?{stitches,dimensions}:null;}catch(e){return null;}
+    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);return stitches||dimensions||threads?{stitches,dimensions,threads}:null;}catch(e){return null;}
   };
   const _artPdfEntries=art=>[...(art?.prod_files||[]),...(art?.files||[])]
     .filter(f=>f&&!isStaleFile(f)&&_isPdfUrl(typeof f==='string'?f:(f.url||''),f))
@@ -3855,11 +3856,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     if(!art||art.archived||art.deco_type!=='embroidery')return false;
     const activeUrls=_artPdfEntries(art).map(f=>f.url);
     if(sourceUrls.some(url=>!activeUrls.includes(url)))return false;
-    const nextArt=fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current});
+    // Thread colors from the proof fill only empty color-way thread lists — never a rep's own entries.
+    const nextArt=fillThreadColorWays(fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current}),specs.threads);
     const changed=[];
     if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
     if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
-    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size or Stitches.');return true;}
+    if(nextArt.color_ways!==art.color_ways)changed.push(specs.threads.length+' thread color'+(specs.threads.length===1?'':'s'));
+    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size, Stitches or the thread colors.');return true;}
     const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
     if(!saved)return false;
     nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
@@ -3878,7 +3881,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const dimensions=[...new Map(reads.filter(r=>r.dimensions).map(r=>[r.dimensions.artSize,r.dimensions])).values()];
     const stitches=[...new Set(reads.map(r=>r.stitches).filter(Boolean))];
     if(dimensions.length>1||stitches.length>1){if(verb==='Read')nf('Attached proofs have conflicting dimensions or stitches. Enter the correct values manually, or retire the older proof.','error');return {conflict:true};}
-    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null};
+    // Thread lists from several proofs must agree; disagreeing proofs fill no threads.
+    const threadSets=[...new Map(reads.filter(r=>r.threads).map(r=>[r.threads.join('|'),r.threads])).values()];
+    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null,threads:threadSets.length===1?threadSets[0]:null};
     await _applyArtStitches(folderId,specs,reads.map(r=>r.source.name).join(', '),verb,sourceOrderId,entries.map(p=>p.url));
     return specs;
   };
@@ -3893,17 +3898,17 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const specs=await _readStitchesFromAttached(folderId,'Read');
       if(specs)return;
       _stitchPdfMissed.current.add(key);
-      nf('No labeled dimensions or stitch count found — click again to choose another PDF, or enter them manually.','error');return;
+      nf('No labeled dimensions, stitch count or thread colors found — click again to choose another PDF, or enter them manually.','error');return;
     }
     const sourceOrderId=oRef.current.id;
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
     inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading dimensions and stitches…');const specs=await _readStitchesFromPdfFile(f);
-      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions or stitch count found — enter them manually.','error');};inp.click();
+      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions, stitch count or thread colors found — enter them manually.','error');};inp.click();
   };
   const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
     if(!extractPdfText)return;
     const art=(arts||[]).find(a=>a.id===folderId);
-    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)))return;
+    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)&&!artNeedsThreadColors(art)))return;
     if(!(uploadedFiles||[]).some(f=>f&&/\.pdf$/i.test(f.name||'')))return;
     // Resolve attached/current files rather than an obsolete upload after a folder change.
     await _readStitchesFromAttached(folderId,'Auto-read');
@@ -3911,9 +3916,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    // Each proof set is considered ONCE, the first time it is seen (order open or a new upload) —
+    // whether or not it needs filling then. A rep later clearing a thread list to retype it must
+    // not trigger a refill + background save mid-edit.
+    const targets=[];
+    (o.art_files||[]).forEach(a=>{if(!a||a.archived||a.deco_type!=='embroidery'||!_artPdfEntries(a).length)return;const k=_embProofKey(a);if(_autoStitchTried.current.has(k))return;_autoStitchTried.current.add(k);
+      if(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current)||artNeedsThreadColors(a))targets.push(a)});
     if(!targets.length)return;let cancelled=false;
-    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
+    (async()=>{for(const a of targets){if(cancelled)break;await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
   },[o.art_files,o.id,allInvoices,extractPdfText]);
   // The customer whose library this order's art should be promoted into. Library art lives on
@@ -7367,11 +7377,25 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
                       ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
                       :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → 5k–10k default</span>})()}
-                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions and stitch count from the attached embroidery proof PDF">📄 Read from PDF</button>
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions, stitch count and thread colors from the attached embroidery proof PDF">📄 Read from PDF</button>
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
-                    <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
+                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card */}
+                    <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}
+                      stitch={art.deco_type==='embroidery'?(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+                        return{dstUrl,onEnlarge:setMockupLightbox,onUseAsLogo:async(blob,cw)=>{
+                          // The stitch render becomes this color way's web logo = its logo detail (stores, mockups,
+                          // production sheet). Same save + Art Library sync as a logo uploaded from the job.
+                          const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
+                          const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
+                          if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this stitch render?'))return;
+                          nf('Saving web logo...');
+                          try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-web-logos');
+                            const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:'Stitch render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+                            if(!(await saveArtFilesNow(arts,'Web logo')))return;
+                            await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
+                          catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}}}})():null}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
@@ -13115,7 +13139,13 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
                   if(_jsMockUrl){w.document.write('<div style="text-align:center;margin:12px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_jsMockUrl+'" style="max-width:100%;max-height:350px;object-fit:contain;border-radius:6px"/><div style="font-size:10px;color:#666;margin-top:4px">Mockup Preview</div></div>')}
                   w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[jItemStatus(j)]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+dFul+'/'+dTot+' ('+pct+'%)</div></div>');
-                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
+                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>');
+                    // Color ways: garment + each thread/ink in sew order — what the floor actually runs.
+                    const _esc=t=>String(t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                    const _jsCws=(artF.color_ways||[]).filter(cw=>(cw.inks||[]).some(x=>String(x||'').trim())||String(cw.garment_color||'').trim());
+                    if(_jsCws.length)w.document.write('<h2>Color Ways — '+(artF.deco_type==='embroidery'?'thread stops in sew order':'ink colors')+'</h2><table><thead><tr><th style="text-align:left">Color way</th><th style="text-align:left">'+(artF.deco_type==='embroidery'?'Threads':'Inks')+'</th></tr></thead><tbody>'+_jsCws.map((cw,ci)=>'<tr><td style="text-align:left;font-weight:700">CW '+(ci+1)+' · '+_esc(cw.garment_color||'garment color not set')+'</td><td style="text-align:left">'+(cw.inks||[]).filter(x=>String(x||'').trim()).map((x,xi)=>(artF.deco_type==='embroidery'?'<b>'+(xi+1)+'.</b> ':'')+_esc(x)).join(' &nbsp; ')+'</td></tr>').join('')+'</tbody></table>');
+                    if(artF.deco_type==='embroidery'&&artLiveDsts(artF).length)w.document.write('<div id="nsa-stitch-previews" style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0"></div>');
+                  }
                   w.document.write('<h2>Items & Sizes</h2>');
                   itemDetails.forEach(gi=>{
                     w.document.write('<p style="margin:12px 0 4px;font-weight:700">'+gi.sku+' — '+(gi.name||'Unknown')+' ('+gi.color+')</p>');
@@ -13140,7 +13170,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   }
                   if(j.notes){w.document.write('<h2>Notes</h2><p>'+j.notes+'</p>')}
                   w.document.write('<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:10px;color:#999">Printed '+new Date().toLocaleString()+' · NSA Portal</div>');
-                  w.document.write('</body></html>');w.document.close();w.print();
+                  w.document.write('</body></html>');w.document.close();
+                  // Embroidery: draw the DST in each color way's threads, then print.
+                  const _spBox=w.document.getElementById('nsa-stitch-previews');
+                  if(!_spBox){w.print();return}
+                  stitchPreviewsFor([artF]).then(map=>{(artF.color_ways||[]).length?(artF.color_ways||[]).forEach((cw,ci)=>{const sp=map[artF.id+'|'+cw.id];if(sp)_spBox.insertAdjacentHTML('beforeend','<div style="text-align:center"><div style="width:220px;height:220px;border:1px solid #ddd;border-radius:6px;background:'+(threadHex(cw.garment_color)||'#f8f8f8')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;align-items:center;justify-content:center"><img src="'+sp.url+'" style="max-width:96%;max-height:96%"/></div><div style="font-size:10px;color:#666;margin-top:3px">Stitch preview · CW '+(ci+1)+'</div></div>')}):(map[artF.id+'|']&&_spBox.insertAdjacentHTML('beforeend','<img src="'+map[artF.id+'|'].url+'" style="width:220px;border:1px solid #ddd;border-radius:6px"/>'));setTimeout(()=>w.print(),300)});
                 }}>🖨️ Print Job Sheet</button>
               </div>
             </div>

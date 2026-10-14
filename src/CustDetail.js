@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
-import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
+import { isDstFile, isStaleFile, _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice, splitInvoiceLine } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
@@ -11,7 +11,8 @@ import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from '
 import { mergeWebLogoEdit } from './lib/logoDetail';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
-import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
+import DstPreview from './DstPreview';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, decoSplitQty, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
@@ -1563,16 +1564,30 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const pdfs=Array.from(fileList||[]).filter(f=>f&&/\.pdf$/i.test(f.name||''));
       for(const f of pdfs){
         let text='';try{text=(await extractPdfText(f))?.fullText||''}catch(e){continue}
-        const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);
-        if(!stitches&&!dimensions)continue;
+        const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);
+        if(!stitches&&!dimensions&&!threads)continue;
+        const got=[];
+        // ONE library write for size + stitches + threads: a second updateLibArt in the same tick
+        // starts from the not-yet-refreshed customer copy and would drop the first write.
+        // Thread colors fill only empty color-way thread lists (same rule as the order editors).
         let before=null,after=null;
-        if(!updateLibArt(a=>{before=a;after=fillEmbroiderySpecs(a,{dimensions,stitches});return after})||!after)return;
-        setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches}:d);
-        const got=[after.art_size!==before.art_size?after.art_size:'',after.stitches!==before.stitches?Number(after.stitches).toLocaleString()+' stitches':''].filter(Boolean);
-        nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches kept');
+        if(updateLibArt(a=>{before=a;after=fillThreadColorWays(fillEmbroiderySpecs(a,{dimensions,stitches}),threads);return after})&&after){
+          setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches,color_ways:after.color_ways}:d);
+          if(after.art_size!==before.art_size)got.push(after.art_size);
+          if(after.stitches!==before.stitches)got.push(Number(after.stitches).toLocaleString()+' stitches');
+        }
+        if(threads){
+          // Order copies of this art get the threads too (blank lists only), each order saved once.
+          let filled=!!(after&&before&&after.color_ways!==before.color_ways);
+          if(saveArt)_liveSOs().forEach(so=>{let ch=false;const upd=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;const n=fillThreadColorWays(a,threads);if(n!==a)ch=true;return n});
+            if(ch){filled=true;saveArt({...so,art_files:upd,updated_at:new Date().toLocaleString()})}});
+          if(!after){const next=fillThreadColorWays(art,threads);if(next!==art)setCustArtDetail(d=>d?{...d,color_ways:next.color_ways}:d)}
+          if(filled)got.push(threads.length+' thread color'+(threads.length===1?'':'s'));
+        }
+        nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches/threads kept');
         return;
       }
-      if(pdfs.length)nf&&nf('No size or stitch count found in that PDF — enter them manually','error');
+      if(pdfs.length)nf&&nf('No size, stitch count or thread colors found in that PDF — enter them manually','error');
     };
     const addMockToArt=async(fileList)=>{
       if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
@@ -1793,10 +1808,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',padding:'4px 0 0',fontWeight:600}}>+ Add color</button>
                 </div>
               </div>)}
-              <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
+              <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:art.deco_type==='embroidery'&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
             </div>
           </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'3px 9px',background:'#f1f5f9',borderRadius:8,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}{(cw.inks||[]).filter(Boolean).length>0&&<span style={{display:'inline-flex',gap:2}}>{(cw.inks||[]).filter(Boolean).map((ink,ii)=><span key={ii} title={ink} style={{width:11,height:11,borderRadius:3,background:pantoneHex(ink)||'#cbd5e1',border:'1px solid #d1d5db'}}/>)}</span>}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
         </div>
+        {/* Stitch preview — the live DST drawn in each color way's threads */}
+        {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'thread_colors')} onUseAsLogo={saveArt?async(blob,cw)=>{
+            // Stitch render → this color way's web logo (stores + logo detail). Newest first replaces it.
+            const nm=(cw?.garment_color||'').trim();
+            const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
+            if(existing&&!window.confirm('Replace the current web logo for '+(nm||'all garments')+' with this stitch render?'))return;
+            nf&&nf('Saving web logo...');
+            let url;try{url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+(nm||'all').replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+            const entry=nm?{url,color_way:nm,source:'stitch'}:{url,color_way:'',is_default:true,source:'stitch'};
+            saveWebLogos([entry,...webLogos.filter(w=>w!==existing)],nm?_cwsWith([nm]):undefined);
+            nf&&nf('Web logo saved for '+(nm||'all garments'));
+          }:undefined}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>

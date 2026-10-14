@@ -62,3 +62,18 @@ test('mockup and logo sit beside the size table inside one keep-together block',
   expect(html).toContain('Decorated by');
   expect(html).toContain('QC by');
 });
+
+test('embroidery: threads print numbered in sew order and the stitch preview sits with the logo details', () => {
+  const emb = { id: 'AF2', name: 'Bulldog', deco_type: 'embroidery', art_size: '3in', item_mockups: {},
+    color_ways: [{ id: 'cw1', garment_color: 'Navy', inks: ['White', 'Navy Blue (17)', 'Dark Green (1)', 'White'] }] };
+  const POLO = { sku: 'P1', name: 'Polo', color: 'Navy', sizes: { M: 3 }, decorations: [{ kind: 'art', position: 'Left Chest', art_file_id: 'AF2' }] };
+  const so = { id: 'SO-2', customer_id: 'C1', items: [POLO], art_files: [emb] };
+  const j = { id: 'JOB-2', deco_type: 'embroidery', art_file_id: 'AF2', total_units: 3, items: [{ item_idx: 0, deco_idxs: [0] }] };
+  const html = buildProdSheetOpts(j, so, { stitchPreviews: { 'AF2|cw1': { url: 'data:image/png;base64,STITCH', garment: 'Navy' } } }).notes;
+  // single color way = this deco's color way: every stop, repeats included, numbered
+  ['<b>1.</b> White', '<b>2.</b> Navy Blue (17)', '<b>3.</b> Dark Green (1)', '<b>4.</b> White'].forEach(t => expect(html).toContain(t));
+  expect(html).toContain('data:image/png;base64,STITCH');
+  expect(html).toContain('Stitch preview — Bulldog · CW: Navy');
+  // without a render (DST unreachable) the sheet still builds, just without the image
+  expect(buildProdSheetOpts(j, so, {}).notes).not.toContain('Stitch preview');
+});

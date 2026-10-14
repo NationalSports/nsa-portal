@@ -22,7 +22,9 @@ export function garmentProgress(job, order, rows) {
         || (!d.color_way_id && !matchingWays.length && colorWays.length === 1 && !colorWays[0].garment_color ? colorWays[0] : null);
       const cwColors = realInkLines((selected?.inks || []).join('\n'));
       const fallback = realInkLines(art?.deco_type === 'embroidery' ? art?.thread_colors || art?.ink_colors : art?.ink_colors || art?.thread_colors);
-      const colors = [...new Set(garmentColors.length ? garmentColors : cwColors.length ? cwColors : fallback)].join(', ');
+      const picked = garmentColors.length ? garmentColors : cwColors.length ? cwColors : fallback;
+      // Embroidery color-way threads are sew-order stops — keep repeats (White, Black, White, White).
+      const colors = (art?.deco_type === 'embroidery' && !garmentColors.length && cwColors.length ? picked : [...new Set(picked)]).join(', ');
       const spec = { name: art?.name || (kind === 'numbers' ? 'Numbers' : kind === 'names' ? 'Names' : 'Artwork'),
         method: (art?.deco_type || d.num_method || d.type || '').replace(/_/g, ' '),
         placement: d.position || '', size: art?.art_size || d.num_size || '', colors: colors || '',
