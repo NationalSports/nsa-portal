@@ -6,6 +6,23 @@ export function storeCommissionReady(invoice, so) {
   return !store || isStoreFinanciallyClosed(so);
 }
 
+// When the closeout gate above went live (PR #2514 merged to main). Before it, a paid
+// store invoice counted on the statement for the month it was paid — and those months
+// were paid out to reps on that basis.
+export const STORE_CLOSEOUT_COMMISSION_START = new Date('2026-10-13T05:46:03Z');
+
+// Statement date for a store invoice's commission. Normally the later of the payment
+// and the store closeout, so the line earns in the month the store is closed. But an
+// invoice that was already paid before the closeout gate existed was already on its
+// paid month's statement; moving it to the closeout month would pay the rep for it a
+// second time. Those keep their original month (re-paying nothing if it's already paid).
+export function storeCommissionPaidDate(paymentDate, so) {
+  const closed = so?.store_closed_at ? new Date(so.store_closed_at) : null;
+  if (!closed || isNaN(closed.getTime())) return paymentDate;
+  if (paymentDate && !isNaN(paymentDate.getTime()) && paymentDate < STORE_CLOSEOUT_COMMISSION_START) return paymentDate;
+  return new Date(Math.max(closed.getTime(), paymentDate?.getTime() || 0));
+}
+
 // Frozen at closeout from the Accounting Report; WEB card costs are handled separately.
 export function omgCloseoutPlatformCost(so) {
   if (!so?.omg_store_id) return 0;
