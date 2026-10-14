@@ -1433,7 +1433,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[],st
         const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
       const _nnColors=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
         if(own.length)return _chipsHtml(own);
-        if(_frontInks.length)return '<span style="font-size:9px;color:#92400e;font-weight:700">Not set — front inks:</span> '+_chipsHtml(_frontInks);
+        // Embroidered numbers/names run in thread, not ink — say so.
+        if(_frontInks.length)return '<span style="font-size:9px;color:#92400e;font-weight:700">Not set — front '+((nd.num_method||nd.name_method)==='embroidery'?'threads':'inks')+':</span> '+_chipsHtml(_frontInks);
         return '<span style="color:#dc2626;font-weight:700">⚠ Not specified</span>'};
       itemNumDecos.forEach(nd=>{
         const szTxt=(nd.num_size||'—')+(nd.front_and_back?' / Back: '+(nd.num_size_back||nd.num_size||'—'):'');
@@ -1493,7 +1494,9 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[],st
       [[d.color_way_id,d.reversible?'A':''],...(d.reversible?[[d.color_way_id_b,'B']]:[])].forEach(([cwRaw,side])=>{
         const cwId=resolveLogoColorWay(art,cwRaw||null,gi.color,side);if(cwId===undefined)return;
         const sp=stitchPreviews[art.id+'|'+(cwId||'')];if(!sp||p.logos.some(l=>l.url===sp.url))return;
-        p.logos.push({url:sp.url,bg:logoDetailBg(gi.color,sp.garment,side),label:'Stitch preview — '+_upEsc(art.name||'Design')+(sp.garment?' · CW: '+_upEsc(sp.garment):'')+(side?' · Side '+side:'')})})});
+        // Painted on the color way's garment color (the color its threads were picked for — e.g. the
+        // black panel of a red/black backpack), falling back to the line's garment color.
+        p.logos.push({url:sp.url,bg:logoDetailBg(sp.garment||gi.color,sp.garment,side),label:'Stitch preview — '+_upEsc(art.name||'Design')+(sp.garment?' · CW: '+_upEsc(sp.garment):'')+(side?' · Side '+side:'')})})});
   });
   const _decoGroups=groupByDecoration(itemParts,p=>p.key);
   const _imgBox=(src,h,bg)=>'<div style="border:1px solid #e2e8f0;border-radius:6px;background:'+(bg||'#fff')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:'+h+'px;display:flex;align-items:center;justify-content:center;padding:6px"><img src="'+src+'" style="max-height:'+(h-12)+'px;max-width:100%;object-fit:contain"/></div>';
@@ -14771,7 +14774,7 @@ export default function App(){
                           const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
                         const _nnColorEl=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
                           if(own.length)return<span style={{fontSize:11,color:'#1e293b'}}> — {own.join(' / ')}</span>;
-                          if(_frontInks.length)return<span style={{fontSize:10,color:'#92400e',fontWeight:600}}> — Not set, front inks: {_frontInks.join(', ')}</span>;
+                          if(_frontInks.length)return<span style={{fontSize:10,color:'#92400e',fontWeight:600}}> — Not set, front {(nd.num_method||nd.name_method)==='embroidery'?'threads':'inks'}: {_frontInks.join(', ')}</span>;
                           return<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}> — ⚠ Color not specified</span>};
                         return<>
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
