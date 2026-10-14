@@ -618,6 +618,38 @@ describe('priceCart — bundle component qty is catalog-authoritative (fulfillme
 });
 
 describe('buildOrderItems — persisted money matches checkout pricing', () => {
+  test('regular timed team singles persist exact listing identity and an immutable decoration snapshot', () => {
+    const decorations = [{ art_id: 'friars', placement: 'left_chest', color_way_id: 'cw-grey' }];
+    const items = checkout.buildOrderItems([{
+      kind: 'single', unit_price: 20, name_extra: 0, fundraise: 0,
+      wp: { id: 'listing-grey-friars', product_id: 'blank-grey', sku: 'PC54', decorations, size_skus: { XL: 'PC61-GREY' } },
+      size: 'M', qty: 2, option_selections: [], color: 'Athletic Heather',
+    }], null, undefined, false, true);
+    expect(items[0]).toMatchObject({ webstore_product_id: 'listing-grey-friars', decoration_snapshot: {
+      version: 1, decorations, takes_name: false, takes_number: false, transfer_codes: [], size_skus: { XL: 'PC61-GREY' },
+    } });
+    decorations[0].art_id = 'mutated-after-checkout';
+    expect(items[0].decoration_snapshot.decorations[0].art_id).toBe('friars');
+  });
+
+  test('Club, All School and OMG output does not gain timed-team identity fields', () => {
+    const lines = [{
+      kind: 'single', unit_price: 20, name_extra: 0, fundraise: 0,
+      wp: { id: 'listing', product_id: 'blank', sku: 'PC54', decorations: [{ art_id: 'crest' }] },
+      size: 'M', qty: 1, option_selections: [], color: 'Navy',
+      production_recipe: { version: 2, webstore_product_id: 'listing', decorations: [{ art_id: 'crest' }] },
+    }];
+    const before24x7 = checkout.buildOrderItems(lines, null, undefined, true, false);
+    expect(before24x7[0].production_recipe).toEqual(lines[0].production_recipe);
+    expect(before24x7[0]).not.toHaveProperty('webstore_product_id');
+    expect(before24x7[0]).not.toHaveProperty('decoration_snapshot');
+    expect(checkout.isRegularTimedTeamStore({ org_type: 'club' })).toBe(false);
+    expect(checkout.isRegularTimedTeamStore({ org_type: 'all_school' })).toBe(false);
+    expect(checkout.isRegularTimedTeamStore({ org_type: 'team', source: 'omg' })).toBe(false);
+    expect(checkout.isRegularTimedTeamStore({ org_type: 'team', omg_sale_code: 'SALE-1' })).toBe(false);
+    expect(checkout.isRegularTimedTeamStore({ org_type: 'team' })).toBe(true);
+  });
+
   test('stores bundle option and name upcharges on the paid parent row', () => {
     const lines = [{
       kind: 'bundle', unit_price: 60, name_extra: 6, option_extra: 4, fundraise: 8,

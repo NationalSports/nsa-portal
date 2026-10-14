@@ -21,6 +21,12 @@ describe('store SKU grouping', () => {
     expect(webstoreProductionKey({ ...common, decorations: front })).not.toBe(webstoreProductionKey({ ...common, decorations: front, personalize: { name: true } }));
   });
 
+  test('keeps explicit artwork color ways separate even when art and garment match', () => {
+    const common = { sku: 'PC54', color: 'Athletic Heather', decorations: [{ art_id: 'friars', placement: 'left_chest', side: 'front' }] };
+    expect(webstoreProductionKey({ ...common, decorations: [{ ...common.decorations[0], color_way_id: 'cw-grey' }] }))
+      .not.toBe(webstoreProductionKey({ ...common, decorations: [{ ...common.decorations[0], color_way_id: 'cw-default' }] }));
+  });
+
   test('ignores repeated OMG snapshots instead of multiplying quantities', () => {
     const rows = [
       { id: 1, sku: 'JX4482', color: 'White', cost: 10, sizes: { M: 4, XL: 2 } },

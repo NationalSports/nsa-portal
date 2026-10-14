@@ -30,6 +30,7 @@ export function webstoreProductionKey({ sku, color, vendorId, decorations = [], 
     placement: d?.placement || '',
     side: d?.side || '',
     color_label: d?.color_label || '',
+    color_way_id: d?.color_way_id || '',
     cw_by_color: d?.cw_by_color || null,
   })).map(stableSignature).sort();
   const production = {

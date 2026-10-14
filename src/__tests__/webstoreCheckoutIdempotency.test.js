@@ -113,10 +113,30 @@ describe('transactional path (place_webstore_order RPC)', () => {
       tax: 0, tax_state: 'NV', tax_rate: 0, tax_source: 'not_registered',
     });
     expect(rpcCall.payload.p_items).toHaveLength(1);
+    expect(rpcCall.payload.p_items[0]).toMatchObject({ webstore_product_id: 'wp1', decoration_snapshot: {
+      version: 1, decorations: [], takes_name: false, takes_number: false, transfer_codes: [], size_skus: {},
+    } });
     expect(rpcCall.payload.p_items[0].order_id).toBeUndefined(); // proc injects it
     expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, gross_max_avail: 5, label: 'Tee (size L)' }]);
     expect(rpcCall.payload.p_hold_minutes).toBe(30);
     expect(sb.calls.filter((c) => c.op === 'insert')).toHaveLength(0);
+  });
+
+  test('code-before-migration rollout retries without timed-team snapshot fields', async () => {
+    const sb = fakeSb({
+      ...happyTables(),
+      'rpc.place_webstore_order': [
+        { data: null, error: { code: '42703', message: 'column "webstore_product_id" of relation "webstore_order_items" does not exist' } },
+        { data: { order: NEW_ORDER }, error: null },
+      ],
+    });
+    const res = await checkout.placeOrder(sb, body());
+    expect(res.statusCode).toBe(200);
+    const calls = sb.calls.filter((call) => call.op === 'rpc' && call.table === 'place_webstore_order');
+    expect(calls).toHaveLength(2);
+    expect(calls[0].payload.p_items[0]).toHaveProperty('webstore_product_id', 'wp1');
+    expect(calls[1].payload.p_items[0]).not.toHaveProperty('webstore_product_id');
+    expect(calls[1].payload.p_items[0]).not.toHaveProperty('decoration_snapshot');
   });
 
   test('NSA_NUMBER_TAKEN maps to the number_taken 409', async () => {
@@ -223,6 +243,25 @@ describe('place_order idempotency + legacy fallback (pre-00171 DBs)', () => {
     expect(ins.payload.client_ref).toBe(REF);
     const itemIns = sb.calls.find((c) => c.table === 'webstore_order_items' && c.op === 'insert');
     expect(itemIns.payload[0].order_id).toBe('ord-new'); // legacy path injects order_id itself
+  });
+
+  test('pre-migration legacy write retries order items without timed-team snapshot fields', async () => {
+    const sb = fakeSb({
+      ...happyTables(),
+      'rpc.place_webstore_order': [RPC_MISSING],
+      'webstore_orders.insert': [{ data: NEW_ORDER, error: null }],
+      'webstore_order_items.insert': [
+        { data: null, error: { code: '42703', message: "Could not find the 'decoration_snapshot' column of 'webstore_order_items' in the schema cache" } },
+        { data: null, error: null },
+      ],
+    });
+    const res = await checkout.placeOrder(sb, body());
+    expect(res.statusCode).toBe(200);
+    const inserts = sb.calls.filter((call) => call.op === 'insert' && call.table === 'webstore_order_items');
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0].payload[0]).toHaveProperty('webstore_product_id', 'wp1');
+    expect(inserts[1].payload[0]).not.toHaveProperty('webstore_product_id');
+    expect(inserts[1].payload[0]).not.toHaveProperty('decoration_snapshot');
   });
 
   test('legacy insert race: unique violation re-selects and returns the winner', async () => {

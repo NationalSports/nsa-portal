@@ -719,7 +719,11 @@ function productionRecipe(wp, transfers = [], arts = [], store = null) {
   }));
 }
 
-function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID, snapshotRecipes = false) {
+const isRegularTimedTeamStore = (store) => (store?.org_type == null || store?.org_type === 'team')
+  && store?.source !== 'omg' && !store?.omg_sale_code;
+const withoutTimedTeamSnapshotFields = (items) => items.map(({ webstore_product_id, decoration_snapshot, ...item }) => item);
+
+function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID, snapshotRecipes = false, snapshotTimedTeamListing = false) {
   const items = [];
   for (const l of lines) {
     if (l.kind === 'bundle') {
@@ -730,7 +734,7 @@ function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').rand
       items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0) + (Number(l.option_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: l.production_recipe || productionRecipe(l.wp) } : {}) });
       l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: c.production_recipe } : {}) }));
     } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: l.production_recipe || productionRecipe(l.wp) } : {}) });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: l.production_recipe || productionRecipe(l.wp) } : {}), ...(snapshotTimedTeamListing ? { webstore_product_id: l.wp.id || null, decoration_snapshot: JSON.parse(JSON.stringify({ version: 1, decorations: Array.isArray(l.wp.decorations) ? l.wp.decorations : [], takes_name: l.wp.takes_name === true, takes_number: l.wp.takes_number === true, transfer_codes: [...new Set([...(Array.isArray(l.wp.transfer_codes) ? l.wp.transfer_codes : []), l.wp.transfer_code].filter(Boolean))], size_skus: l.wp.size_skus && typeof l.wp.size_skus === 'object' ? l.wp.size_skus : {} })) } : {}) });
     }
   }
   return items;
@@ -1027,7 +1031,7 @@ async function placeOrder(sb, body) {
   // the actual player. It never drives decoration — that's the item's takes_name.
   const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
   // No order_id yet — the transaction (or legacy path) injects it.
-  const items = buildOrderItems(priced.lines, orderPlayer, undefined, isAtOnceStore(store));
+  const items = buildOrderItems(priced.lines, orderPlayer, undefined, isAtOnceStore(store), isRegularTimedTeamStore(store));
 
   // A number is one-per-player across the store. Within one checkout the same
   // number legitimately repeats across a single player's bundle components
@@ -1057,10 +1061,18 @@ async function placeOrder(sb, body) {
   // oversell race. Falls back to the legacy sequential writes until the migration
   // is applied (missing-function detection), so deploy order doesn't matter.
   let order = null;
-  const rpc = await sb.rpc('place_webstore_order', {
+  const rpcPayload = {
     p_order: clientRef ? { ...orderRow, client_ref: clientRef } : orderRow,
     p_items: items, p_claims: claims, p_holds: stock.holds, p_hold_minutes: 30,
-  });
+  };
+  let rpc = await sb.rpc('place_webstore_order', rpcPayload);
+  // Netlify can publish before the additive timed-team snapshot migration reaches
+  // Supabase. The dynamic RPC INSERT names every JSON key, so retry once without
+  // the new nullable fields rather than blocking all team checkouts during rollout.
+  if (rpc.error && /(?:webstore_product_id|decoration_snapshot)/i.test(rpc.error.message || '')
+      && (rpc.error.code === '42703' || /column .* does not exist/i.test(rpc.error.message || ''))) {
+    rpc = await sb.rpc('place_webstore_order', { ...rpcPayload, p_items: withoutTimedTeamSnapshotFields(items) });
+  }
   if (!rpc.error) {
     order = rpc.data && rpc.data.order;
     if (!order) return bad(502, 'Could not create the order.');
@@ -1100,7 +1112,13 @@ async function placeOrder(sb, body) {
     if (ins.error) return bad(502, 'Could not create the order: ' + ins.error.message);
     order = ins.data;
 
-    const { error: itemErr } = await sb.from('webstore_order_items').insert(items.map((r) => ({ ...r, order_id: order.id })));
+    const itemRows = items.map((r) => ({ ...r, order_id: order.id }));
+    let itemResult = await sb.from('webstore_order_items').insert(itemRows);
+    if (itemResult.error && /(?:webstore_product_id|decoration_snapshot)/i.test(itemResult.error.message || '')
+        && (itemResult.error.code === '42703' || /column .* does not exist|schema cache/i.test(itemResult.error.message || ''))) {
+      itemResult = await sb.from('webstore_order_items').insert(withoutTimedTeamSnapshotFields(itemRows));
+    }
+    const itemErr = itemResult.error;
     if (itemErr) { await rollbackOrder(sb, order.id); return bad(502, 'Could not save your order items: ' + itemErr.message); }
 
     for (const c of claims) {
@@ -1580,6 +1598,7 @@ module.exports.couponDiscount = couponDiscount;
 module.exports.escapeIlikeLiteral = escapeIlikeLiteral;
 module.exports.loadCoupon = loadCoupon;
 module.exports.buildOrderItems = buildOrderItems;
+module.exports.isRegularTimedTeamStore = isRegularTimedTeamStore;
 module.exports.productionRecipe = productionRecipe;
 module.exports.personalizationNameError = personalizationNameError;
 module.exports.storeOrderWindowError = storeOrderWindowError;

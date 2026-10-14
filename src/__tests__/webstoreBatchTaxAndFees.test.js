@@ -119,6 +119,7 @@ describe('finalize_webstore_batch bills checkout money and writes it onto the SO
 describe('client side of the batch', () => {
   const app = read('src/App.js');
   const webstores = read('src/Webstores.js');
+  const timedTeamBatch = read('src/lib/timedTeamBatch.js');
   const commissions = read('src/CommissionsPage.js');
 
   test('the SO opened after a batch carries the server-derived money', () => {
@@ -130,7 +131,7 @@ describe('client side of the batch', () => {
 
   test('SO lines are split per collected unit price so qty × rate is exact', () => {
     expect(webstores).toContain("const unitCollected = r2(collectedForLine(i) / q);");
-    expect(webstores).toContain("const key = baseKey + '§$' + unitCollected.toFixed(2);");
+    expect(timedTeamBatch).toContain('const key = `${baseKey}§$${unitCollected.toFixed(2)}`;');
     // …but every price-split line of one garment keeps the full size menu.
     expect(webstores).toContain("available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))]");
   });
