@@ -174,6 +174,11 @@ const _safeQuery=(table,opts)=>{
     // later fails RLS and turns into an outbox conflict card (the 2026-07-28 storm). Probe → prompt re-login.
     if(c0==='denied'){_probeDeniedSession(table);console.warn('[DB] '+table+' not readable by current role (permission denied) — treating as empty');return{data:[],error:null,status:200};}
     if(c0==='error'){
+      // An expired or revoked login (the nightly session revoke, a tab left open overnight) fails EVERY
+      // table with 401. Treated as a timeout alone, the tab showed "load did not complete — will retry"
+      // and retried forever with a token that can never work. Verify the session: a dead one goes to
+      // the login screen (same path as the denied-read probe); a live one leaves this a plain failure.
+      if(first.status===401||_isAuthError(first.error))_probeDeniedSession(table);
       // Partial/incomplete load: a page failed. Treat it exactly like a timeout — mark the table
       // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
       // flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.

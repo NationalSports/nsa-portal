@@ -537,6 +537,9 @@ export default function InvoicesPage(){
               onClick={openCreditMemo}>Credit Memo</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
+                // An invoice without stored lines builds them from its order. If that order's items missed
+                // the last load the lines come out empty, and saving would drop the total (SO-1518 follow-up).
+                if(!storedLineItems.length&&so?._itemsHydrated===false){nf(so.id+" hasn't finished loading, so this invoice's lines can't be shown. Reload the page, then edit.",'error');return}
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
                 const _parent=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;
                 const _alts=(_parent?.alt_billing_addresses||[]).filter(a=>a.label||a.street);

@@ -5,7 +5,7 @@ import { decoPoCost } from './lib/decoPoCost';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
-import { batchEntryLinkState, orphanedBatchEntries, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
+import { batchEntryLinkState, orphanedBatchEntries, unloadedBatchOrders, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
 import { planOrderSave } from './lib/artJobsSaveRouting';
 import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
@@ -5294,6 +5294,44 @@ export default function App(){
     // without a version bump, so the order's own _version can't tell the editor about them.
     if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||childVersionSig(fresh)!==childVersionSig(eSO)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
   }},[sos]);
+  // Open-time item hydration (SO-1518, 2026-10-14). When so_items/estimate_items time out at boot the
+  // loader hands every document an EMPTY item list flagged _itemsHydrated:false. The editor then opened
+  // the order showing "0 items" — the save guards refused to wipe the DB, but the rep saw their order
+  // emptied and a stuck "saving needs review" banner. Before mounting the editor on such a document,
+  // read this one document in full and graft its item lines in. Only child collections are taken; the
+  // header (and its _version) stays what the list loaded. A failed read falls back to the old behavior
+  // (editor opens, save guards still protect the DB) and is tried once per document per session.
+  const _hydrateFailedRef=React.useRef(new Set()),_hydratingRef=React.useRef(new Set());
+  const [,setHydratingDocId]=useState(null);// re-render trigger only
+  const _docNeedsItems=(doc,table)=>!!doc&&!doc._draftRecovery&&!_hydrateFailedRef.current.has(table+':'+doc.id)&&(table==='sales_orders'?[doc._itemsHydrated,doc._decosHydrated,doc._posHydrated,doc._picksHydrated]:[doc._itemsHydrated,doc._decosHydrated]).includes(false);
+  // Gate only the FIRST mount of an editor for a document. Once it is open it holds the rep's working
+  // copy; a later poll that marks the list row unhydrated again must never swap it out for the loading
+  // screen (that would unmount the editor and drop unsaved edits).
+  const _editorOpenRef=React.useRef({});
+  const _awaitingItems=(doc,table)=>{if(_editorOpenRef.current[table]===doc.id)return false;if(supabase&&_docNeedsItems(doc,table))return true;_editorOpenRef.current[table]=doc.id;return false};
+  const _hydrateOpenDoc=(doc,table)=>{
+    if(!supabase||!_docNeedsItems(doc,table)||_editorOpenRef.current[table]===doc.id||_hydratingRef.current.has(table+':'+doc.id))return;
+    const id=doc.id,isSO=table==='sales_orders';
+    _hydratingRef.current.add(table+':'+id);
+    setHydratingDocId(id);
+    _loadRecoveryDocument(table,id).then(({row})=>{
+      const graft=prev=>{if(!prev||prev.id!==id)return prev;const next={...prev,items:row.items,_itemsHydrated:true,_decosHydrated:true};
+        if(isSO)Object.assign(next,{_posHydrated:true,_picksHydrated:true,_hydratedPoIds:[...new Set([...(prev._hydratedPoIds||[]),...row._hydratedPoIds])],_hydratedPickIds:[...new Set([...(prev._hydratedPickIds||[]),...row._hydratedPickIds])]});
+        return next};
+      // Stage the diff-save baseline first so adopting the real items is not mistaken for an edit.
+      const key=isSO?'sos':'ests';
+      const base=(_dbSnap.current?.[key]||[]).find(x=>x.id===id);if(base)stageDocumentBaseline(_dbSnap,key,graft(base));
+      if(isSO){setSOs(prev=>prev.map(graft));setESO(graft)}else{setEsts(prev=>prev.map(graft));setEEst(graft)}
+    }).catch(e=>{
+      console.error('[Open hydrate]',table,id,e);
+      _hydrateFailedRef.current.add(table+':'+id);
+      nf("Couldn't load "+id+"'s item lines. Don't save it — reload the page to see the items.",'error');
+    }).finally(()=>{_hydratingRef.current.delete(table+':'+id);setHydratingDocId(cur=>cur===id?null:cur)});
+  };
+  React.useEffect(()=>{if(!eSO)_editorOpenRef.current['sales_orders']=null},[eSO]);
+  React.useEffect(()=>{_hydrateOpenDoc(eSO,'sales_orders')},[eSO?.id,eSO?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(()=>{if(!eEst)_editorOpenRef.current['estimates']=null},[eEst]);
+  React.useEffect(()=>{_hydrateOpenDoc(eEst,'estimates')},[eEst?.id,eEst?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
     const fresh=ests.find(e=>e.id===eEst.id);if(!fresh)return;
@@ -11738,6 +11776,9 @@ export default function App(){
     await supabase.rpc('finish_all_school_regular_batch',{p_token:claim.token,p_po_number:claim.poNumber,p_state:'unknown',p_api_order_id:null,p_vendor_lines:[]});
     nf('The vendor result is uncertain. All School quantities are held for reconciliation; do not re-order this batch. '+(error?.message||''),'error');
   };
+  // Refuse to order/clear a batch while any of its orders loaded without item lines: the order save that
+  // records the PO would be refused, but the vendor order and queue change would still go through.
+  const _blockUnloadedBatch=entries=>{const ids=unloadedBatchOrders(entries,sos);if(!ids.length)return false;nf('Not done — '+ids.join(', ')+(ids.length===1?" hasn't":" haven't")+' finished loading. Reload the page, then try again.','error');return true};
   const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
@@ -11921,6 +11962,7 @@ export default function App(){
   // ESTIMATES LIST
   function rEst(){
     if(convertingEstimateId&&!eEst)return<div role="status" style={{padding:24}}>Creating sales order…</div>;
+    if(eEst&&_awaitingItems(eEst,'estimates'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eEst.id} item lines…</div>;
     if(eEst)return<>
       {convertingEstimateId&&<div className="modal-overlay" role="status" style={{zIndex:10000}}><div className="modal" style={{padding:24}}>Creating sales order…</div></div>}
       <div inert={convertingEstimateId?'':undefined}><ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor onArtRequestResult={adoptStandaloneArtResult} recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{if(conversionInFlight.current===e.id)return false;const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e)} onEmergencySave={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
@@ -11981,6 +12023,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
+    if(eSO&&_awaitingItems(eSO,'sales_orders'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eSO.id} item lines…</div>;
     if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -15492,7 +15535,7 @@ export default function App(){
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
-        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
@@ -15531,7 +15574,7 @@ export default function App(){
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
-        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -15613,7 +15656,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(_blockUnloadedBatch(vg.pos))return;if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
                   setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>

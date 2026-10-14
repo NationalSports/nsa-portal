@@ -48,6 +48,17 @@ export function orphanedBatchEntries(entries, sos, opts) {
   return (entries || []).filter(bp => batchEntryLinkState(bp, byId.get(bp.so_id), opts) === 'missing_line');
 }
 
+// Orders in a batch whose item/PO lines missed the last load (SO-1518, 2026-10-14). Ordering or
+// clearing then cannot write the PO onto the order (its save is refused as a whole), yet the vendor
+// order and queue change still happen. Callers refuse and ask for a reload instead.
+export function unloadedBatchOrders(entries, sos) {
+  const byId = new Map((sos || []).map(s => [s.id, s]));
+  return [...new Set((entries || []).map(bp => bp?.so_id).filter(id => {
+    const so = byId.get(id);
+    return so && (so._itemsHydrated === false || so._posHydrated === false);
+  }))];
+}
+
 // Which order line a batch item belongs to when no queued PO line matched. By line_id when
 // the entry has one (never fall back to the index — a missing id means the line is gone);
 // legacy entries without ids still use item_idx. -1 = no safe target.

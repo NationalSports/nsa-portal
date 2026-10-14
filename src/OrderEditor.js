@@ -5275,8 +5275,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           </div>}
           {/* Order fields — DESIGN 2A grid: row 1 Memo · School PO# · Order Type; row 2 Ship To · Shipping · Expected */}
           <div style={{display:'flex',gap:14,marginTop:14,alignItems:'end',flexWrap:'wrap'}}>
-            <div style={{flex:1.4,minWidth:200}}><label className="form-label">Memo</label>{isSO&&onEditMemo&&o._version?<><div ref={memoEditorRef}/>{!memoEditing&&<button type="button" className="form-input" onClick={()=>onEditMemo(o)} style={{fontSize:14,textAlign:'left',cursor:'pointer'}} aria-label="Edit memo">{o.memo||'Add memo'} <span style={{float:'right'}}>✎</span></button>}</>:<input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/>}</div>
-            {isSO&&<div style={{flex:1,minWidth:130}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
+            <div style={{flex:1.4,minWidth:200}}><label className="form-label">Memo</label>{isSO&&onEditMemo&&o._version?<><div ref={memoEditorRef}/>{!memoEditing&&<button type="button" className="form-input" onClick={()=>onEditMemo(o)} style={{fontSize:14,textAlign:'left',cursor:'pointer'}} aria-label="Edit memo">{o.memo||'Add memo'} <span style={{float:'right'}}>✎</span></button>}</>:<input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>{if(e.target.value!==(o.memo||''))sv('memo',e.target.value)}} style={{fontSize:14}}/>}</div>
+            {isSO&&<div style={{flex:1,minWidth:130}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>{if(e.target.value!==(o.po_number||''))sv('po_number',e.target.value)}} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
             {isE&&<div style={{width:90}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
             {isSO&&<div style={{flex:1,minWidth:120}}>
               <label className="form-label">Order Type</label>
@@ -5319,7 +5319,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             </div>}
             {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
               <label className="form-label">Alert Days</label>
-              <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
+              <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>{const v=parseInt(e.target.value)||100;if(v!==(o.booking_alert_days||100))sv('booking_alert_days',v)}}/>
               <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
             </div>}
           </div>

@@ -86,3 +86,15 @@ describe('dbRowsLinkEntry', () => {
     expect(dbRowsLinkEntry([], orphan.id)).toBe(false);
   });
 });
+
+describe('unloadedBatchOrders (SO-1518 follow-up)', () => {
+  const {unloadedBatchOrders} = require('../lib/batchQueueIntegrity');
+  test('names each order whose items or PO lines missed the load, once', () => {
+    const sos = [{id: 'SO-1', _itemsHydrated: false}, {id: 'SO-2', _itemsHydrated: true, _posHydrated: false}, {id: 'SO-3', _itemsHydrated: true, _posHydrated: true}, {id: 'SO-4'}];
+    const entries = [{so_id: 'SO-1'}, {so_id: 'SO-1'}, {so_id: 'SO-2'}, {so_id: 'SO-3'}, {so_id: 'SO-4'}, {so_id: 'SO-missing'}];
+    expect(unloadedBatchOrders(entries, sos)).toEqual(['SO-1', 'SO-2']);
+  });
+  test('a fully loaded batch is not blocked', () => {
+    expect(unloadedBatchOrders([{so_id: 'SO-3'}], [{id: 'SO-3', _itemsHydrated: true, _posHydrated: true}])).toEqual([]);
+  });
+});

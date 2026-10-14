@@ -41,6 +41,17 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal,
     <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. Download a backup first if you are unsure.</p>
     <button onClick={refresh}>Refresh drafts</button>{' '}
     {!!visibleDrafts.length&&<button onClick={download}>Download recovery copy</button>}
+    {visibleDrafts.length>1&&<>{' '}<button disabled={busy} onClick={async()=>{
+      // One step for a stack of old copies: save them all to a file first, then clear them.
+      if(!window.confirm('Download all '+visibleDrafts.length+' recovery copies to a file, then clear them from this browser? Saved orders are not changed.'))return;
+      setBusy(true);
+      try{
+        download();
+        const results=await Promise.all(visibleDrafts.map(d=>journal.acknowledge({key:d.key,owner:d.owner,revision:d.revision}).catch(()=>false)));
+        await refresh();
+        if(results.some(r=>!r)&&ownerRef.current===owner)setError('Some recovery copies changed or could not be cleared. They are still listed.');
+      }finally{setBusy(false);}
+    }}>Download &amp; clear all</button></>}
     {visibleDrafts.map(d=><div key={d.key} style={{borderTop:'1px solid #fed7aa',marginTop:8,paddingTop:8}}>
       <strong>{d.id}</strong> — {d.payload.memo||d.payload.name||'Document draft'} · {new Date(d.ts).toLocaleString()}
       {Array.isArray(d.payload.items)&&<span> · {d.payload.items.length} item lines</span>}
