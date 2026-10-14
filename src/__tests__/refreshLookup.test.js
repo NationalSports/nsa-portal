@@ -11,9 +11,12 @@ test('index retains strict ID matching, first duplicate, object identity and ord
 });
 function refreshHarness(protectedIds=new Set()){
   const snap={current:{sos:[]}};
-  const start=source.indexOf('        const _newerLocalWins=');
+  // _newerLocalWins is shared with the per-order refresh, so it sits above reloadAll; _mergeProtected stays inside.
+  const nlwStart=source.indexOf('      const _newerLocalWins=');
+  const nlw=source.slice(nlwStart,source.indexOf('\n',nlwStart)+1);
+  const start=source.indexOf('        const _mergeProtected=');
   const end=source.indexOf('        // Realtime reload is a blunt',start);
-  const merge=Function('indexFirstById','_dbSnap','_hasProtected','_shouldProtect','_jsonEq',source.slice(start,end)+'return _mergeProtected;')(
+  const merge=Function('indexFirstById','_dbSnap','_hasProtected','_shouldProtect','_jsonEq',nlw+source.slice(start,end)+'return _mergeProtected;')(
     indexFirstById,snap,protectedIds.size>0,id=>protectedIds.has(id),(a,b)=>JSON.stringify(a)===JSON.stringify(b));
   return {snap,merge};
 }

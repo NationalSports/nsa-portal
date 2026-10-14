@@ -565,6 +565,7 @@ import {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadSalesOrdersByIds,
   _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
@@ -3284,8 +3285,64 @@ export default function App(){
       // table) forces a full reload. Pending groups are consumed only once a load actually
       // starts, so deferred reloads (save in flight) keep accumulating events.
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
-      const reloadAll=async(pendingGroups)=>{
+      // Merge rules shared by the full group reload and the per-order refresh below — one copy.
+      // Protected ids (a save failed or in flight, or an order just pulled) keep the local copy.
+      // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): a read that landed
+      // BEFORE this client's save would clobber just-saved scalars. _version is DB-trigger-owned and read
+      // back into the local copy on every confirmed save, so a strictly-newer local _version means the
+      // incoming row is stale — keep the local copy wholesale. No-ops for entities without _version.
+      const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+      const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
+      // A stale ~10s-after-save reload (triggered by the art save's own updated_at bump) must not drop a
+      // just-uploaded file: layer the art_files superset for records this client saved recently.
+      const _keepRecentArt=(e,lp)=>{if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e};
+      // Replace rows by id in place; rows not present yet are appended (the full load is id-ordered).
+      const _upsertById=(arr,byId)=>{const seen=new Set();const out=(arr||[]).map(x=>{if(x&&byId.has(x.id)){seen.add(x.id);return byId.get(x.id)}return x});const added=[...byId.keys()].filter(id=>!seen.has(id)).map(id=>byId.get(id));return added.length?[...out,...added]:out};
+      // Per-order live refresh (2026-10-14). A sales-order change used to make every open tab re-download
+      // all orders with all their lines, POs, picks, jobs and art; on slow connections that crowded out
+      // the rep's own saves. Fetch only the changed orders (same assembly as the full load) and merge them
+      // with the same rules as the full reload. Returns false when the full reload must run instead: too
+      // many orders at once, a failed read, or an order that is gone (deletion keeps today's semantics).
+      // A failed read (flaky connection) is retried once as another light refresh (re-queued keys run on
+      // the queue's next pass) rather than going straight to the heavy full reload on the same bad
+      // connection; a second failure for the same keys falls back to the full reload exactly as before.
+      const _SO_DELTA_MAX=25;
+      const _deltaRetried=new Set();
+      const reloadSalesOrderDelta=async(soIds,itemIds)=>{
+        if(soIds.length>_SO_DELTA_MAX)return false;
+        const res=await _dbLoadSalesOrdersByIds(soIds,itemIds,{maxOrders:_SO_DELTA_MAX});
+        if(cancelled)return true;
+        const keys=[...soIds.map(id=>'so:'+id),...itemIds.map(id=>'soitem:'+id)];
+        if(!res){
+          const fresh=keys.filter(k=>!_deltaRetried.has(k));
+          if(fresh.length===keys.length){keys.forEach(k=>_deltaRetried.add(k));debouncedReloadGroups(keys);return true}
+          keys.forEach(k=>_deltaRetried.delete(k));return false;
+        }
+        keys.forEach(k=>_deltaRetried.delete(k));
+        if(res.tooMany||res.missing.length)return false;
+        if(!res.sales_orders.length)return true;
+        setSOs(prev=>{
+          const localById=indexFirstById(prev);
+          const merged=new Map();
+          res.sales_orders.forEach(e=>{const lp=localById.get(e.id);const base=_shouldProtect(e.id)?(lp||e):_newerLocalWins(e,localById);merged.set(e.id,_keepRecentArt(base,lp))});
+          // Same rule as the full reload: these rows' diff baseline equals what goes into state.
+          _dbSnap.current={..._dbSnap.current,sos:_upsertById(_dbSnap.current.sos,merged)};
+          const next=_upsertById(prev,merged);
+          return _jsonEq(prev,next)?prev:next;
+        });
+        return true;
+      };
+      const reloadAll=async(pendingAll)=>{
         if(cancelled)return;
+        // 'so:<id>' / 'soitem:<so_items.id>' keys come from sales-order and pick-line events; everything
+        // else is an entity group. A queued full sales_orders (or __all__) reload already covers the ids.
+        const soIds=[],itemIds=[],pendingGroups=new Set();
+        pendingAll.forEach(g=>{if(g.startsWith('so:'))soIds.push(g.slice(3));else if(g.startsWith('soitem:'))itemIds.push(g.slice(7));else pendingGroups.add(g)});
+        if((soIds.length||itemIds.length)&&!pendingGroups.has('__all__')&&!pendingGroups.has('sales_orders')){
+          if(!(await reloadSalesOrderDelta(soIds,itemIds)))pendingGroups.add('sales_orders');
+          if(cancelled)return;
+        }
+        if(!pendingGroups.size)return;
         const groups=pendingGroups.has('__all__')?null:pendingGroups;
         const _has=g=>!groups||groups.has(g);
         const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
@@ -3299,14 +3356,8 @@ export default function App(){
         // (_parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.)
         if(d._parentTimedOut){console.warn('[DB] Realtime reload skipped — a parent-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
-        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
-        // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): the realtime reload is
-        // a wholesale replace, so a read that landed BEFORE this client's save would clobber just-saved scalars.
-        // _version is DB-trigger-owned and read back into the local copy in place on every confirmed save, so a
-        // strictly-newer local _version means the incoming row is stale — keep the local copy wholesale.
-        // No-ops for entities without _version (messages, products).
-        const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
+        // Scalar-clobber guard: _newerLocalWins (above, shared with the per-order refresh).
         const _mergeProtected=(dbArr,snapKey)=>{
           const merge=localArr=>{
             const localById=indexFirstById(localArr);
@@ -3318,7 +3369,7 @@ export default function App(){
         // layer the art_files superset against current state so a stale ~10s-after-save reload (triggered by the
         // art save's own updated_at bump) can't drop a just-uploaded file. Snap is refreshed inside apply
         // (prev-dependent), mirroring the poll-merge path so the _diffSave baseline matches what we put in state.
-        const _mergeProtectedArt=(dbArr,snapKey)=>{const base=_mergeProtected(dbArr,snapKey);return{snap:base.snap,apply:prev=>{const localById=indexFirstById(prev);const merged0=base.apply(prev);const merged=(merged0===prev)?prev:merged0.map(e=>{const lp=localById.get(e.id);if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e});_dbSnap.current[snapKey]=merged;return _jsonEq(prev,merged)?prev:merged}};};
+        const _mergeProtectedArt=(dbArr,snapKey)=>{const base=_mergeProtected(dbArr,snapKey);return{snap:base.snap,apply:prev=>{const localById=indexFirstById(prev);const merged0=base.apply(prev);const merged=(merged0===prev)?prev:merged0.map(e=>_keepRecentArt(e,localById.get(e.id)));_dbSnap.current[snapKey]=merged;return _jsonEq(prev,merged)?prev:merged}};};
         // Only build merges for groups that were actually loaded — skipped groups keep prior snap/state
         const estMerge=_has('estimates')?_mergeProtectedArt(d.estimates,'ests'):null;
         const soMerge=_has('sales_orders')?_mergeProtectedArt(d.sales_orders,'sos'):null;
@@ -3382,7 +3433,21 @@ export default function App(){
       let _rtLastDropAt=0;// last time any channel left SUBSCRIBED — events in that gap may be lost
       const _syncRtHealth=()=>{_realtimeHealthy=_rtSubbed.size===_RT_TABLES.length};
       _RT_TABLES.forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},payload=>{
+          // Sales-order and pick-line changes refresh just the affected order (see reloadSalesOrderDelta).
+          // A deleted order, or an event without an id, keeps the full group reload.
+          const isDelete=payload?.eventType==='DELETE',row=isDelete?null:payload?.new;
+          if(table==='sales_orders'&&row?.id){debouncedReloadGroups(['so:'+row.id]);return}
+          if(table==='so_item_pick_lines'){
+            if(row?.so_item_id!=null){debouncedReloadGroups(['soitem:'+row.so_item_id]);return}
+            // A pick-line DELETE carries only its own id (default replica identity). The only writer that
+            // deletes pick lines is save_sales_order_atomic, which rewrites the order row in the same
+            // transaction, so that order's own sales_orders event already refreshes it — a full reload of
+            // every order here would undo the point of the per-order refresh on every save.
+            if(isDelete)return;
+          }
+          debouncedReload(table);
+        }).subscribe((status,err)=>{
           if(status==='SUBSCRIBED'){_rtSubbed.add(table);_syncRtHealth();return}
           // Any non-subscribed status means this table is no longer receiving live pushes — drop it from the
           // healthy set so _getPollInterval tightens back to the 120s backstop until the channel recovers.

@@ -425,9 +425,9 @@ const _dbLoad = async (opts={}) => {
   // `source(table, queryOpts)` → {data} supplies each table's rows instead of querying, already in
   // the order _safeQuery would fetch them (the coach portal: netlify/functions/coach-portal-data.js
   // returns one team's rows, and this assembles them exactly as it assembles the full load).
-  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false, source=null} = opts;
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false, source=null, assembleOnly=false} = opts;
   if (!supabase && !source) return null;
-  if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
+  if (_dbSavingCount>0&&!assembleOnly) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
     // This load's OWN untrusted tables. Hydration flags, _everHydratedItems and the timed-out guards
     // below must describe THIS load's results. They used to read the module-wide sets, which every
@@ -440,7 +440,8 @@ const _dbLoad = async (opts={}) => {
     const recoveryOwner=source?null:currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
     const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
-    _lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();
+    // A supplied-rows load never touches the network, so it must not wipe the last real load's record.
+    if(!source){_lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();}
     // Load tables through a bounded pool (at most `size` tables in flight) so a tab can't flood the
     // Supabase connection pool. It used to run lock-step groups of 5 — every group waited for its
     // slowest table before the next group could start — which made a 2026-10-07 boot take 18.7s
@@ -775,6 +776,60 @@ const _dbLoad = async (opts={}) => {
     }
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
+};
+// Per-order refresh for live updates. When another session saves an order, other tabs used to
+// re-download every order with all its lines, POs, picks, jobs and art (8 full tables) — on slow
+// connections that crowded out the rep's own saves (2026-10-14, airplane wifi). This reads only the
+// named orders' rows and assembles them through _dbLoad's own `source` path, so the result is the
+// exact shape, dedup, carry-over filtering and hydration flags a full load produces. Returns null on
+// any read failure (the caller retries once, then falls back to the full reload). `itemIds` (so_items.id from a pick-line
+// event) resolve to their order; ids that no longer exist are simply skipped. `missing` lists
+// requested order ids with no row, so the caller can let the full reload handle a deletion.
+const _DELTA_CHUNK=100;
+const _readRowsIn=async(table,col,values)=>{
+  const out=[];
+  for(let i=0;i<values.length;i+=_DELTA_CHUNK){
+    const chunk=values.slice(i,i+_DELTA_CHUNK);
+    for(let offset=0;;offset+=1000){
+      // Deterministic paging: composite-key tables need their parent column too (see _PAGE_TIEBREAK_PARENT).
+      const parent=_PAGE_TIEBREAK_PARENT[table];
+      const{data,error}=await _retryNet(()=>{let q=supabase.from(table).select('*').in(col,chunk);if(parent)q=q.order(parent);return q.order('id').range(offset,offset+999)});
+      if(error||!Array.isArray(data))throw new Error(table+': '+(error?.message||'no rows returned'));
+      out.push(...data);
+      if(data.length<1000)break;
+    }
+  }
+  return out;
+};
+const _dbLoadSalesOrdersByIds=async(soIds=[],itemIds=[],{maxOrders=Infinity}={})=>{
+  if(!supabase)return null;
+  try{
+    const ids=new Set(soIds);
+    if(itemIds.length)(await _readRowsIn('so_items','id',itemIds)).forEach(r=>{if(r.so_id)ids.add(r.so_id)});
+    const wanted=[...ids];
+    if(!wanted.length)return{sales_orders:[],missing:[]};
+    // Counted after pick-line events collapse to their order: one save re-inserts every pick line.
+    if(wanted.length>maxOrders)return{tooMany:true,sales_orders:[],missing:[]};
+    const parents=await _readRowsIn('sales_orders','id',wanted);
+    const found=parents.map(r=>r.id);
+    const missing=soIds.filter(id=>!found.includes(id));
+    if(!found.length)return{sales_orders:[],missing};
+    const[art,firm,items,jobs]=await Promise.all([
+      _readRowsIn('so_art_files','so_id',found),_readRowsIn('so_firm_dates','so_id',found),
+      _readRowsIn('so_items','so_id',found),_readRowsIn('so_jobs','so_id',found)]);
+    const childOf=items.map(r=>r.id);
+    const[decos,picks,pos]=childOf.length?await Promise.all([
+      _readRowsIn('so_item_decorations','so_item_id',childOf),_readRowsIn('so_item_pick_lines','so_item_id',childOf),
+      _readRowsIn('so_item_po_lines','so_item_id',childOf)]):[[],[],[]];
+    const rows={sales_orders:parents,so_art_files:art,so_firm_dates:firm,so_items:items,so_jobs:jobs,
+      so_item_decorations:decos,so_item_pick_lines:picks,so_item_po_lines:pos};
+    // assembleOnly: these rows are already read, so a save that started meanwhile must not make _dbLoad
+    // drop them (its save-in-progress skip guards network loads). The caller's merge keeps the local
+    // copy of any order whose save is in flight.
+    const d=await _dbLoad({only:new Set(['sales_orders']),source:table=>({data:rows[table]||[]}),assembleOnly:true});
+    if(!d)return null;
+    return{sales_orders:d.sales_orders,missing};
+  }catch(e){console.warn('[DB] Per-order refresh read failed:',e?.message||e);return null}
 };
 const _dbSeed = async (d) => {
   if (!supabase) return;
@@ -4374,6 +4429,7 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadSalesOrdersByIds,
   _staleWriteAlreadySaved,
   _resolveStaleWrite,
   _rememberSaveAttempt,
