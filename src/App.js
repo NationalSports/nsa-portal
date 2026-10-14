@@ -4789,6 +4789,8 @@ export default function App(){
   const[historySummary,setHistorySummary]=useState(null);
   const[historyCheckError,setHistoryCheckError]=useState('');
   const _historySummaryLoaded=useRef(false);
+  const _historySummaryFails=useRef(0);
+  const _historySummaryNextTry=useRef(0);
   const _refreshHistorySummary=async()=>{
     try{const rows=await _historyStore.summary();setHistorySummary(rows);_historySummaryLoaded.current=true;setHistoryCheckError('');}
     catch(e){setHistoryCheckError('History checks unavailable: '+e.message);throw e;}
@@ -6525,7 +6527,14 @@ export default function App(){
     const retry=async()=>{
       try{await _historyStore.flush();if(cancelled)return;setHistoryError('');}
       catch(e){if(!cancelled)setHistoryError(e.message);return;}
-      if(!_historySummaryLoaded.current)await _refreshHistorySummary().catch(()=>{});
+      // A failed summary backs off (1, 2, 4… up to 30 min) instead of re-running a whole-table query
+      // every 30 s: on 2026-10-14 every open staff tab did that and it became the database's top load.
+      if(!_historySummaryLoaded.current&&Date.now()>=_historySummaryNextTry.current){
+        await _refreshHistorySummary().then(()=>{_historySummaryFails.current=0;},()=>{
+          _historySummaryFails.current++;
+          _historySummaryNextTry.current=Date.now()+Math.min(60000*2**(_historySummaryFails.current-1),1800000);
+        });
+      }
     };
     retry();
     const timer=setInterval(retry,30000);
