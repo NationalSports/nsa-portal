@@ -56,7 +56,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeQtyIn, sizeKeyIn, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, artLiveDsts, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeQtyIn, sizeKeyIn, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, linkMovedLineInvoiceKeys, scopeSoItemsToInvoice, splitInvoiceLine, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
@@ -103,7 +103,8 @@ import { stampSplitRuns } from './lib/splitJobPricing';
 import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from './lib/splitJobItems';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
-import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
+import DstPreview from './DstPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -3845,7 +3846,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   _embInvoicedRef.current=(allInvoices||[]).some(inv=>inv&&inv.so_id===o.id);
   const _readStitchesFromPdfFile=async(file)=>{
     if(!extractPdfText||!file)return null;
-    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);return stitches||dimensions?{stitches,dimensions}:null;}catch(e){return null;}
+    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);return stitches||dimensions||threads?{stitches,dimensions,threads}:null;}catch(e){return null;}
   };
   const _artPdfEntries=art=>[...(art?.prod_files||[]),...(art?.files||[])]
     .filter(f=>f&&!isStaleFile(f)&&_isPdfUrl(typeof f==='string'?f:(f.url||''),f))
@@ -3857,11 +3858,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     if(!art||art.archived||art.deco_type!=='embroidery')return false;
     const activeUrls=_artPdfEntries(art).map(f=>f.url);
     if(sourceUrls.some(url=>!activeUrls.includes(url)))return false;
-    const nextArt=fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current});
+    // Thread colors from the proof fill only empty color-way thread lists — never a rep's own entries.
+    const nextArt=fillThreadColorWays(fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current}),specs.threads);
     const changed=[];
     if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
     if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
-    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size or Stitches.');return true;}
+    if(nextArt.color_ways!==art.color_ways)changed.push(specs.threads.length+' thread color'+(specs.threads.length===1?'':'s'));
+    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size, Stitches or the thread colors.');return true;}
     const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
     if(!saved)return false;
     nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
@@ -3880,7 +3883,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const dimensions=[...new Map(reads.filter(r=>r.dimensions).map(r=>[r.dimensions.artSize,r.dimensions])).values()];
     const stitches=[...new Set(reads.map(r=>r.stitches).filter(Boolean))];
     if(dimensions.length>1||stitches.length>1){if(verb==='Read')nf('Attached proofs have conflicting dimensions or stitches. Enter the correct values manually, or retire the older proof.','error');return {conflict:true};}
-    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null};
+    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null,threads:(reads.find(r=>r.threads)||{}).threads||null};
     await _applyArtStitches(folderId,specs,reads.map(r=>r.source.name).join(', '),verb,sourceOrderId,entries.map(p=>p.url));
     return specs;
   };
@@ -3895,17 +3898,17 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const specs=await _readStitchesFromAttached(folderId,'Read');
       if(specs)return;
       _stitchPdfMissed.current.add(key);
-      nf('No labeled dimensions or stitch count found — click again to choose another PDF, or enter them manually.','error');return;
+      nf('No labeled dimensions, stitch count or thread colors found — click again to choose another PDF, or enter them manually.','error');return;
     }
     const sourceOrderId=oRef.current.id;
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
     inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading dimensions and stitches…');const specs=await _readStitchesFromPdfFile(f);
-      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions or stitch count found — enter them manually.','error');};inp.click();
+      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions, stitch count or thread colors found — enter them manually.','error');};inp.click();
   };
   const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
     if(!extractPdfText)return;
     const art=(arts||[]).find(a=>a.id===folderId);
-    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)))return;
+    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)&&!artNeedsThreadColors(art)))return;
     if(!(uploadedFiles||[]).some(f=>f&&/\.pdf$/i.test(f.name||'')))return;
     // Resolve attached/current files rather than an obsolete upload after a folder change.
     await _readStitchesFromAttached(folderId,'Auto-read');
@@ -3913,7 +3916,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current)||artNeedsThreadColors(a))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
     if(!targets.length)return;let cancelled=false;
     (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
@@ -7304,12 +7307,15 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
                       ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
                       :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → 5k–10k default</span>})()}
-                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions and stitch count from the attached embroidery proof PDF">📄 Read from PDF</button>
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions, stitch count and thread colors from the attached embroidery proof PDF">📄 Read from PDF</button>
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
                   </div>
+                  {/* STITCH PREVIEW — the live DST drawn in each color way's threads */}
+                  {art.deco_type==='embroidery'&&(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+                    return<DstPreview dstUrl={dstUrl} colorWays={art.color_ways||[]} onEnlarge={setMockupLightbox} onSetPreview={async blob=>{const folderId=art.id;nf('Uploading preview...');try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_stitch_preview.png',{type:'image/png'}),'nsa-art-previews');await saveArtFilesNow((oRef.current.art_files||[]).map(fa=>fa.id===folderId?{...fa,preview_url:url}:fa),'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}}}/>})()}
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
