@@ -496,6 +496,13 @@ describe('priceCart', () => {
     const r = await checkout.priceCart(sbFit, store, [{ webstore_product_id: 'wp1', size: 'M', qty: 1 }]);
     expect(r.lines[0].variant_label).toBe("Women's");
   });
+
+  test('carries a team shopper logo choice onto the authoritative order line label', async () => {
+    const sbLogo = sb({ webstore_products: { data: [{ ...wpTee, school_design_label: 'Arched crest' }], error: null } });
+    const r = await checkout.priceCart(sbLogo, { ...store, org_type: 'team' }, [{ webstore_product_id: 'wp1', size: 'M', qty: 1 }]);
+    expect(r.lines[0].variant_label).toBe('Arched crest');
+    expect(checkout.buildOrderItems(r.lines, null)[0].variant_label).toBe('Arched crest');
+  });
 });
 
 describe('priceCart — name fees are NSA revenue, not fundraising', () => {
