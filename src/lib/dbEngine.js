@@ -1379,6 +1379,7 @@ const _dbSaveEstimateInner = async (est) => {
       // _dbSavePendingIds non-empty, which permanently blocked the build-version poller from reloading stale tabs.
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
@@ -1413,6 +1414,7 @@ const _dbSaveEstimateInner = async (est) => {
       // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
       if(_rpcRes.data&&_rpcRes.data.stale===true){
         console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
@@ -2587,6 +2589,7 @@ const _dbSaveSOInner = async (so) => {
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
         console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
+        if(await _staleWriteAlreadySaved('sales_orders',so))return true;
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
@@ -4263,6 +4266,24 @@ const _dbOwnVersions={};// id → last _version this client successfully wrote
 // ourselves. Entries not in this set keep the original time-boxed skip. Deliberately separate from
 // _dbOwnVersions so _rebaseOntoOwnWrite's existing behaviour is untouched.
 const _dbOwnVersionExact=new Set();
+// Lost save reply (flaky / airplane wifi, 2026-10-14): a save commits on the server but its reply
+// never arrives, so the client counts it as failed. The retry, or the next save built on it, then
+// carries the old base version and is rejected as stale: a conflict with ITSELF, shown to the rep as
+// "saving needs review" (SO-1518, SO-2793). Before raising that card, read the authoritative
+// document: when it already holds exactly this content, the save landed. Adopt the server version
+// and report success. Any read failure or difference keeps today's conflict card, so another user's
+// change is never adopted or overwritten.
+const _staleWriteAlreadySaved=async(table,doc)=>{
+  try{
+    const{row}=await loadRecoveryDocument(supabase,table,doc.id);
+    if(!savedDocumentMatchesDraft(doc,row))return false;
+    doc._version=row._version;delete doc._obBaseVersion;
+    _dbOwnVersions[doc.id]=row._version;_dbOwnVersionExact.add(doc.id);_dbRecentSaves[doc.id]=Date.now();
+    _dbSaveFailedIds.delete(doc.id);_clearSaveError(doc.id);_persistFailedIds();_dbStaleCooldown.delete(doc.id);
+    console.warn('[DB]',doc.id,'was rejected as stale, but the cloud already holds this exact content (lost save reply) — saved as v'+row._version);
+    return true;
+  }catch(e){console.warn('[DB] stale-write content check failed for',doc.id,'—',e?.message||e);return false}
+};
 const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
@@ -4326,6 +4347,7 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _staleWriteAlreadySaved,
   _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,
