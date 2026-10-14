@@ -62,6 +62,7 @@ import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
 import * as WEBSTORE_BRANDING from './lib/webstoreBranding';
+import * as WEBSTORE_BUILD_REQUESTS from './lib/webstoreBuildRequests';
 
 // The proxy already explains an OMG outage in words ("their report service did not
 // respond"); a bare status code tells staff nothing they can act on. Fall back to the
@@ -1628,6 +1629,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [showDefaults, setShowDefaults] = useState(false);
   const [soPrompt, setSoPrompt] = useState(null); // { orders[], shortagesFor(selIds), proceed(overrides, selIds, batchMeta) } for the Create-SO modal
   const [storeStats, setStoreStats] = useState({});
+  const storeLoadSequence = useRef(0);
   // Applying an item template outside the store-detail view (Templates page):
   const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
   const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
@@ -1683,8 +1685,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     w.document.write(flyerHtml(store, items)); w.document.close();
   }, [flash]);
 
-  const loadStores = useCallback(async () => {
-    setLoading(true); setErr(null); setNeedsMigration(false);
+  const loadStores = useCallback(async (options = {}) => {
+    const quiet = options?.quiet === true;
+    const sequence = ++storeLoadSequence.current;
+    if (!quiet) setLoading(true);
+    setErr(null); setNeedsMigration(false);
     // `webstores` is RLS authenticated-only (migration 00134_webstore_rls_lockdown):
     // a read that fires before the auth token is attached — or after it lapsed while an
     // idle tab's background refresh was throttled — runs as the anon role, because
@@ -1704,6 +1709,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch { authed = false; }
 
     const { data, error } = await supabase.from('webstores').select('*').eq('source', 'webstore').order('created_at', { ascending: false });
+    if (sequence !== storeLoadSequence.current) return;
     if (error) {
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
       setStores([]);
@@ -1714,7 +1720,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       setErr('Couldn’t confirm your sign-in, so your webstores didn’t load. Click Retry — if it keeps happening, sign out and back in.');
       setStores([]);
     } else {
-      setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
       // Fetch per-store aggregate stats. Exclude abandoned card carts
       // (pending_payment — created before Stripe confirms) and cancelled orders,
       // which would otherwise inflate every store's Gross Sales and order count.
@@ -1723,6 +1728,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // and so a processed store can link straight to the SO(s) it was batched onto
       // instead of showing a storefront URL nobody needs once the store is worked.
       const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, original_total, status, refunded_amt, so_id');
+      if (sequence !== storeLoadSequence.current) return;
       const stats = {};
       const soSets = {};
       (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
@@ -1732,12 +1738,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (o.so_id) { stats[o.store_id].batched += 1; soSets[o.store_id].add(o.so_id); }
       });
       Object.keys(stats).forEach((sid) => { stats[sid].soIds = [...soSets[sid]].sort(); });
+      setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
       setStoreStats(stats);
     }
-    setLoading(false);
+    if (sequence === storeLoadSequence.current) setLoading(false);
   }, []);
 
   useEffect(() => { loadStores(); }, [loadStores]);
+  const refreshStoreList = useCallback(() => loadStores({ quiet: true }), [loadStores]);
 
   // Global webstore defaults (standard categories, checkout copy, default add-on options).
   const loadWsSettings = useCallback(async () => {
@@ -4480,7 +4488,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} customers={cust} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} customers={cust} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onRefreshStores={refreshStoreList} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -5039,6 +5047,7 @@ const CLOSED_ORDERED = 'Closed / Ordered';
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
+const LS_STORE_REQUEST_PANEL = 'nsa_ws_store_request_panel';
 
 const STORE_REQUEST_STATUS = {
   queued: { label: 'Queued', bg: '#fef3c7', fg: '#92400e' },
@@ -5088,11 +5097,17 @@ function MarkdownSummary({ text }) {
   );
 }
 
-function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName, onOpen }) {
+function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName, onOpen, onRefreshStores }) {
   const [requestText, setRequestText] = useState('');
   const [customerId, setCustomerId] = useState('');
   const [files, setFiles] = useState([]);
   const [requests, setRequests] = useState([]);
+  const [panelPreference, setPanelPreference] = useState(() => {
+    try {
+      const saved = localStorage.getItem(LS_STORE_REQUEST_PANEL);
+      return saved === 'open' || saved === 'closed' ? saved : null;
+    } catch { return null; }
+  });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -5100,6 +5115,11 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
   const fileRef = useRef(null);
   const loadSequence = useRef(0);
   const visibleLoadInFlight = useRef(false);
+  const requestsRef = useRef([]);
+  const hasLoadedRequests = useRef(false);
+  const storesRef = useRef(stores);
+  storesRef.current = stores;
+  const refreshingReadyStores = useRef(new Set());
 
   const loadRequests = useCallback(async ({ quiet = false } = {}) => {
     if (quiet && visibleLoadInFlight.current) return;
@@ -5110,7 +5130,26 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
         .select('*').order('created_at', { ascending: false }).limit(20);
       if (sequence !== loadSequence.current) return;
       if (error) setLoadError(error.message);
-      else { setRequests(data || []); setLoadError(''); }
+      else {
+        const nextRequests = data || [];
+        const previousRequests = hasLoadedRequests.current ? requestsRef.current : nextRequests;
+        const readyStoreIds = WEBSTORE_BUILD_REQUESTS.readyStoreIdsNeedingRefresh(
+          previousRequests,
+          nextRequests,
+          new Set(storesRef.current.map((store) => store.id)),
+        );
+        requestsRef.current = nextRequests;
+        hasLoadedRequests.current = true;
+        setRequests(nextRequests);
+        setLoadError('');
+        const refreshIds = readyStoreIds.filter((id) => !refreshingReadyStores.current.has(id));
+        if (refreshIds.length && onRefreshStores) {
+          refreshIds.forEach((id) => refreshingReadyStores.current.add(id));
+          Promise.resolve().then(() => onRefreshStores())
+            .catch((refreshError) => setActionError(refreshError?.message || 'The request is ready, but the store list could not refresh.'))
+            .finally(() => refreshIds.forEach((id) => refreshingReadyStores.current.delete(id)));
+        }
+      }
     } catch (error) {
       if (sequence === loadSequence.current) setLoadError(error?.message || 'Could not load store requests.');
     } finally {
@@ -5119,13 +5158,16 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
         if (sequence === loadSequence.current) setLoading(false);
       }
     }
-  }, []);
+  }, [onRefreshStores]);
 
+  useEffect(() => { loadRequests(); }, [loadRequests]);
+
+  const hasActiveRequests = WEBSTORE_BUILD_REQUESTS.hasActiveStoreRequests(requests);
   useEffect(() => {
-    loadRequests();
+    if (!hasActiveRequests) return undefined;
     const timer = setInterval(() => loadRequests({ quiet: true }), 15000);
     return () => clearInterval(timer);
-  }, [loadRequests]);
+  }, [loadRequests, hasActiveRequests]);
 
   const submit = async () => {
     const cleanText = requestText.trim();
@@ -5153,7 +5195,11 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
       }).select('*').single();
       if (insertError) throw insertError;
       loadSequence.current += 1;
-      setRequests((prev) => [data, ...prev].slice(0, 20));
+      setRequests((prev) => {
+        const next = [data, ...prev].slice(0, 20);
+        requestsRef.current = next;
+        return next;
+      });
       setRequestText(''); setCustomerId(''); setFiles([]);
       if (fileRef.current) fileRef.current.value = '';
     } catch (submitError) {
@@ -5172,7 +5218,11 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
     if (!data) { setActionError('This request was already claimed. Refreshing its current status.'); await loadRequests(); return; }
     loadSequence.current += 1;
     setActionError('');
-    setRequests((prev) => prev.map((row) => row.id === request.id ? { ...row, status: 'cancelled', updated_at: new Date().toISOString() } : row));
+    setRequests((prev) => {
+      const next = prev.map((row) => row.id === request.id ? { ...row, status: 'cancelled', updated_at: new Date().toISOString() } : row);
+      requestsRef.current = next;
+      return next;
+    });
   };
 
   const pickFiles = (picked) => {
@@ -5187,15 +5237,27 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
 
   const sortedCustomers = useMemo(() => [...customers].sort((a, b) => (a.name || '').localeCompare(b.name || '')), [customers]);
   const canSubmit = !submitting && (!!requestText.trim() || files.length > 0);
+  const panelOpen = WEBSTORE_BUILD_REQUESTS.resolveStoreRequestPanelOpen(panelPreference, requests);
+  const togglePanel = () => {
+    const next = panelOpen ? 'closed' : 'open';
+    setPanelPreference(next);
+    try { localStorage.setItem(LS_STORE_REQUEST_PANEL, next); } catch { /* private mode */ }
+  };
   return (
     <div style={{ background: '#fff', border: '1px solid #D8DEEA', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', marginBottom: 22, overflow: 'visible' }}>
-      <div style={{ padding: '16px 18px', borderBottom: '1px solid #EEF1F6', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.6px', fontWeight: 800, fontSize: 20, color: '#192853' }}>Start a store</div>
-          <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 2 }}>Paste the coach or rep request and attach any item list. The store will be built as a draft.</div>
-        </div>
+      <div style={{ padding: '13px 18px', borderBottom: panelOpen ? '1px solid #EEF1F6' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <button type="button" onClick={togglePanel} aria-expanded={panelOpen} aria-controls="webstore-build-request-panel"
+          style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, padding: 0, border: 0, background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+          <span aria-hidden="true" style={{ color: '#64748b', fontSize: 13 }}>{panelOpen ? '▼' : '▶'}</span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.6px', fontWeight: 800, fontSize: 20, color: '#192853' }}>Start a store</span>
+            {hasActiveRequests && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: '#1e40af', background: '#dbeafe', borderRadius: 10, padding: '2px 7px' }}>{requests.filter((request) => request.status === 'queued' || request.status === 'building').length} active</span>}
+            <span style={{ display: 'block', fontSize: 12.5, color: '#64748b', marginTop: 2 }}>Paste a request, attach an item list, and track the draft build.</span>
+          </span>
+        </button>
         <span style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.6px', color: '#962C32', background: '#fbebec', borderRadius: 5, padding: '3px 8px' }}>Admin only</span>
       </div>
+      {panelOpen && <div id="webstore-build-request-panel">
       <div style={{ padding: 18 }}>
         <label htmlFor="webstore-build-request-text" style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 5 }}>Store request</label>
         <textarea id="webstore-build-request-text" className="form-input" rows={5} value={requestText} onChange={(e) => setRequestText(e.target.value)}
@@ -5239,7 +5301,7 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
                     {request.status === 'queued' && <button className="btn btn-sm btn-secondary" onClick={() => cancel(request)} style={{ color: '#b91c1c' }}>Cancel</button>}
                     {request.store_id && (linkedStore
                       ? <button className="btn btn-sm btn-primary" onClick={() => onOpen(linkedStore)}>Open draft store →</button>
-                      : <a className="btn btn-sm btn-primary" href={`?pg=webstores&store=${encodeURIComponent(request.store_id)}`} style={{ textDecoration: 'none' }}>Open draft store →</a>)}
+                      : <button className="btn btn-sm btn-secondary" disabled>Refreshing store…</button>)}
                   </div>
                 </div>
                 <div title={request.request_text || ''} style={{ fontSize: 12.5, color: '#334155', marginTop: 7, whiteSpace: 'pre-wrap' }}>{preview.length > 280 ? preview.slice(0, 280) + '…' : preview}</div>
@@ -5257,11 +5319,12 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
           })}
         </div>
       </div>
+      </div>}
     </div>
   );
 }
 
-function ListView({ stores, customers = [], custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, customers = [], custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onRefreshStores, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
@@ -5555,7 +5618,7 @@ function ListView({ stores, customers = [], custName, repName, REPS = [], cu, st
       {/* ══════════ STORES VIEW ══════════ */}
       {view === 'stores' && (
         <>
-          {(cu?.role === 'admin' || cu?.role === 'super_admin') && <StoreRequestPanel customers={customers} stores={stores} cu={cu} repName={repName} custName={custName} onOpen={onOpen} />}
+          {(cu?.role === 'admin' || cu?.role === 'super_admin') && <StoreRequestPanel customers={customers} stores={stores} cu={cu} repName={repName} custName={custName} onOpen={onOpen} onRefreshStores={onRefreshStores} />}
 
           {/* Summary stats strip */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14, marginBottom: 22 }}>
@@ -6028,7 +6091,7 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
   const selected = customers.find((c) => c.id === value);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const listId = React.useId();
   // Searchable haystack per customer: its OWN name + alpha PLUS its parent's name
   // + alpha. That lets a team (child) be found by the parent org's tag too — e.g.
@@ -6054,26 +6117,26 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
     }
     return out;
   }, [q, index]);
-  useEffect(() => { setActiveIndex(0); }, [q]);
-  const choose = (customer) => { onChange(customer.id); setOpen(false); setQ(''); setActiveIndex(0); };
+  const choose = (customer) => { onChange(customer.id); setOpen(false); setQ(''); setActiveIndex(-1); };
   const onPickerKeyDown = (e) => {
     if (e.key === 'Escape') { setOpen(false); return; }
     if (!matches.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActiveIndex((i) => Math.min(i + 1, matches.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setOpen(true); setActiveIndex((i) => Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter' && open) { e.preventDefault(); choose(matches[activeIndex] || matches[0]); }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); setOpen(true);
+      setActiveIndex((i) => WEBSTORE_BUILD_REQUESTS.nextCustomerPickerIndex(i, e.key, matches.length));
+    } else if (e.key === 'Enter' && open) { e.preventDefault(); choose(matches[activeIndex] || matches[0]); }
   };
   if (selected && !open) {
     return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div className="form-input" style={{ flex: 1, display: 'flex', alignItems: 'center', background: '#f8fafc' }}>{selected.name}{selected.alpha_tag ? ` (${selected.alpha_tag})` : ''}</div>
-      <button className="btn btn-sm btn-secondary" onClick={() => { onChange(''); setQ(''); setOpen(true); }}>Change</button>
+      <button type="button" className="btn btn-sm btn-secondary" onClick={() => { onChange(''); setQ(''); setOpen(true); }}>Change</button>
     </div>;
   }
   return (
     <div style={{ position: 'relative' }}>
       <input className="form-input" role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={listId}
         aria-activedescendant={open && matches[activeIndex] ? `${listId}-${activeIndex}` : undefined}
-        autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder={placeholder || 'Search by name…'}
+        autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setActiveIndex(-1); setOpen(true); }} placeholder={placeholder || 'Search by name…'}
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 120)} onKeyDown={onPickerKeyDown} />
       {open && matches.length > 0 && (
         <div id={listId} role="listbox" style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>

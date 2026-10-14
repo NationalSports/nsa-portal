@@ -2,6 +2,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const {
+  hasActiveStoreRequests,
+  resolveStoreRequestPanelOpen,
+  newlyReadyStoreIds,
+  readyStoreIdsNeedingRefresh,
+  nextCustomerPickerIndex,
+} = require('../lib/webstoreBuildRequests');
 
 const ROOT = path.resolve(__dirname, '../..');
 const ui = fs.readFileSync(path.join(ROOT, 'src/Webstores.js'), 'utf8');
@@ -64,4 +71,51 @@ test('request panel shows results, attachments, and the linked draft store', () 
   expect(ui).toContain('htmlFor="webstore-build-request-text"');
   expect(ui).toContain('role="combobox"');
   expect(ui).toContain('role="listbox"');
+});
+
+describe('request panel behavior', () => {
+  test('polling runs only while queued or building work exists', () => {
+    expect(hasActiveStoreRequests([])).toBe(false);
+    expect(hasActiveStoreRequests([{ status: 'ready' }, { status: 'failed' }])).toBe(false);
+    expect(hasActiveStoreRequests([{ status: 'queued' }])).toBe(true);
+    expect(hasActiveStoreRequests([{ status: 'cancelled' }, { status: 'building' }])).toBe(true);
+    expect(ui).toContain('if (!hasActiveRequests) return undefined;');
+  });
+
+  test('collapse defaults follow active work while an explicit preference wins', () => {
+    const active = [{ status: 'building' }];
+    expect(resolveStoreRequestPanelOpen(null, [])).toBe(false);
+    expect(resolveStoreRequestPanelOpen(null, active)).toBe(true);
+    expect(resolveStoreRequestPanelOpen('closed', active)).toBe(false);
+    expect(resolveStoreRequestPanelOpen('open', [])).toBe(true);
+  });
+
+  test('ready transitions identify stores that need an in-app list refresh', () => {
+    const before = [{ id: 'request-1', status: 'building', store_id: null }];
+    const ready = [{ id: 'request-1', status: 'ready', store_id: 'store-1' }];
+    expect(newlyReadyStoreIds(before, ready)).toEqual(['store-1']);
+    expect(newlyReadyStoreIds(ready, ready)).toEqual([]);
+    expect(newlyReadyStoreIds([], ready)).toEqual(['store-1']);
+    expect(readyStoreIdsNeedingRefresh(ready, ready, new Set())).toEqual(['store-1']);
+    expect(readyStoreIdsNeedingRefresh(ready, ready, new Set(['store-1']))).toEqual([]);
+    expect(readyStoreIdsNeedingRefresh(before, ready, new Set(['store-1']))).toEqual(['store-1']);
+    expect(ui).toContain('onRefreshStores={refreshStoreList}');
+    expect(ui).toContain('Refreshing store…');
+    expect(ui).not.toContain('href={`?pg=webstores&store=');
+  });
+
+  test('customer keyboard navigation starts on the first result and wraps upward', () => {
+    expect(nextCustomerPickerIndex(-1, 'ArrowDown', 3)).toBe(0);
+    expect(nextCustomerPickerIndex(0, 'ArrowDown', 3)).toBe(1);
+    expect(nextCustomerPickerIndex(0, 'ArrowUp', 3)).toBe(2);
+    expect(nextCustomerPickerIndex(2, 'ArrowDown', 3)).toBe(2);
+    expect(nextCustomerPickerIndex(0, 'ArrowDown', 0)).toBe(-1);
+  });
+
+  test('shared customer picker keeps New Store and OMG wiring plus click-away close', () => {
+    expect(ui).toContain('<CustomerPicker customers={sortedCust} value={customerId} onChange={setCustomerId}');
+    expect(ui).toContain('<CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer}');
+    expect(ui).toContain('onBlur={() => setTimeout(() => setOpen(false), 120)}');
+    expect(ui).toContain("setActiveIndex((i) => WEBSTORE_BUILD_REQUESTS.nextCustomerPickerIndex(i, e.key, matches.length))");
+  });
 });
