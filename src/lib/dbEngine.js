@@ -1695,6 +1695,10 @@ const _dbSaveSOInner = async (so) => {
       _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'sales_orders: version check failed — save deferred for retry');_persistFailedIds();
       return false;
     }}
+  // A rebased re-save after our own lost write (_resolveStaleWrite → 'own'): the version check now
+  // passes, but treat it exactly like another session's save so the deco-PO, header-decision and
+  // stale-content guards protect whatever the cloud holds that this copy lacks.
+  if(!_versionConflict&&_ownRebase.has(so.id))_versionConflict=_ownRebase.get(so.id);
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let {data:saveToken,error:tokenError}=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
@@ -2583,13 +2587,21 @@ const _dbSaveSOInner = async (so) => {
         po_lines:(po_lines||[]).map(po=>{const row=_poLineToRow(null,po);delete row.so_item_id;return row})};
     });
     if(saveFailed)throw new Error(_failMsg||'Sales-order validation failed');
+    _rememberSaveAttempt('sales_orders',so);
     const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{
       p_so_id:so.id,p_expected_token:saveToken,p_plan:savePlan,
     }));
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
         console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
-        if(await _staleWriteAlreadySaved('sales_orders',so))return true;
+        const _resolved=await _resolveStaleWrite('sales_orders',so);
+        if(_resolved==='saved')return true;
+        if(_resolved?.own&&!_ownRebaseTried.has(so.id)){
+          _ownRebase.set(so.id,{local:so._obBaseVersion??so._version,server:_resolved.version});
+          so._version=_resolved.version;delete so._obBaseVersion;
+          _ownRebaseTried.add(so.id);
+          try{return await _dbSaveSOInner(so)}finally{_ownRebaseTried.delete(so.id);_ownRebase.delete(so.id)}
+        }
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
@@ -4269,21 +4281,36 @@ const _dbOwnVersionExact=new Set();
 // Lost save reply (flaky / airplane wifi, 2026-10-14): a save commits on the server but its reply
 // never arrives, so the client counts it as failed. The retry, or the next save built on it, then
 // carries the old base version and is rejected as stale: a conflict with ITSELF, shown to the rep as
-// "saving needs review" (SO-1518, SO-2793). Before raising that card, read the authoritative
-// document: when it already holds exactly this content, the save landed. Adopt the server version
-// and report success. Any read failure or difference keeps today's conflict card, so another user's
-// change is never adopted or overwritten.
-const _staleWriteAlreadySaved=async(table,doc)=>{
+// "saving needs review" (SO-1518, SO-2793). Before raising that card, read the authoritative document:
+//  - 'saved': it already holds exactly this content, so the save landed. Adopt the server version.
+//  - 'own':   it holds exactly one of THIS tab's recent full-save attempts, so the version gap is our own
+//             lost write, not another person's. The caller re-runs the save once on the server version,
+//             with the "another session saved" guards armed (_ownRebase), so anything the cloud holds
+//             that this copy lacks is restored or blocked, never silently dropped.
+// Any read failure or other difference returns null and keeps today's conflict card, so another
+// user's change is never adopted or overwritten.
+const _saveAttempts=new Map();// 'table:id' → JSON of the last few payloads this tab sent to the commit RPC
+const _rememberSaveAttempt=(table,doc)=>{try{const k=table+':'+doc.id;const list=_saveAttempts.get(k)||[];list.push(JSON.stringify(doc));while(list.length>3)list.shift();_saveAttempts.set(k,list)}catch(_){/* best effort */}};
+const _ownRebase=new Map();// id → {local,server}: arms _versionConflict for one rebased re-save
+const _ownRebaseTried=new Set();// ids mid-rebase: at most one retry per rejection
+const _resolveStaleWrite=async(table,doc)=>{
   try{
     const{row}=await loadRecoveryDocument(supabase,table,doc.id);
-    if(!savedDocumentMatchesDraft(doc,row))return false;
-    doc._version=row._version;delete doc._obBaseVersion;
-    _dbOwnVersions[doc.id]=row._version;_dbOwnVersionExact.add(doc.id);_dbRecentSaves[doc.id]=Date.now();
-    _dbSaveFailedIds.delete(doc.id);_clearSaveError(doc.id);_persistFailedIds();_dbStaleCooldown.delete(doc.id);
-    console.warn('[DB]',doc.id,'was rejected as stale, but the cloud already holds this exact content (lost save reply) — saved as v'+row._version);
-    return true;
-  }catch(e){console.warn('[DB] stale-write content check failed for',doc.id,'—',e?.message||e);return false}
+    const key=table+':'+doc.id;
+    if(savedDocumentMatchesDraft(doc,row)){
+      doc._version=row._version;delete doc._obBaseVersion;
+      _dbOwnVersions[doc.id]=row._version;_dbOwnVersionExact.add(doc.id);_dbRecentSaves[doc.id]=Date.now();
+      _dbSaveFailedIds.delete(doc.id);_clearSaveError(doc.id);_persistFailedIds();_dbStaleCooldown.delete(doc.id);
+      _saveAttempts.delete(key);
+      console.warn('[DB]',doc.id,'was rejected as stale, but the cloud already holds this exact content (lost save reply) — saved as v'+row._version);
+      return 'saved';
+    }
+    const own=(_saveAttempts.get(key)||[]).some(json=>{try{return savedDocumentMatchesDraft(JSON.parse(json),row)}catch(_){return false}});
+    if(own){console.warn('[DB]',doc.id,'was rejected as stale; the cloud holds this tab\'s own earlier save (lost reply) — re-saving on v'+row._version);return {own:true,version:row._version}}
+    return null;
+  }catch(e){console.warn('[DB] stale-write content check failed for',doc.id,'—',e?.message||e);return null}
 };
+const _staleWriteAlreadySaved=async(table,doc)=>(await _resolveStaleWrite(table,doc))==='saved';
 const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
@@ -4348,6 +4375,8 @@ export {
   _sbGetMyProfile,
   _dbLoad,
   _staleWriteAlreadySaved,
+  _resolveStaleWrite,
+  _rememberSaveAttempt,
   _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,

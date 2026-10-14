@@ -28,3 +28,26 @@ test('cannot read the cloud copy: still a conflict', async () => {
   mockLoad.mockRejectedValue(new Error('offline'));
   await expect(_staleWriteAlreadySaved('sales_orders', doc())).resolves.toBe(false);
 });
+
+describe('own lost write followed by a newer edit', () => {
+  const {_resolveStaleWrite, _rememberSaveAttempt} = require('../lib/dbEngine');
+  test('cloud equals an earlier attempt from this tab: re-save on the server version', async () => {
+    const earlier = {...doc(), id: 'SO-10', memo: 'first edit'};
+    _rememberSaveAttempt('sales_orders', earlier);           // reply lost
+    const newer = {...doc(), id: 'SO-10', memo: 'second edit'};
+    _rememberSaveAttempt('sales_orders', newer);             // rejected as stale
+    mockLoad.mockResolvedValue(cloud({id: 'SO-10', memo: 'first edit'}));
+    await expect(_resolveStaleWrite('sales_orders', newer)).resolves.toEqual({own: true, version: 91});
+  });
+  test('cloud equals nothing this tab sent (another person saved): conflict card', async () => {
+    const mine = {...doc(), id: 'SO-11', memo: 'mine'};
+    _rememberSaveAttempt('sales_orders', mine);
+    mockLoad.mockResolvedValue(cloud({id: 'SO-11', memo: 'someone else'}));
+    await expect(_resolveStaleWrite('sales_orders', {...mine, memo: 'mine again'})).resolves.toBeNull();
+  });
+  test('another tab or person cannot borrow this tab\'s history', async () => {
+    _rememberSaveAttempt('sales_orders', {...doc(), id: 'SO-12', memo: 'a'});
+    mockLoad.mockResolvedValue(cloud({id: 'SO-13', memo: 'a'}));
+    await expect(_resolveStaleWrite('sales_orders', {...doc(), id: 'SO-13', memo: 'b'})).resolves.toBeNull();
+  });
+});
