@@ -130,7 +130,10 @@ const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_pric
 const _PAGE_TIEBREAK_PARENT={so_jobs:'so_id',so_art_files:'so_id',estimate_art_files:'estimate_id'};
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
-  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL){_unconfirmedLoadTables.add(table);return Promise.resolve({data:[],error:null,status:200});}
+  // opts._track: the calling _dbLoad's own untrusted-table set (see _dbLoad). The module sets above are
+  // shared by every load in the tab, so an overlapping load could clear another load's marks.
+  const _mark=set=>{set.add(table);opts?._track?.add(table)};
+  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL){_mark(_unconfirmedLoadTables);return Promise.resolve({data:[],error:null,status:200});}
   if(cachedAt)_missing404Tables.delete(table);// expired — retry
   const hardLimit=opts?.limit||20000;// safety cap to avoid runaway paging
   const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
@@ -151,13 +154,13 @@ const _safeQuery=(table,opts)=>{
     return q.range(start,start+pageSize-1);
   };
   const _classifyPage=(r)=>{
-    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){_unconfirmedLoadTables.add(table);return'missing';}
+    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){_mark(_unconfirmedLoadTables);return'missing';}
     // RLS/grant denial (Postgres 42501): the table is intentionally unreadable for this role — e.g.
     // `messages` after migration 00162 revoked anon access. Empty is the authoritative view for this
     // role, NOT a load failure: the anonymous coach portal (?portal=) boots through _dbLoad, and a
     // fatal error here blanked the whole load and broke every portal link. Matched narrowly by code/
     // message (not HTTP 401) so expired-JWT errors still reach _isAuthError → _recoverSession.
-    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied')){_unconfirmedLoadTables.add(table);return'denied';}
+    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied')){_mark(_unconfirmedLoadTables);return'denied';}
     if(r.error)return'error';
     return'ok';
   };
@@ -183,7 +186,7 @@ const _safeQuery=(table,opts)=>{
       // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
       // flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
       // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
-      _lastLoadTimedOut.add(table);return first;
+      _mark(_lastLoadTimedOut);return first;
     }
     const all=(first.data||[]).slice();
     if(all.length<pageSize){_truncatedTables.delete(table);return{data:all,error:null,status:200};}
@@ -213,27 +216,27 @@ const _safeQuery=(table,opts)=>{
       for(const r of results){
         const c=_classifyPage(r);
         if(c==='missing'||c==='denied'){if(c==='denied')_probeDeniedSession(table);done=true;break;}// table vanished / access revoked mid-page (unlikely) — stop, keep what we have
-        if(c==='error'){_lastLoadTimedOut.add(table);return r;}
+        if(c==='error'){_mark(_lastLoadTimedOut);return r;}
         const rows=r.data||[];
         all.push(...rows);
         if(rows.length<pageSize)done=true;// reached the final (short) page
       }
     }
     // Exiting with pages still full means the server has rows beyond hardLimit — flag it.
-    if(!done){_truncatedTables.add(table);console.warn('[DB] '+table+' hit the '+hardLimit+'-row cap — loaded data is INCOMPLETE (oldest rows dropped for date-ordered tables)');}
+    if(!done){_mark(_truncatedTables);console.warn('[DB] '+table+' hit the '+hardLimit+'-row cap — loaded data is INCOMPLETE (oldest rows dropped for date-ordered tables)');}
     else _truncatedTables.delete(table);
     return{data:all,error:null,status:200};
   };
   // Add per-query timeout to prevent individual queries from hanging forever
   const timeout=new Promise(resolve=>setTimeout(()=>resolve({data:[],error:{message:'Query timeout for '+table},status:408}),20000));
   return Promise.race([pagedFetch(),timeout]).then(r=>{
-    if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
+    if(r.status===408){_mark(_lastLoadTimedOut);return{data:[],error:null,status:408}}
     return r;
   }).catch(e=>{
     // Catch network/CORS/fetch errors — log at most once per 30s to avoid console spam
     const now=Date.now();
     if(now-_fetchErrorLoggedAt>30000){_fetchErrorLoggedAt=now;console.warn('[DB] Fetch error ('+table+'):',e.message||e)}
-    _lastLoadTimedOut.add(table);
+    _mark(_lastLoadTimedOut);
     return{data:[],error:{message:e.message||'Fetch failed'},status:0};
   });
 };
@@ -426,7 +429,13 @@ const _dbLoad = async (opts={}) => {
   if (!supabase && !source) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
-    const _q=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):_safeQuery;
+    // This load's OWN untrusted tables. Hydration flags, _everHydratedItems and the timed-out guards
+    // below must describe THIS load's results. They used to read the module-wide sets, which every
+    // _dbLoad clears on start: a poll/realtime/products reload overlapping a slow load (flaky wifi)
+    // wiped its 401/timeout marks, so an order came back items:[] with _itemsHydrated:true (SO-1518).
+    const _loadBad=new Set();
+    const _loadTableUntrusted=table=>_loadBad.has(table);
+    const _q=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):(table,o)=>_safeQuery(table,{...o,_track:_loadBad});
     // A supplied read-only view has no local drafts to reconcile against.
     const recoveryOwner=source?null:currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
@@ -721,7 +730,7 @@ const _dbLoad = async (opts={}) => {
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
       const credit_memos=invCreditMemos.filter(cm=>cm.invoice_id===inv.id);
-      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
+      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_loadBad.has('invoice_items'),_paymentsHydrated:!_loadBad.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
@@ -1370,6 +1379,7 @@ const _dbSaveEstimateInner = async (est) => {
       // _dbSavePendingIds non-empty, which permanently blocked the build-version poller from reloading stale tabs.
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
@@ -1404,6 +1414,7 @@ const _dbSaveEstimateInner = async (est) => {
       // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
       if(_rpcRes.data&&_rpcRes.data.stale===true){
         console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
@@ -2578,6 +2589,7 @@ const _dbSaveSOInner = async (so) => {
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
         console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
+        if(await _staleWriteAlreadySaved('sales_orders',so))return true;
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
@@ -4254,6 +4266,24 @@ const _dbOwnVersions={};// id → last _version this client successfully wrote
 // ourselves. Entries not in this set keep the original time-boxed skip. Deliberately separate from
 // _dbOwnVersions so _rebaseOntoOwnWrite's existing behaviour is untouched.
 const _dbOwnVersionExact=new Set();
+// Lost save reply (flaky / airplane wifi, 2026-10-14): a save commits on the server but its reply
+// never arrives, so the client counts it as failed. The retry, or the next save built on it, then
+// carries the old base version and is rejected as stale: a conflict with ITSELF, shown to the rep as
+// "saving needs review" (SO-1518, SO-2793). Before raising that card, read the authoritative
+// document: when it already holds exactly this content, the save landed. Adopt the server version
+// and report success. Any read failure or difference keeps today's conflict card, so another user's
+// change is never adopted or overwritten.
+const _staleWriteAlreadySaved=async(table,doc)=>{
+  try{
+    const{row}=await loadRecoveryDocument(supabase,table,doc.id);
+    if(!savedDocumentMatchesDraft(doc,row))return false;
+    doc._version=row._version;delete doc._obBaseVersion;
+    _dbOwnVersions[doc.id]=row._version;_dbOwnVersionExact.add(doc.id);_dbRecentSaves[doc.id]=Date.now();
+    _dbSaveFailedIds.delete(doc.id);_clearSaveError(doc.id);_persistFailedIds();_dbStaleCooldown.delete(doc.id);
+    console.warn('[DB]',doc.id,'was rejected as stale, but the cloud already holds this exact content (lost save reply) — saved as v'+row._version);
+    return true;
+  }catch(e){console.warn('[DB] stale-write content check failed for',doc.id,'—',e?.message||e);return false}
+};
 const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
@@ -4317,6 +4347,7 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _staleWriteAlreadySaved,
   _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,

@@ -4,7 +4,12 @@
 const rootMetadata = new Set(['_version', '_obBaseVersion', '_retry', '_draftRecovery',
   'updated_at', 'created_at', '_itemsHydrated', '_decosHydrated', '_artHydrated',
   '_recoveryHydrated', '_jobsHydrated', '_posHydrated', '_picksHydrated', '_hydratedArtIds',
-  '_hydratedPoIds', '_hydratedPickIds', '_reviewedSaveToken']);
+  '_hydratedPoIds', '_hydratedPickIds', '_reviewedSaveToken',
+  // Session deletion tombstones ("this tab removed X"). They are never stored on the cloud row, so
+  // comparing them made every edit that deleted a PO line / item / decoration a permanent
+  // "needs review" notice even after it saved (SO-1518, 2026-10-14). The deletion itself is still
+  // compared: if the cloud row still holds the removed line, items/po_lines differ and nothing clears.
+  '_deletedPoIds', '_deletedItemKeys', '_deletedDecoPoIds', '_decoDeleteIntents']);
 
 // Only these known, nonpersisted item fields are omitted. Unknown fields and
 // nested costs, shipping, quantities and decoration intent remain significant.
