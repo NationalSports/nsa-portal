@@ -3374,7 +3374,11 @@ export default function App(){
         const estMerge=_has('estimates')?_mergeProtectedArt(d.estimates,'ests'):null;
         const soMerge=_has('sales_orders')?_mergeProtectedArt(d.sales_orders,'sos'):null;
         const invMerge=_has('invoices')?_mergeProtected(d.invoices,'invs'):null;
-        const custMerge=_has('customers')?_mergeProtectedArt(d.customers,'cust'):null;
+        // Never wholesale-replace the customer list with an EMPTY one (same rule as the poll's
+        // `if(d.customers.length)` guard): the timeout flags are module-global and cleared at the start of
+        // EVERY _dbLoad, so a poll/retry overlapping this reload can erase the "customers timed out" mark
+        // and an empty result slips past _parentTimedOut — blanking every order/art card to "Unknown".
+        const custMerge=_has('customers')&&d.customers.length?_mergeProtectedArt(d.customers,'cust'):null;
         const msgMerge=_has('messages')?_mergeProtected(d.messages,'msgs'):null;
         const prodMerge=_has('products')?_mergeProtected(d.products,'prod'):null;
         // Update snapshot before state — auto-save effects will diff against this.
@@ -3598,6 +3602,22 @@ export default function App(){
         // Tiered polling: load only core tables most of the time; do a full sync (cold tables) at most once
         // per _FULL_SYNC_MS of wall time so the realtime-aware poll interval can't change how often the heavy
         // catalog/app_state pulls happen.
+        // Customers self-heal — the backstop for the initial-load retry. `customers` is skipped on core
+        // polls, so a load that once returned it empty leaves EVERY order, job and art-dashboard card
+        // rendering "Unknown" (and customer-name search matching nothing) until a full sync up to 30 min
+        // later. Refetch the one group whenever state has none. Runs BEFORE the core load on purpose: it
+        // used to sit after the poll's _decoTimedOut/_parentTimedOut skip guards, so during busy hours
+        // (when those trip most) the heal never ran and the artist's board stayed "Unknown" for half an
+        // hour. Self-limiting: one success ends it. Snapshot first, so the [cust] diff-save effect doesn't
+        // read the refill as a local edit and push 2.5k customers back at the DB.
+        if(_custCount.current===0){
+          const _cr=await _dbLoad({only:new Set(['customers'])});
+          if(cancelled)return;
+          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
+            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
+            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
+          }
+        }
         const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
         const d=await _dbLoad({coreOnly});
         if(!d||!d.hasData){
@@ -3719,21 +3739,6 @@ export default function App(){
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
         if(d.customers.length)setCust(prev=>{const localById=indexFirstById(prev);const _mcArt=c=>{const lp=localById.get(c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(localById.get(c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
-        // Customers self-heal — the cold-table twin of the NetSuite history recovery above, and the
-        // backstop for the initial-load retry. `customers` is skipped on core polls, so a load that
-        // once returned it empty leaves EVERY order, job and art-dashboard card rendering "Unknown"
-        // (and customer-name search matching nothing) until a full sync up to 30 min later. Refetch
-        // the one group the moment we notice state has none — on core polls too, which is exactly
-        // when the normal path can't. Self-limiting: the condition only holds while the list is
-        // really empty, and one success ends it. Snapshot first, so the [cust] diff-save effect
-        // doesn't read the refill as a local edit and push 2.5k customers back at the DB.
-        if(_custCount.current===0){
-          const _cr=await _dbLoad({only:new Set(['customers'])});
-          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
-            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
-            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
-          }
-        }
         if(d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         // Advancing _dbSnap.current.omg WITHOUT advancing this state is a data-loss bug: the
