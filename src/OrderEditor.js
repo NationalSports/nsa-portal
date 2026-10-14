@@ -88,7 +88,7 @@ import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from '.
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
-import { artFamilyKey } from './lib/artSplitFamily';
+import { artFamilyKey, releasedSplitLink } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
 import { stitchPreviewsFor } from './DstPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
@@ -13770,7 +13770,10 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           // An opt-in outside-art job (lib/outsideArt) set up through the wizard keeps its identity —
           // same key, 'outside' status, never released to the floor — so only its art fields change.
           const _exOutside=g._existingJobId?safeJobs(o).find(x=>x.id===g._existingJobId&&isOutsideArtJob(x)):null;
-          const jobKey=_exOutside?_exOutside.key:'released_'+g.deco_type+'_'+jobId;
+          // A split slice re-released over its own id keeps its parent link and __split__ key suffix,
+          // or the parent's next refresh re-counts the slice's units (SO-1801).
+          const _exSplit=releasedSplitLink(g._existingJobId?safeJobs(o).find(x=>x.id===g._existingJobId):null);
+          const jobKey=_exOutside?_exOutside.key:'released_'+g.deco_type+'_'+jobId+_exSplit.keySuffix;
           newJobs.push({
             id:jobId,
             key:jobKey,
@@ -13779,7 +13782,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             art_status:artStatus,item_status:'need_to_order',
             prod_status:_exOutside?'outside':activateAll?'hold':'draft',
             ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
-            total_units:totalUnits,fulfilled_units:0,split_from:null,
+            total_units:totalUnits,fulfilled_units:0,..._exSplit.fields,
             // Mark as released so syncJobs preserves it and skips its items
             _released:activateAll&&!_exOutside?true:false,
             ...(g._merged?{_merged:true}:{}),
