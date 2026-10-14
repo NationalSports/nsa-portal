@@ -109,3 +109,12 @@ test.each(['_recoveryHydrated','_itemsHydrated','_decosHydrated','_artHydrated']
   expect(journal.acknowledge).not.toHaveBeenCalled();
   expect(_outboxGate({table:'estimates',payload:estimate(),baseVersion:3},row)).toBe('conflict');
 });
+
+// SO-1518: a saved edit that deleted a PO line kept its "needs review" card forever because the
+// session tombstone (_deletedPoIds) never exists on the cloud row.
+test('session deletion tombstones do not keep an already-saved edit pending', () => {
+  const edit = {...draft(), _deletedPoIds:['PO 1'], _deletedItemKeys:['OLD|Red'], _deletedDecoPoIds:['DPO 1'], _decoDeleteIntents:[{k:1}]};
+  expect(_outboxGate({table:'sales_orders',baseVersion:35,payload:edit},cloud())).toBe('drop');
+  const unsaved = cloud(); unsaved.items.push({sku:'OLD', color:'Red'});
+  expect(savedDocumentMatchesDraft(edit, unsaved)).toBe(false);
+});
