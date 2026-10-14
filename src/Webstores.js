@@ -1605,7 +1605,55 @@ function attachBundleImages(items, bundleItems) {
 // An unknown/absent ?tab= falls back to the default catalog tab.
 const DEEP_LINK_TABS = new Set(['catalog', 'appearance', 'orders', 'art', 'analytics', 'batches', 'inventory', 'roster', 'coupons']);
 
-function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
+function buildArtFolderRecord({ name, webFiles = [], prodFiles = [], decoType, colorWays = [], isAllSchool = false }) {
+  const ts = Date.now();
+  const dt = decoType || (isAllSchool ? 'dtf' : 'screen_print');
+  const norm = (text) => String(text || '').trim().toLowerCase();
+  const colorWaysByName = new Map();
+  const savedColorWays = [];
+  (colorWays || []).forEach((colorWay, index) => {
+    const garmentColor = String(colorWay.garment_color || '').trim();
+    const inks = Array.isArray(colorWay.inks) ? colorWay.inks.filter((ink) => ink && String(ink).trim()) : [];
+    if (!garmentColor && !inks.length) return;
+    const saved = { id: colorWay.id || `cw${ts}_e${index}`, garment_color: garmentColor, inks };
+    savedColorWays.push(saved);
+    if (garmentColor) colorWaysByName.set(norm(garmentColor), saved);
+  });
+  const colorWayForFile = webFiles.map((file, index) => {
+    const label = String(file.cwLabel || '').trim();
+    if (!label) return null;
+    let colorWay = colorWaysByName.get(norm(label));
+    if (!colorWay) {
+      colorWay = { id: `cw${ts}_${index}`, garment_color: label, inks: [] };
+      savedColorWays.push(colorWay);
+      colorWaysByName.set(norm(label), colorWay);
+    }
+    return colorWay;
+  });
+  const webLogos = webFiles.length ? normalizeWebLogos([
+    { url: webFiles[0].url, color_way: '', is_default: true },
+    ...webFiles.map((file, index) => (colorWayForFile[index] ? {
+      url: file.url,
+      color_way: colorWayForFile[index].garment_color,
+      color_way_id: colorWayForFile[index].id,
+    } : null)).filter(Boolean),
+  ], savedColorWays) : [];
+  const base = {
+    id: `logo${ts}${Math.random().toString(36).slice(2, 6)}`,
+    name: name || 'Store logo',
+    files: (webFiles.length ? webFiles : prodFiles).map((file) => ({ url: file.url, name: file.name })),
+    prod_files: prodFiles.map((file) => ({ url: file.url, name: file.name })),
+    status: 'approved',
+    deco_type: dt,
+    uploaded: new Date().toLocaleDateString(),
+    color_ways: savedColorWays,
+  };
+  return webFiles.length
+    ? { ...base, preview_url: webFiles[0].url, web_logo_url: webFiles[0].url, web_logos: webLogos, kind: 'logo' }
+    : { ...base, kind: 'art' };
+}
+
+function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO, onStartStoreRequest }) {
   const [stores, setStores] = useState([]);
   // Live snapshot of in-memory orders/estimates so the detail loader can aggregate the
   // customer's full art library (their saved art + every art file off their SOs/ests),
@@ -3298,47 +3346,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel?.customer_id || (!webFiles.length && !prodFiles.length)) return null;
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
-    const ts = Date.now();
     const dt = decoType || (sel?.org_type === 'all_school' ? 'dtf' : 'screen_print');
     if (sel?.org_type === 'all_school' && dt === 'screen_print') { flash('Screen print is not offered on 24/7 stores.'); return null; }
-    // Color ways come from the modal's editor (garment color + ink/thread colors). Build the
-    // list from there, then make sure EVERY labeled web cutout also has a color way — creating
-    // one if the rep only named it on the logo row — so no cutout loses its color-way link.
-    // A cutout matches a color way by garment-color name (case-insensitive); the first cutout
-    // doubles as the "all garments" default entry. A single unlabeled PNG stays default-only.
-    const _norm = (s) => String(s || '').trim().toLowerCase();
-    const cwByName = new Map();
-    const color_ways = [];
-    (colorWays || []).forEach((cw, i) => {
-      const gc = String(cw.garment_color || '').trim();
-      const inks = Array.isArray(cw.inks) ? cw.inks.filter((x) => x && String(x).trim()) : [];
-      if (!gc && !inks.length) return; // drop empty editor rows
-      const rec = { id: cw.id || ('cw' + ts + '_e' + i), garment_color: gc, inks };
-      color_ways.push(rec);
-      if (gc) cwByName.set(_norm(gc), rec);
+    const rec = buildArtFolderRecord({
+      name, webFiles, prodFiles, decoType: dt, colorWays,
+      isAllSchool: sel?.org_type === 'all_school',
     });
-    const cwForFile = webFiles.map((f, i) => {
-      const label = String(f.cwLabel || '').trim();
-      if (!label) return null;
-      let cw = cwByName.get(_norm(label));
-      if (!cw) { cw = { id: 'cw' + ts + '_' + i, garment_color: label, inks: [] }; color_ways.push(cw); cwByName.set(_norm(label), cw); }
-      return cw;
-    });
-    const web_logos = webFiles.length ? normalizeWebLogos([
-      { url: webFiles[0].url, color_way: '', is_default: true },
-      ...webFiles.map((f, i) => (cwForFile[i] ? { url: f.url, color_way: cwForFile[i].garment_color, color_way_id: cwForFile[i].id } : null)).filter(Boolean),
-    ], color_ways) : [];
-    const base = {
-      id: 'logo' + ts + Math.random().toString(36).slice(2, 6), name: name || 'Store logo',
-      files: (webFiles.length ? webFiles : prodFiles).map((f) => ({ url: f.url, name: f.name })),
-      prod_files: prodFiles.map((f) => ({ url: f.url, name: f.name })),
-      status: 'approved', deco_type: dt, uploaded: new Date().toLocaleDateString(), color_ways,
-    };
-    // No web cutout at all (production files only) → source-only record, so the Art tab
-    // asks for a placeable PNG/SVG instead of stamping a raw .ai url onto a garment.
-    const rec = webFiles.length
-      ? { ...base, preview_url: webFiles[0].url, web_logo_url: webFiles[0].url, web_logos, kind: 'logo' }
-      : { ...base, kind: 'art' };
     const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
     if (error) { flash('Could not save art folder: ' + error.message); return null; }
     const curArt = Array.isArray(sel.store_art) ? sel.store_art : [];
@@ -4488,7 +4501,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} customers={cust} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onRefreshStores={refreshStoreList} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} customers={cust} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onRefreshStores={refreshStoreList} onNew={() => setEditing('new')} onStartStoreRequest={onStartStoreRequest} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -5097,10 +5110,273 @@ function MarkdownSummary({ text }) {
   );
 }
 
-function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName, onOpen, onRefreshStores }) {
+function StoreRequestStartFromPicker({ templates = [], stores = [], value, onChange }) {
+  const [choice, setChoice] = useState(value.type === 'template' ? 'template' : value.type === 'store' || value.type === 'omg_url' ? 'old' : 'blank');
+  const [search, setSearch] = useState('');
+  const chooseType = (next) => {
+    setChoice(next); setSearch('');
+    if (next === 'blank') onChange({ type: 'blank', id: null, url: null, label: 'Blank' });
+    else onChange({ type: next === 'template' ? 'template' : 'store', id: null, url: null, label: '' });
+  };
+  const query = search.trim().toLowerCase();
+  const shownTemplates = templates.filter((template) => !query || String(template.name || '').toLowerCase().includes(query)).slice(0, 10);
+  const shownStores = stores.filter((store) => {
+    const haystack = `${store.name || ''} ${store.store_code || ''}`.toLowerCase();
+    return !query || haystack.includes(query);
+  }).slice(0, 10);
+  const omgUrlInvalid = value.type === 'omg_url' && value.url && !WEBSTORE_BUILD_REQUESTS.isValidOmgStoreUrl(value.url);
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, background: '#f8fafc', marginBottom: 10 }}>
+      <div style={{ fontSize: 11.5, fontWeight: 800, color: '#475569', marginBottom: 7 }}>Start from <span style={{ color: '#94a3b8', fontWeight: 600 }}>(optional)</span></div>
+      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+        {[['blank', 'Blank'], ['template', 'Store template'], ['old', 'Old store']].map(([type, label]) => <button key={type} type="button" aria-pressed={choice === type}
+          onClick={() => chooseType(type)} style={{ border: `1px solid ${choice === type ? '#2563eb' : '#cbd5e1'}`, borderRadius: 7, padding: '6px 11px', background: choice === type ? '#eff6ff' : '#fff', color: choice === type ? '#1d4ed8' : '#475569', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>{choice === type ? '✓ ' : ''}{label}</button>)}
+      </div>
+      {choice === 'template' && <div style={{ position: 'relative', marginTop: 8 }}>
+        <input className="form-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search store templates…" aria-label="Search store templates" />
+        <div role="listbox" aria-label="Store templates" style={{ display: 'grid', gap: 4, marginTop: 5, maxHeight: 180, overflowY: 'auto' }}>
+          {shownTemplates.map((template) => {
+            const selected = value.type === 'template' && value.id === template.id;
+            const count = Array.isArray(template.items) ? template.items.length : 0;
+            return <button key={template.id} type="button" role="option" aria-selected={selected} onClick={() => onChange({ type: 'template', id: template.id, url: null, label: template.name || 'Template' })}
+              style={{ display: 'flex', justifyContent: 'space-between', gap: 10, border: `1px solid ${selected ? '#2563eb' : '#e2e8f0'}`, borderRadius: 6, background: selected ? '#eff6ff' : '#fff', padding: '7px 9px', textAlign: 'left', cursor: 'pointer', fontSize: 12, color: '#334155' }}><b>{selected ? '✓ ' : ''}{template.name}</b><span style={{ color: '#64748b' }}>{count} item{count === 1 ? '' : 's'}</span></button>;
+          })}
+          {!shownTemplates.length && <div style={{ fontSize: 12, color: '#94a3b8', padding: 6 }}>No templates found.</div>}
+        </div>
+      </div>}
+      {choice === 'old' && <div style={{ marginTop: 8 }}>
+        <input className="form-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search old stores by name or store number…" aria-label="Search old stores" />
+        <div role="listbox" aria-label="Old portal stores" style={{ display: 'grid', gap: 4, marginTop: 5, maxHeight: 150, overflowY: 'auto' }}>
+          {shownStores.map((store) => {
+            const selected = value.type === 'store' && value.id === store.id;
+            return <button key={store.id} type="button" role="option" aria-selected={selected} onClick={() => onChange({ type: 'store', id: store.id, url: null, label: store.name || store.store_code || 'Old store' })}
+              style={{ display: 'flex', justifyContent: 'space-between', gap: 10, border: `1px solid ${selected ? '#2563eb' : '#e2e8f0'}`, borderRadius: 6, background: selected ? '#eff6ff' : '#fff', padding: '7px 9px', textAlign: 'left', cursor: 'pointer', fontSize: 12, color: '#334155' }}><b>{selected ? '✓ ' : ''}{store.name}</b><span style={{ color: '#64748b', fontFamily: 'monospace' }}>{store.store_code || ''}</span></button>;
+          })}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 5px', color: '#94a3b8', fontSize: 11 }}><span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />or paste an old OMG store URL<span style={{ flex: 1, height: 1, background: '#e2e8f0' }} /></div>
+        <input className="form-input" value={value.type === 'omg_url' ? value.url || '' : ''} onChange={(event) => onChange({ type: 'omg_url', id: null, url: event.target.value.trim(), label: event.target.value.trim() })}
+          placeholder="https://team.itemorder.com/shop" aria-label="Old OMG store URL" />
+        {omgUrlInvalid && <div role="alert" style={{ color: '#b91c1c', fontSize: 11.5, marginTop: 4 }}>Use an https://…itemorder.com/shop URL.</div>}
+      </div>}
+      {value.label && value.type !== 'blank' && <div style={{ marginTop: 7, fontSize: 11.5, color: '#166534', fontWeight: 700 }}>Starting from: {value.label}</div>}
+    </div>
+  );
+}
+
+function StoreRequestItemPicker({ value, onChange, disabled }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listId = React.useId();
+
+  useEffect(() => {
+    const typed = query.trim();
+    if (typed.length < 2) { setResults([]); setSearching(false); return undefined; }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const lower = typed.toLowerCase();
+        const tokens = lower.split(/\s+/).filter(Boolean);
+        const escapeFilter = (text) => String(text).replace(/[,()*%]/g, ' ').trim();
+        const anchor = escapeFilter([...tokens].sort((a, b) => b.length - a.length)[0] || lower);
+        const safeQuery = escapeFilter(lower);
+        const { data, error } = await supabase.from('products')
+          .select('id,sku,name,brand,color,image_front_url')
+          .or('is_active.is.null,is_active.eq.true')
+          .or('is_archived.is.null,is_archived.eq.false')
+          .or(`sku.ilike.${safeQuery}*,name.ilike.*${anchor}*,brand.ilike.*${anchor}*`)
+          .order('name').order('color').limit(160);
+        if (error) throw error;
+        const matching = (data || []).filter((row) => {
+          const sku = String(row.sku || '').toLowerCase();
+          const haystack = `${row.name || ''} ${row.brand || ''}`.toLowerCase();
+          return sku.startsWith(lower) || tokens.every((token) => haystack.includes(token));
+        });
+        const grouped = WEBSTORE_BUILD_REQUESTS.groupStoreRequestProducts(matching, 10);
+        if (!cancelled) { setResults(grouped); setActiveIndex(-1); }
+      } catch (_) {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, value]);
+
+  const choose = (item) => {
+    const { colors, ...savedItem } = item;
+    const selected = value.some((entry) => entry.product_id === item.product_id);
+    onChange(selected
+      ? value.filter((entry) => entry.product_id !== item.product_id)
+      : [...value, savedItem]);
+    setOpen(true);
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') { setOpen(false); return; }
+    if (!results.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); setOpen(true);
+      setActiveIndex((index) => WEBSTORE_BUILD_REQUESTS.nextCustomerPickerIndex(index, event.key, results.length));
+    } else if (event.key === 'Enter' && open) {
+      event.preventDefault(); choose(results[activeIndex] || results[0]);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ position: 'relative' }}>
+        <input className="form-input" role="combobox" aria-label="Search catalog items" aria-autocomplete="list"
+          aria-expanded={open} aria-controls={listId}
+          aria-activedescendant={open && results[activeIndex] ? `${listId}-${activeIndex}` : undefined}
+          disabled={disabled} value={query} placeholder="Add items — name, style, SKU, or brand…"
+          onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => { setQuery(event.target.value); setOpen(true); setActiveIndex(-1); }}
+          onKeyDown={onKeyDown} />
+        {open && (results.length > 0 || searching || query.trim().length >= 2) && (
+          <div id={listId} role="listbox" style={{ position: 'absolute', zIndex: 35, top: '100%', left: 0, right: 0, minWidth: 360, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 330, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.14)' }}>
+            {results.map((item, index) => (
+              (() => {
+                const selected = value.some((entry) => entry.product_id === item.product_id);
+                return (
+              <button type="button" id={`${listId}-${index}`} role="option" aria-selected={selected}
+                key={`${item.product_id}-${item.sku}`} onMouseDown={(event) => { event.preventDefault(); choose(item); }}
+                onMouseEnter={() => setActiveIndex(index)}
+                style={{ display: 'flex', width: '100%', gap: 9, alignItems: 'center', textAlign: 'left', padding: '8px 10px', cursor: 'pointer', border: 0, borderBottom: '1px solid #f1f5f9', background: selected ? '#eff6ff' : index === activeIndex ? '#f8fafc' : '#fff', color: '#0f172a' }}>
+                {item.image_url ? <img src={item.image_url} alt="" style={{ width: 38, height: 38, objectFit: 'contain', borderRadius: 5, border: '1px solid #e2e8f0', background: '#fff' }} /> : <div style={{ width: 38, height: 38, borderRadius: 5, background: '#f1f5f9' }} />}
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700 }}>{item.name}</span>
+                  <span style={{ display: 'block', fontSize: 11, color: '#64748b' }}>{[item.sku, item.brand].filter(Boolean).join(' · ')}</span>
+                  <span style={{ display: 'block', fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.colors.length ? `${item.colors.length} colors: ${item.colors.slice(0, 5).join(', ')}${item.colors.length > 5 ? '…' : ''}` : 'Colors not listed'}</span>
+                </span>
+                <span aria-hidden="true" style={{ marginLeft: 'auto', color: selected ? '#2563eb' : '#cbd5e1', fontSize: 18, fontWeight: 800 }}>{selected ? '✓' : '+'}</span>
+              </button>
+                );
+              })()
+            ))}
+            {!results.length && <div style={{ padding: '9px 11px', fontSize: 12, color: '#94a3b8' }}>{searching ? 'Searching catalog…' : 'No catalog matches.'}</div>}
+          </div>
+        )}
+      </div>
+      {value.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 7 }}>
+        {value.map((item) => <span key={`${item.product_id}-${item.sku}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 230, fontSize: 11, color: '#334155', background: '#eef2f7', borderRadius: 7, padding: '3px 5px' }}>
+          {item.image_url ? <img src={item.image_url} alt="" style={{ width: 23, height: 23, objectFit: 'contain', borderRadius: 4, background: '#fff' }} /> : null}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.sku} · {item.name}</span>
+          <button type="button" aria-label={`Remove ${item.name}`} onClick={() => onChange(value.filter((selected) => selected.product_id !== item.product_id))}
+            style={{ border: 0, background: 'none', color: '#64748b', cursor: 'pointer', padding: '0 2px', fontSize: 14 }}>×</button>
+        </span>)}
+      </div>}
+    </div>
+  );
+}
+
+function StoreRequestArtPicker({ customerId, customers, orders = [], estimates = [], value, onChange, disabled }) {
+  const [addedArt, setAddedArt] = useState([]);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => { setAddedArt([]); setFolderOpen(false); }, [customerId]);
+  const library = useMemo(() => {
+    if (!customerId) return [];
+    const customer = customers.find((row) => row.id === customerId);
+    const parent = customer?.parent_id ? customers.find((row) => row.id === customer.parent_id) : null;
+    const collect = (rows, ownerId) => (rows || [])
+      .filter((row) => row.customer_id === ownerId)
+      .flatMap((row) => (row.art_files || []).map((art) => ({ art, label: row.id, srcCustId: ownerId })));
+    return buildTeamArtLibrary({
+      teamArt: [...(customer?.art_files || []), ...addedArt],
+      parentArt: parent?.art_files || [],
+      orderArt: [...collect(orders, customerId), ...collect(estimates, customerId)],
+      parentOrderArt: parent ? [...collect(orders, parent.id), ...collect(estimates, parent.id)] : [],
+      teamId: customerId,
+      parentId: parent?.id,
+      parentLabel: `${parent?.alpha_tag || parent?.name || 'Parent'} library`,
+    });
+  }, [customerId, customers, orders, estimates, addedArt]);
+
+  const toggle = (art) => {
+    const selected = value.some((item) => item.art_id === art.id);
+    onChange(selected
+      ? value.filter((item) => item.art_id !== art.id)
+      : [...value, { art_id: art.id, name: art.name || 'Untitled art', is_main: false }]);
+  };
+  const toggleMain = (artId) => {
+    const alreadyMain = value.some((item) => item.art_id === artId && item.is_main);
+    onChange(value.map((item) => ({ ...item, is_main: !alreadyMain && item.art_id === artId })));
+  };
+  const createArtFolder = async ({ name, decoType, colorWays, webs, prods }) => {
+    if (!customerId || (!webs.length && !prods.length)) return;
+    setCreating(true);
+    try {
+      const clean = (text) => String(text || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      const [webFiles, prodFiles] = await Promise.all([
+        Promise.all(webs.map(async (web) => ({
+          url: await cloudUpload(web.file, 'nsa-store-art'),
+          name: clean(web.file.name) || 'Logo',
+          cwLabel: web.label,
+        }))),
+        Promise.all(prods.map(async (prod) => ({
+          url: await cloudUpload(prod.file, 'nsa-production'),
+          name: prod.file.name || 'Production file',
+        }))),
+      ]);
+      const record = buildArtFolderRecord({ name, webFiles, prodFiles, decoType, colorWays });
+      const { data: customer, error: loadError } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+      if (loadError) throw loadError;
+      const current = Array.isArray(customer?.art_files) ? customer.art_files : [];
+      const { error } = await supabase.from('customers').update({ art_files: [...current, record] }).eq('id', customerId);
+      if (error) throw error;
+      setAddedArt((rows) => [...rows, record]);
+      onChange([...value, { art_id: record.id, name: record.name, is_main: false }]);
+      setFolderOpen(false);
+    } catch (error) {
+      window.alert(error?.message || 'Could not create the art folder.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  if (!customerId) {
+    return <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 12, color: '#94a3b8', fontSize: 12.5, background: '#f8fafc' }}>Choose a customer to select or create art.</div>;
+  }
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, background: '#fff' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div><div style={{ fontSize: 11.5, fontWeight: 800, color: '#475569' }}>Customer art</div><div style={{ fontSize: 10.5, color: '#94a3b8' }}>Select several; optionally mark one main logo.</div></div>
+        <button type="button" className="btn btn-sm btn-secondary" disabled={disabled || creating} onClick={() => setFolderOpen(true)}>+ New art folder</button>
+      </div>
+      {library.length ? <div role="listbox" aria-label="Customer art library" aria-multiselectable="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(112px,1fr))', gap: 7, maxHeight: 260, overflowY: 'auto' }}>
+        {library.map((art) => {
+          const selected = value.some((item) => item.art_id === art.id);
+          const main = value.some((item) => item.art_id === art.id && item.is_main);
+          const thumb = artThumbUrl(art);
+          return <div key={art.id} role="option" aria-selected={selected} style={{ position: 'relative', border: `2px solid ${selected ? '#2563eb' : '#e2e8f0'}`, borderRadius: 8, background: selected ? '#eff6ff' : '#fff', padding: 5 }}>
+            <button type="button" disabled={disabled} onClick={() => toggle(art)} style={{ display: 'block', width: '100%', border: 0, background: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}>
+              <div style={{ height: 64, borderRadius: 5, background: thumb ? logoThumbBg(art, thumb) : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                {thumb ? <img src={thumb} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ color: '#94a3b8' }}>🎨</span>}
+              </div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: '#334155', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{art.name || 'Untitled art'}</div>
+              <DecoBadge deco={art.deco_type} />
+              <span aria-hidden="true" style={{ position: 'absolute', top: 4, right: 5, width: 19, height: 19, borderRadius: '50%', textAlign: 'center', lineHeight: '19px', color: selected ? '#fff' : '#64748b', background: selected ? '#2563eb' : '#fff', border: '1px solid #cbd5e1', fontWeight: 800 }}>{selected ? '✓' : '+'}</span>
+            </button>
+            {selected && <button type="button" onClick={() => toggleMain(art.id)} aria-pressed={main} style={{ width: '100%', border: 0, borderRadius: 5, marginTop: 4, padding: '3px 4px', cursor: 'pointer', fontSize: 9.5, fontWeight: 800, color: main ? '#92400e' : '#64748b', background: main ? '#fef3c7' : '#f1f5f9' }}>{main ? '★ Main logo' : '☆ Mark main'}</button>}
+          </div>;
+        })}
+      </div> : <div style={{ color: '#94a3b8', fontSize: 12, padding: '8px 2px' }}>No saved art yet. Create an art folder to add the first logo.</div>}
+      {folderOpen && <NewArtFolderModal saveContext="request" busy={creating} onCreate={createArtFolder} onClose={() => { if (!creating) setFolderOpen(false); }} />}
+    </div>
+  );
+}
+
+function StoreRequestPanel({ customers = [], stores = [], templates = [], orders = [], estimates = [], cu, repName, custName, onOpen, onRefreshStores, standalone = false }) {
   const [requestText, setRequestText] = useState('');
   const [customerId, setCustomerId] = useState('');
   const [files, setFiles] = useState([]);
+  const [selectedItems, setSelectedItems] = useState([]);
+  const [selectedArt, setSelectedArt] = useState([]);
+  const [startFrom, setStartFrom] = useState({ type: 'blank', id: null, url: null, label: 'Blank' });
   const [requests, setRequests] = useState([]);
   const [panelPreference, setPanelPreference] = useState(() => {
     try {
@@ -5112,6 +5388,7 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
+  const [notificationWarning, setNotificationWarning] = useState('');
   const fileRef = useRef(null);
   const loadSequence = useRef(0);
   const visibleLoadInFlight = useRef(false);
@@ -5171,10 +5448,18 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
 
   const submit = async () => {
     const cleanText = requestText.trim();
-    if (!cleanText && !files.length) return;
+    if (!cleanText && !files.length && !selectedItems.length && !selectedArt.length) return;
+    if (startFrom.type === 'omg_url' && !WEBSTORE_BUILD_REQUESTS.isValidOmgStoreUrl(startFrom.url)) {
+      setActionError('Enter a valid itemorder.com shop URL, or choose another starting point.');
+      return;
+    }
+    if ((startFrom.type === 'template' || startFrom.type === 'store') && !startFrom.id) {
+      setActionError(`Choose a ${startFrom.type === 'template' ? 'store template' : 'portal store'}, or switch back to Blank.`);
+      return;
+    }
     const invalid = files.map(storeRequestFileMeta).find((meta) => meta.error);
     if (invalid) { setActionError(invalid.error); return; }
-    setSubmitting(true); setActionError('');
+    setSubmitting(true); setActionError(''); setNotificationWarning('');
     try {
       const attachmentUrls = [];
       for (const file of files) {
@@ -5191,6 +5476,11 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
         customer_id: customerId || null,
         request_text: cleanText,
         attachment_urls: attachmentUrls,
+        selected_items: selectedItems,
+        selected_art: selectedArt,
+        start_from_type: startFrom.type,
+        start_from_id: startFrom.id,
+        start_from_url: startFrom.url,
         status: 'queued',
       }).select('*').single();
       if (insertError) throw insertError;
@@ -5200,8 +5490,21 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
         requestsRef.current = next;
         return next;
       });
-      setRequestText(''); setCustomerId(''); setFiles([]);
+      setRequestText(''); setCustomerId(''); setFiles([]); setSelectedItems([]); setSelectedArt([]); setStartFrom({ type: 'blank', id: null, url: null, label: 'Blank' });
       if (fileRef.current) fileRef.current.value = '';
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) throw new Error('No active session');
+        const response = await fetch('/.netlify/functions/notify-store-request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ request_id: data.id }),
+        });
+        if (!response.ok) throw new Error('Notification failed');
+      } catch (_) {
+        setNotificationWarning('Request queued — assistant not notified. It can still be picked up from the queue.');
+      }
     } catch (submitError) {
       setActionError(submitError?.message || 'Could not queue the store request.');
     } finally {
@@ -5236,8 +5539,11 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
   };
 
   const sortedCustomers = useMemo(() => [...customers].sort((a, b) => (a.name || '').localeCompare(b.name || '')), [customers]);
-  const canSubmit = !submitting && (!!requestText.trim() || files.length > 0);
-  const panelOpen = WEBSTORE_BUILD_REQUESTS.resolveStoreRequestPanelOpen(panelPreference, requests);
+  const startFromValid = startFrom.type === 'blank'
+    || ((startFrom.type === 'template' || startFrom.type === 'store') && !!startFrom.id)
+    || (startFrom.type === 'omg_url' && WEBSTORE_BUILD_REQUESTS.isValidOmgStoreUrl(startFrom.url));
+  const canSubmit = !submitting && startFromValid && (!!requestText.trim() || files.length > 0 || selectedItems.length > 0 || selectedArt.length > 0);
+  const panelOpen = standalone || WEBSTORE_BUILD_REQUESTS.resolveStoreRequestPanelOpen(panelPreference, requests);
   const togglePanel = () => {
     const next = panelOpen ? 'closed' : 'open';
     setPanelPreference(next);
@@ -5246,7 +5552,10 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
   return (
     <div style={{ background: '#fff', border: '1px solid #D8DEEA', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', marginBottom: 22, overflow: 'visible' }}>
       <div style={{ padding: '13px 18px', borderBottom: panelOpen ? '1px solid #EEF1F6' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <button type="button" onClick={togglePanel} aria-expanded={panelOpen} aria-controls="webstore-build-request-panel"
+        {standalone ? <div style={{ minWidth: 0 }}>
+          <span style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.6px', fontWeight: 800, fontSize: 20, color: '#192853' }}>Request details</span>
+          <span style={{ display: 'block', fontSize: 12.5, color: '#64748b', marginTop: 2 }}>Choose the customer, preload products and art, then add any build instructions.</span>
+        </div> : <button type="button" onClick={togglePanel} aria-expanded={panelOpen} aria-controls="webstore-build-request-panel"
           style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, padding: 0, border: 0, background: 'none', cursor: 'pointer', textAlign: 'left' }}>
           <span aria-hidden="true" style={{ color: '#64748b', fontSize: 13 }}>{panelOpen ? '▼' : '▶'}</span>
           <span style={{ minWidth: 0 }}>
@@ -5254,26 +5563,32 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
             {hasActiveRequests && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: '#1e40af', background: '#dbeafe', borderRadius: 10, padding: '2px 7px' }}>{requests.filter((request) => request.status === 'queued' || request.status === 'building').length} active</span>}
             <span style={{ display: 'block', fontSize: 12.5, color: '#64748b', marginTop: 2 }}>Paste a request, attach an item list, and track the draft build.</span>
           </span>
-        </button>
+        </button>}
         <span style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.6px', color: '#962C32', background: '#fbebec', borderRadius: 5, padding: '3px 8px' }}>Admin only</span>
       </div>
       {panelOpen && <div id="webstore-build-request-panel">
       <div style={{ padding: 18 }}>
+        <StoreRequestStartFromPicker templates={templates} stores={stores} value={startFrom} onChange={setStartFrom} />
         <label htmlFor="webstore-build-request-text" style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 5 }}>Store request</label>
         <textarea id="webstore-build-request-text" className="form-input" rows={5} value={requestText} onChange={(e) => setRequestText(e.target.value)}
           placeholder="Paste the request here — team, products, colors, pricing, dates, delivery details, and anything else the builder should know…"
           style={{ width: '100%', resize: 'vertical', minHeight: 104, lineHeight: 1.5, boxSizing: 'border-box' }} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px,1fr) auto auto', alignItems: 'start', gap: 10, marginTop: 10 }}>
-          <CustomerPicker customers={sortedCustomers} value={customerId} onChange={setCustomerId} placeholder="Optional customer — search by name or tag…" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) minmax(280px,1.2fr) auto auto', alignItems: 'start', gap: 10, marginTop: 10 }}>
+          <CustomerPicker customers={sortedCustomers} value={customerId} onChange={(id) => { setCustomerId(id); setSelectedArt([]); }} placeholder="Customer — search by name or tag…" />
+          <StoreRequestItemPicker value={selectedItems} onChange={setSelectedItems} disabled={submitting} />
           <input ref={fileRef} type="file" accept="application/pdf,image/*" multiple style={{ display: 'none' }}
             onChange={(e) => pickFiles(e.target.files)} />
           <button className="btn btn-secondary" onClick={() => fileRef.current?.click()} disabled={submitting}>📎 Attach item list</button>
           <button className="btn btn-primary" onClick={submit} disabled={!canSubmit}>{submitting ? 'Uploading & queuing…' : 'Queue store request'}</button>
         </div>
+        <div style={{ marginTop: 10 }}>
+          <StoreRequestArtPicker customerId={customerId} customers={customers} orders={orders} estimates={estimates} value={selectedArt} onChange={setSelectedArt} disabled={submitting} />
+        </div>
         {files.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 9 }}>
           {files.map((file) => <span key={`${file.name}-${file.size}`} style={{ fontSize: 11.5, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '3px 8px' }}>📎 {file.name}</span>)}
           <button onClick={() => { setFiles([]); if (fileRef.current) fileRef.current.value = ''; }} style={{ border: 0, background: 'none', color: '#b91c1c', fontSize: 11.5, cursor: 'pointer' }}>Clear</button>
         </div>}
+        {notificationWarning && <div role="status" style={{ marginTop: 10, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>{notificationWarning}</div>}
         {actionError && <div role="alert" style={{ marginTop: 10, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>{actionError}</div>}
         {loadError && <div role="alert" style={{ marginTop: 10, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>Could not load requests: {loadError}</div>}
       </div>
@@ -5289,7 +5604,14 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
             const status = STORE_REQUEST_STATUS[request.status] || STORE_REQUEST_STATUS.queued;
             const linkedStore = request.store_id && stores.find((store) => store.id === request.store_id);
             const attachments = Array.isArray(request.attachment_urls) ? request.attachment_urls : [];
-            const preview = request.request_text || (attachments.length ? 'Attachment-only request' : 'No request text');
+            const requestItems = Array.isArray(request.selected_items) ? request.selected_items : [];
+            const requestArt = Array.isArray(request.selected_art) ? request.selected_art : [];
+            const startFromLabel = request.start_from_type === 'template'
+              ? `Template · ${templates.find((template) => template.id === request.start_from_id)?.name || request.start_from_id}`
+              : request.start_from_type === 'store'
+                ? `Old store · ${stores.find((store) => store.id === request.start_from_id)?.name || request.start_from_id}`
+                : request.start_from_type === 'omg_url' ? `Old OMG store · ${request.start_from_url}` : 'Blank';
+            const preview = request.request_text || (attachments.length ? 'Attachment-only request' : requestItems.length ? 'Item-only request' : requestArt.length ? 'Art-only request' : 'No request text');
             return (
               <div key={request.id} style={{ border: '1px solid #E2E6EE', borderRadius: 8, padding: '10px 12px', background: '#FAFBFD' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -5305,6 +5627,16 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
                   </div>
                 </div>
                 <div title={request.request_text || ''} style={{ fontSize: 12.5, color: '#334155', marginTop: 7, whiteSpace: 'pre-wrap' }}>{preview.length > 280 ? preview.slice(0, 280) + '…' : preview}</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}><b>Start from:</b> {startFromLabel}</div>
+                {requestItems.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 7 }}>
+                  {requestItems.map((item, index) => <span key={`${item.product_id || item.sku}-${index}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#475569', background: '#eef2f7', borderRadius: 6, padding: '3px 7px' }}>
+                    {item.image_url ? <img src={item.image_url} alt="" style={{ width: 22, height: 22, objectFit: 'contain', borderRadius: 3, background: '#fff' }} /> : null}
+                    {item.sku}{item.name ? ` · ${item.name}` : ''}
+                  </span>)}
+                </div>}
+                {requestArt.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 7 }}>
+                  {requestArt.map((art) => <span key={art.art_id} style={{ fontSize: 11, color: art.is_main ? '#92400e' : '#475569', background: art.is_main ? '#fef3c7' : '#f1f5f9', borderRadius: 6, padding: '3px 7px' }}>{art.is_main ? '★ ' : '🎨 '}{art.name}</span>)}
+                </div>}
                 {attachments.length > 0 && <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 7 }}>
                   {attachments.map((attachment, i) => {
                     const url = typeof attachment === 'string' ? attachment : attachment?.url;
@@ -5324,8 +5656,41 @@ function StoreRequestPanel({ customers = [], stores = [], cu, repName, custName,
   );
 }
 
-function ListView({ stores, customers = [], custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onRefreshStores, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+export function StoreRequestPage({ customers = [], orders = [], estimates = [], teamMembers = [], cu, onBack, onOpenStore }) {
+  const [stores, setStores] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const loadStores = useCallback(async () => {
+    const [{ data: storeRows }, { data: templateRows }] = await Promise.all([
+      supabase.from('webstores').select('id,name,status,store_code').order('created_at', { ascending: false }).limit(300),
+      supabase.from('store_templates').select('id,name,items').order('name').limit(300),
+    ]);
+    setStores(storeRows || []);
+    setTemplates(templateRows || []);
+  }, []);
+  useEffect(() => { loadStores(); }, [loadStores]);
+  const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
+  if (!isAdmin) return <div className="card" style={{ maxWidth: 520, margin: '50px auto', padding: 28, textAlign: 'center' }}>Admin access is required to start a store request.</div>;
+  const repName = (id) => teamMembers.find((member) => member.id === id)?.name || '—';
+  const custName = (id) => customers.find((customer) => customer.id === id)?.name || '—';
+  return (
+    <div style={{ maxWidth: 1180, margin: '0 auto', paddingBottom: 30 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+        <button type="button" className="btn btn-secondary" onClick={onBack}>← Webstores</button>
+        <div>
+          <h1 style={{ margin: 0, fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.5px', color: '#192853' }}>Start a store</h1>
+          <div style={{ color: '#64748b', fontSize: 13 }}>Send a complete build request and track its progress.</div>
+        </div>
+      </div>
+      <StoreRequestPanel standalone customers={customers} stores={stores} templates={templates} orders={orders} estimates={estimates} cu={cu}
+        repName={repName} custName={custName} onRefreshStores={loadStores}
+        onOpen={(store) => onOpenStore && onOpenStore(store.id)} />
+    </div>
+  );
+}
+
+function ListView({ stores, customers = [], custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onRefreshStores, onNew, onStartStoreRequest, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
+  const [newStoreMenuOpen, setNewStoreMenuOpen] = useState(false);
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
   // Both filters are sticky once touched, so widening the view survives a reload
@@ -5611,15 +5976,20 @@ function ListView({ stores, customers = [], custName, repName, REPS = [], cu, st
           </div>
           {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
           {onCreateFromOmg && <button className="btn btn-secondary" onClick={onCreateFromOmg} title="Turn a shared OMG report link into a new Club Webstore — review & fix SKUs, prices and names first" style={{ borderColor: '#bbf7d0', background: '#f0fdf4', color: '#166534' }}>📥 Create from OMG</button>}
-          <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
+          {(cu?.role === 'admin' || cu?.role === 'super_admin') ? <div style={{ position: 'relative', display: 'flex' }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setNewStoreMenuOpen(false); }}>
+            <button className="btn btn-primary" onClick={onNew} style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>+ New Store</button>
+            <button className="btn btn-primary" aria-label="New store options" aria-haspopup="menu" aria-expanded={newStoreMenuOpen} onClick={() => setNewStoreMenuOpen((open) => !open)} style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: '1px solid rgba(255,255,255,.35)', paddingLeft: 9, paddingRight: 9 }}>▾</button>
+            {newStoreMenuOpen && <div role="menu" style={{ position: 'absolute', zIndex: 40, top: 'calc(100% + 5px)', right: 0, width: 210, padding: 5, background: '#fff', border: '1px solid #d8deea', borderRadius: 8, boxShadow: '0 10px 28px rgba(15,23,42,.16)' }}>
+              <button type="button" role="menuitem" onClick={() => { setNewStoreMenuOpen(false); onNew(); }} style={{ display: 'block', width: '100%', border: 0, background: 'none', borderRadius: 6, padding: '8px 10px', textAlign: 'left', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, color: '#334155' }}>New store (manual)</button>
+              <button type="button" role="menuitem" onClick={() => { setNewStoreMenuOpen(false); if (onStartStoreRequest) onStartStoreRequest(); else window.location.assign('?pg=store_request'); }} style={{ display: 'block', width: '100%', border: 0, background: '#eff6ff', borderRadius: 6, padding: '8px 10px', textAlign: 'left', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, color: '#1d4ed8' }}>Start a store request</button>
+            </div>}
+          </div> : <button className="btn btn-primary" onClick={onNew}>+ New Store</button>}
         </div>
       </div>
 
       {/* ══════════ STORES VIEW ══════════ */}
       {view === 'stores' && (
         <>
-          {(cu?.role === 'admin' || cu?.role === 'super_admin') && <StoreRequestPanel customers={customers} stores={stores} cu={cu} repName={repName} custName={custName} onOpen={onOpen} onRefreshStores={onRefreshStores} />}
-
           {/* Summary stats strip */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14, marginBottom: 22 }}>
             {summaryStats.map((st) => (
@@ -12396,7 +12766,7 @@ async function _vectorizeFile(file) {
     return new File([data.svg], (_cleanFileName(file.name || 'logo').replace(/\s+/g, '-') || 'logo') + '.svg', { type: 'image/svg+xml' });
   } finally { revoke(); }
 }
-function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false }) {
+function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false, saveContext = 'store' }) {
   const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
@@ -12502,7 +12872,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false 
           <button onClick={() => !busy && onClose()} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
         </div>
         <div style={{ padding: 16 }}>
-          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>One folder holds everything production needs for this logo: the web cutouts (one per color way) and the production files. Saved to the customer's art library <i>and</i> this store. PNG‑only is fine — the artist adds production files to the folder later.</div>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>One folder holds everything production needs for this logo: the web cutouts (one per color way) and the production files. {saveContext === 'request' ? <>Saved to the customer's art library and selected for this request.</> : <>Saved to the customer's art library <i>and</i> this store.</>} PNG‑only is fine — the artist adds production files to the folder later.</div>
           <div style={{ marginBottom: 12 }}>
             <div style={secTitle}>Folder name</div>
             <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={suggested} style={{ width: '100%' }} />

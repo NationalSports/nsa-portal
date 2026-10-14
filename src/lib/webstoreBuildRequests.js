@@ -40,10 +40,55 @@ function nextCustomerPickerIndex(currentIndex, key, resultCount) {
   return currentIndex;
 }
 
+function groupStoreRequestProducts(rows, limit = 8) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row?.id) continue;
+    const sku = String(row.sku || '').trim();
+    const styleSku = sku.split('-')[0] || sku;
+    const key = String(row.name || styleSku || row.id).trim().toLowerCase();
+    const current = groups.get(key);
+    const color = String(row.color || '').trim();
+    if (!current) {
+      groups.set(key, {
+        product_id: row.id,
+        sku: styleSku,
+        name: row.name || styleSku || 'Catalog item',
+        brand: row.brand || '',
+        image_url: row.image_front_url || '',
+        colors: color ? [color] : [],
+      });
+    } else {
+      if (!current.image_url && row.image_front_url) {
+        current.image_url = row.image_front_url;
+        current.product_id = row.id;
+      }
+      if (color && !current.colors.includes(color)) current.colors.push(color);
+    }
+  }
+  return [...groups.values()]
+    .map((item) => ({ ...item, colors: item.colors.sort((a, b) => a.localeCompare(b)) }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+
+function isValidOmgStoreUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    return url.protocol === 'https:'
+      && (url.hostname === 'itemorder.com' || url.hostname.endsWith('.itemorder.com'))
+      && /^\/shop(?:\/|$)/.test(url.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = {
   hasActiveStoreRequests,
   resolveStoreRequestPanelOpen,
   newlyReadyStoreIds,
   readyStoreIdsNeedingRefresh,
   nextCustomerPickerIndex,
+  groupStoreRequestProducts,
+  isValidOmgStoreUrl,
 };

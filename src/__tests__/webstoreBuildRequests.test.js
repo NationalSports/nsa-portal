@@ -8,10 +8,13 @@ const {
   newlyReadyStoreIds,
   readyStoreIdsNeedingRefresh,
   nextCustomerPickerIndex,
+  groupStoreRequestProducts,
+  isValidOmgStoreUrl,
 } = require('../lib/webstoreBuildRequests');
 
 const ROOT = path.resolve(__dirname, '../..');
 const ui = fs.readFileSync(path.join(ROOT, 'src/Webstores.js'), 'utf8');
+const app = fs.readFileSync(path.join(ROOT, 'src/App.js'), 'utf8');
 const migration = fs.readFileSync(
   path.join(ROOT, 'supabase/migrations/20261013075510_webstore_build_requests.sql'),
   'utf8',
@@ -22,6 +25,10 @@ const hardening = fs.readFileSync(
 );
 const deletionCompatibility = fs.readFileSync(
   path.join(ROOT, 'supabase/migrations/20261013084008_allow_ready_request_store_deletion.sql'),
+  'utf8',
+);
+const selectedItemsMigration = fs.readFileSync(
+  path.join(ROOT, 'supabase/migrations/20261014062000_add_selected_items_to_webstore_build_requests.sql'),
   'utf8',
 );
 
@@ -52,20 +59,54 @@ test('database enforces attribution, attachment limits, and queued-only admin ca
   expect(deletionCompatibility).toMatch(/drop constraint if exists webstore_build_requests_ready_has_store/i);
 });
 
-test('Webstores gates the request box to admins and only reads and writes queue rows', () => {
+test('selected catalog items and art are nullable, validated, bounded, and count as request instructions', () => {
+  expect(selectedItemsMigration).toMatch(/add column selected_items jsonb/i);
+  expect(selectedItemsMigration).toMatch(/add column selected_art jsonb/i);
+  expect(selectedItemsMigration).toMatch(/jsonb_array_length\(items\) <= 50/i);
+  expect(selectedItemsMigration).toMatch(/product_id.*sku.*name.*brand.*image_url/is);
+  expect(selectedItemsMigration).toMatch(/art_id.*name.*is_main/is);
+  expect(selectedItemsMigration).toMatch(/where item->>'is_main' = 'true'[^]*<= 1/i);
+  expect(selectedItemsMigration).toMatch(/start_from_type in \('template', 'store'\)/i);
+  expect(selectedItemsMigration).toMatch(/start_from_type = 'omg_url'/i);
+  expect(selectedItemsMigration).toMatch(/itemorder\[.\]com\/shop/i);
+  expect(selectedItemsMigration).toMatch(/jsonb_array_length\(coalesce\(selected_items, '\[\]'::jsonb\)\) > 0/i);
+  expect(selectedItemsMigration).toMatch(/jsonb_array_length\(coalesce\(selected_art, '\[\]'::jsonb\)\) > 0/i);
+});
+
+test('dedicated request page is admin-only and the Webstores list no longer embeds the queue', () => {
   const panel = ui.slice(ui.indexOf('function StoreRequestPanel('), ui.indexOf('\nfunction ListView('));
-  expect(ui).toContain("(cu?.role === 'admin' || cu?.role === 'super_admin') && <StoreRequestPanel");
+  const listView = ui.slice(ui.indexOf('function ListView('), ui.indexOf('\nfunction StoreForm('));
+  expect(ui).toContain('export function StoreRequestPage(');
+  expect(ui).toContain("cu?.role === 'admin' || cu?.role === 'super_admin'");
+  expect(app).toContain("if(pageId==='store_request')return accessUser.role==='admin'||accessUser.role==='super_admin'");
+  expect(app).toContain("pg==='store_request'");
+  expect(listView).not.toContain('<StoreRequestPanel');
   expect(panel).toContain("supabase.from('webstore_build_requests')");
   expect(panel).toContain(".update({ status: 'cancelled' }).eq('id', request.id).eq('status', 'queued')");
   expect(panel).toContain("cloudUpload(file, 'nsa-webstore-build-requests')");
   expect(panel).toContain('STORE_REQUEST_MAX_FILES');
   expect(ui).toContain('STORE_REQUEST_MAX_FILE_BYTES');
+  expect(panel).toContain("fetch('/.netlify/functions/notify-store-request'");
+  expect(panel).toContain('body: JSON.stringify({ request_id: data.id })');
+  expect(panel).not.toMatch(/STORE_REQUEST_WEBHOOK_(URL|KEY)/);
   expect(panel).not.toMatch(/anthropic|openai|gemini/i);
 });
 
-test('request panel shows results, attachments, and the linked draft store', () => {
+test('request panel shows catalog item search, results, attachments, and the linked draft store', () => {
   expect(ui).toContain('<MarkdownSummary text={request.result_summary} />');
   expect(ui).toContain('attachments.map');
+  expect(ui).toContain('<StoreRequestItemPicker value={selectedItems}');
+  expect(ui).toContain("aria-label=\"Search catalog items\"");
+  expect(ui).toContain("role=\"option\"");
+  expect(ui).toContain("selected_items: selectedItems");
+  expect(ui).toContain("selected_art: selectedArt");
+  expect(ui).toContain("start_from_type: startFrom.type");
+  expect(ui).toContain('<StoreRequestStartFromPicker templates={templates}');
+  expect(ui).toContain('request.selected_items');
+  expect(ui).toContain('request.selected_art');
+  expect(ui).toContain('<StoreRequestArtPicker customerId={customerId}');
+  expect(ui).toContain('aria-multiselectable="true"');
+  expect(ui).toContain('<NewArtFolderModal saveContext="request"');
   expect(ui).toContain('Open draft store →');
   expect(ui).toContain("accept=\"application/pdf,image/*\"");
   expect(ui).toContain('htmlFor="webstore-build-request-text"');
@@ -112,10 +153,163 @@ describe('request panel behavior', () => {
     expect(nextCustomerPickerIndex(0, 'ArrowDown', 0)).toBe(-1);
   });
 
+  test('catalog rows collapse into style results with a thumbnail and available colors', () => {
+    expect(groupStoreRequestProducts([
+      { id: 'p-1', sku: 'ST350-BLACK', name: 'Sport-Tek Competitor Tee', brand: 'Sport-Tek', color: 'Black', image_front_url: '' },
+      { id: 'p-2', sku: 'ST350-ROYAL', name: 'Sport-Tek Competitor Tee', brand: 'Sport-Tek', color: 'Royal', image_front_url: 'https://img.example/royal.jpg' },
+    ])).toEqual([{
+      product_id: 'p-2',
+      sku: 'ST350',
+      name: 'Sport-Tek Competitor Tee',
+      brand: 'Sport-Tek',
+      image_url: 'https://img.example/royal.jpg',
+      colors: ['Black', 'Royal'],
+    }]);
+  });
+
+  test('old OMG starting URLs are restricted to secure itemorder shop links', () => {
+    expect(isValidOmgStoreUrl('https://demo.itemorder.com/shop')).toBe(true);
+    expect(isValidOmgStoreUrl('https://demo.itemorder.com/shop/team')).toBe(true);
+    expect(isValidOmgStoreUrl('http://demo.itemorder.com/shop')).toBe(false);
+    expect(isValidOmgStoreUrl('https://itemorder.com.attacker.test/shop')).toBe(false);
+  });
+
+  test('admin New Store control exposes manual and request routes while non-admins keep the plain button', () => {
+    expect(ui).toContain('New store (manual)');
+    expect(ui).toContain('Start a store request');
+    expect(ui).toContain("window.location.assign('?pg=store_request')");
+    expect(ui).toContain(": <button className=\"btn btn-primary\" onClick={onNew}>+ New Store</button>");
+  });
+
   test('shared customer picker keeps New Store and OMG wiring plus click-away close', () => {
     expect(ui).toContain('<CustomerPicker customers={sortedCust} value={customerId} onChange={setCustomerId}');
     expect(ui).toContain('<CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer}');
     expect(ui).toContain('onBlur={() => setTimeout(() => setOpen(false), 120)}');
     expect(ui).toContain("setActiveIndex((i) => WEBSTORE_BUILD_REQUESTS.nextCustomerPickerIndex(i, e.key, matches.length))");
+  });
+});
+
+describe('notify-store-request function', () => {
+  const request = {
+    id: '11111111-1111-4111-8111-111111111111',
+    created_by: 'member-1',
+    customer_id: 'customer-1',
+    request_text: 'Build this store',
+    attachment_urls: [{ url: 'https://res.cloudinary.com/demo/a.pdf' }],
+    selected_items: [{ product_id: 'p-1', sku: 'ST350', name: 'Tee', brand: 'Sport-Tek', image_url: 'https://img.example/tee.jpg' }],
+    selected_art: [{ art_id: 'art-1', name: 'Primary logo', is_main: true }],
+    start_from_type: 'template',
+    start_from_id: 'template-1',
+    start_from_url: null,
+    created_at: '2026-10-14T06:00:00.000Z',
+    status: 'queued',
+  };
+  const originalEnv = process.env;
+  let verifyAdmin;
+  let admin;
+  let maybeSingle;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    verifyAdmin = jest.fn();
+    jest.doMock('../../netlify/functions/_shared', () => ({
+      corsHeaders: () => ({ 'Content-Type': 'application/json' }),
+      verifyAdmin,
+    }));
+    maybeSingle = jest.fn().mockResolvedValue({ data: request, error: null });
+    admin = {
+      from: jest.fn(() => ({
+        select: jest.fn(() => ({
+          eq: jest.fn(() => ({ maybeSingle })),
+        })),
+      })),
+    };
+  });
+
+  afterEach(() => {
+    jest.dontMock('../../netlify/functions/_shared');
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  test('rejects a caller who is not an authenticated active admin', async () => {
+    verifyAdmin.mockResolvedValue({ ok: false, status: 403, error: 'Admin role required' });
+    const { handler } = require('../../netlify/functions/notify-store-request');
+    const result = await handler({ httpMethod: 'POST', body: JSON.stringify({ request_id: request.id }) });
+    expect(result.statusCode).toBe(403);
+    expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  test('loads a queued request and sends only the server-built payload with the secret header', async () => {
+    verifyAdmin.mockResolvedValue({ ok: true, admin });
+    process.env.STORE_REQUEST_WEBHOOK_URL = 'https://assistant.example/hooks/store';
+    process.env.STORE_REQUEST_WEBHOOK_KEY = 'server-secret';
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock;
+    const { handler } = require('../../netlify/functions/notify-store-request');
+    const result = await handler({ httpMethod: 'POST', body: JSON.stringify({ request_id: request.id }) });
+    expect(result.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://assistant.example/hooks/store');
+    expect(options.headers.Authorization).toBe('Bearer server-secret');
+    expect(JSON.parse(options.body)).toEqual({
+      request_id: request.id,
+      created_by: request.created_by,
+      customer_id: request.customer_id,
+      request_text: request.request_text,
+      attachment_urls: request.attachment_urls,
+      selected_items: request.selected_items,
+      selected_art: request.selected_art,
+      start_from_type: request.start_from_type,
+      start_from_id: request.start_from_id,
+      start_from_url: request.start_from_url,
+      created_at: request.created_at,
+    });
+    expect(options.signal).toBeDefined();
+  });
+
+  test('does not notify a request that has already left the queue', async () => {
+    verifyAdmin.mockResolvedValue({ ok: true, admin });
+    maybeSingle.mockResolvedValue({ data: { ...request, status: 'building' }, error: null });
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock;
+    const { handler } = require('../../netlify/functions/notify-store-request');
+    const result = await handler({ httpMethod: 'POST', body: JSON.stringify({ request_id: request.id }) });
+    expect(result.statusCode).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('a failed assistant POST is non-fatal to the queued request', async () => {
+    verifyAdmin.mockResolvedValue({ ok: true, admin });
+    process.env.STORE_REQUEST_WEBHOOK_URL = 'https://assistant.example/hooks/store';
+    process.env.STORE_REQUEST_WEBHOOK_KEY = 'server-secret';
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503 });
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { handler } = require('../../netlify/functions/notify-store-request');
+    const result = await handler({ httpMethod: 'POST', body: JSON.stringify({ request_id: request.id }) });
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body)).toMatchObject({ notified: false });
+    expect(admin.from).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
+  });
+
+  test('missing webhook configuration is reported after the queued row remains intact', async () => {
+    verifyAdmin.mockResolvedValue({ ok: true, admin });
+    delete process.env.STORE_REQUEST_WEBHOOK_URL;
+    delete process.env.STORE_REQUEST_WEBHOOK_KEY;
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock;
+    const { handler } = require('../../netlify/functions/notify-store-request');
+    const result = await handler({ httpMethod: 'POST', body: JSON.stringify({ request_id: request.id }) });
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body)).toMatchObject({ notified: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(admin.from).toHaveBeenCalledWith('webstore_build_requests');
+    consoleSpy.mockRestore();
   });
 });
