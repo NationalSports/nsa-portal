@@ -5304,9 +5304,13 @@ export default function App(){
   const _hydrateFailedRef=React.useRef(new Set()),_hydratingRef=React.useRef(new Set());
   const [,setHydratingDocId]=useState(null);// re-render trigger only
   const _docNeedsItems=(doc,table)=>!!doc&&!doc._draftRecovery&&!_hydrateFailedRef.current.has(table+':'+doc.id)&&(table==='sales_orders'?[doc._itemsHydrated,doc._decosHydrated,doc._posHydrated,doc._picksHydrated]:[doc._itemsHydrated,doc._decosHydrated]).includes(false);
-  const _awaitingItems=(doc,table)=>!!supabase&&_docNeedsItems(doc,table);
+  // Gate only the FIRST mount of an editor for a document. Once it is open it holds the rep's working
+  // copy; a later poll that marks the list row unhydrated again must never swap it out for the loading
+  // screen (that would unmount the editor and drop unsaved edits).
+  const _editorOpenRef=React.useRef({});
+  const _awaitingItems=(doc,table)=>{if(_editorOpenRef.current[table]===doc.id)return false;if(supabase&&_docNeedsItems(doc,table))return true;_editorOpenRef.current[table]=doc.id;return false};
   const _hydrateOpenDoc=(doc,table)=>{
-    if(!supabase||!_docNeedsItems(doc,table)||_hydratingRef.current.has(table+':'+doc.id))return;
+    if(!supabase||!_docNeedsItems(doc,table)||_editorOpenRef.current[table]===doc.id||_hydratingRef.current.has(table+':'+doc.id))return;
     const id=doc.id,isSO=table==='sales_orders';
     _hydratingRef.current.add(table+':'+id);
     setHydratingDocId(id);
@@ -5324,7 +5328,9 @@ export default function App(){
       nf("Couldn't load "+id+"'s item lines. Don't save it — reload the page to see the items.",'error');
     }).finally(()=>{_hydratingRef.current.delete(table+':'+id);setHydratingDocId(cur=>cur===id?null:cur)});
   };
+  React.useEffect(()=>{if(!eSO)_editorOpenRef.current['sales_orders']=null},[eSO]);
   React.useEffect(()=>{_hydrateOpenDoc(eSO,'sales_orders')},[eSO?.id,eSO?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(()=>{if(!eEst)_editorOpenRef.current['estimates']=null},[eEst]);
   React.useEffect(()=>{_hydrateOpenDoc(eEst,'estimates')},[eEst?.id,eEst?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
