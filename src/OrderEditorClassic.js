@@ -3883,7 +3883,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const dimensions=[...new Map(reads.filter(r=>r.dimensions).map(r=>[r.dimensions.artSize,r.dimensions])).values()];
     const stitches=[...new Set(reads.map(r=>r.stitches).filter(Boolean))];
     if(dimensions.length>1||stitches.length>1){if(verb==='Read')nf('Attached proofs have conflicting dimensions or stitches. Enter the correct values manually, or retire the older proof.','error');return {conflict:true};}
-    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null,threads:(reads.find(r=>r.threads)||{}).threads||null};
+    // Thread lists from several proofs must agree; disagreeing proofs fill no threads.
+    const threadSets=[...new Map(reads.filter(r=>r.threads).map(r=>[r.threads.join('|'),r.threads])).values()];
+    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null,threads:threadSets.length===1?threadSets[0]:null};
     await _applyArtStitches(folderId,specs,reads.map(r=>r.source.name).join(', '),verb,sourceOrderId,entries.map(p=>p.url));
     return specs;
   };
@@ -3916,9 +3918,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current)||artNeedsThreadColors(a))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    // Each proof set is considered ONCE, the first time it is seen (order open or a new upload) —
+    // whether or not it needs filling then. A rep later clearing a thread list to retype it must
+    // not trigger a refill + background save mid-edit.
+    const targets=[];
+    (o.art_files||[]).forEach(a=>{if(!a||a.archived||a.deco_type!=='embroidery'||!_artPdfEntries(a).length)return;const k=_embProofKey(a);if(_autoStitchTried.current.has(k))return;_autoStitchTried.current.add(k);
+      if(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current)||artNeedsThreadColors(a))targets.push(a)});
     if(!targets.length)return;let cancelled=false;
-    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
+    (async()=>{for(const a of targets){if(cancelled)break;await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
   },[o.art_files,o.id,allInvoices,extractPdfText]);
   // The customer whose library this order's art should be promoted into. Library art lives on

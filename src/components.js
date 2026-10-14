@@ -741,9 +741,9 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   const maxLines=isEmb&&stDesign?stDesign.blocks.length:null;
   // The thread/ink line last clicked into. A quick-pick color REPLACES that line, then moves the
   // highlight to the next line so a rep can click colors in sew order.
-  const[active,setActive]=useState(null);
-  const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];
-    if(active&&active.ci===ci&&active.ii<inks.length){inks[active.ii]=v;updCw(ci,{inks});setActive(active.ii+1<inks.length?{ci,ii:active.ii+1}:null);return}
+  const[active,setActive]=useState(null); // {cwId, ii} — keyed by color-way id so removing a CW can't retarget it
+  const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];const cwId=cws[ci].id;
+    if(active&&active.cwId===cwId&&active.ii<inks.length){inks[active.ii]=v;updCw(ci,{inks});setActive(active.ii+1<inks.length?{cwId,ii:active.ii+1}:null);return}
     const e=inks.findIndex(x=>!String(x||'').trim());if(e>=0)inks[e]=v;else if(maxLines==null||inks.length<maxLines)inks.push(v);else return;updCw(ci,{inks})};
   const[stBusy,setStBusy]=useState(false);
   const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
@@ -779,14 +779,14 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));const isActive=active&&active.ci===ci&&active.ii===ii;const extra=maxLines!=null&&ii>=maxLines;return<div key={ii} onFocus={()=>setActive({ci,ii})} title={extra?'The DST has only '+maxLines+' thread stops — remove this line':undefined} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4,borderRadius:6,boxShadow:isActive?'0 0 0 2px #c4b5fd':'none',background:extra?'#fef2f2':isActive?'#f5f3ff':'transparent'}}>
+            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));const isActive=active&&active.cwId===cw.id&&active.ii===ii;const extra=maxLines!=null&&ii>=maxLines;return<div key={ii} onFocus={()=>setActive({cwId:cw.id,ii})} title={extra?'The DST has only '+maxLines+' thread stops — remove this line':undefined} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4,borderRadius:6,boxShadow:isActive?'0 0 0 2px #c4b5fd':'none',background:extra?'#fef2f2':isActive?'#f5f3ff':'transparent'}}>
               <span style={{fontSize:10,color:isActive?'#6d28d9':extra?'#dc2626':'#cbd5e1',fontWeight:isActive?700:400,width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...(cw.inks||[])];inks[ii]=v;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
-              <button onClick={()=>updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
+              <button onClick={()=>{setActive(null);updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
             </div>})}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
-            {((isEmb?threadColors:pantoneColors)||[]).length>0&&<div style={{fontSize:9,color:'#94a3b8',margin:'2px 0'}}>{active&&active.ci===ci?'Pick a color to change line '+(active.ii+1):'Click a line, then a color to change it'}</div>}
+            {((isEmb?threadColors:pantoneColors)||[]).length>0&&<div style={{fontSize:9,color:'#94a3b8',margin:'2px 0'}}>{active&&active.cwId===cw.id?'Pick a color to change line '+(active.ii+1):'Click a line, then a color to change it'}</div>}
             {maxLines==null||(cw.inks||[]).length<maxLines
               ?<button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color{maxLines!=null?' ('+(cw.inks||[]).length+' of '+maxLines+')':''}</button>
               :<div style={{fontSize:9,color:'#6d28d9',fontWeight:600,padding:'4px 0'}}>{maxLines} of {maxLines} thread stops — matches the DST</div>}

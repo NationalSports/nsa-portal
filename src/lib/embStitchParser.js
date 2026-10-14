@@ -130,7 +130,9 @@ function parseThreadColors(text) {
       out.push(name);
     }
   }
-  if (!out.length) {
+  // Fallback only on a real digitizer sheet (it lists stitches) — a mockup PDF's "Color: Navy"
+  // garment line must not be read as a thread.
+  if (!out.length && /stitches\s*:/i.test(text)) {
     const re = /(?:^|\t)\s*Color:\s*([^\t\n]+)/gim;
     let m;
     while ((m = re.exec(text))) { const name = _threadName(m[1]); if (name) out.push(name); }

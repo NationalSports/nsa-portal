@@ -1488,10 +1488,12 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[],st
     p.logos=garmentLogoDetails(gi,so,allArtFiles).map(l=>({url:l.url,bg:logoDetailBg(gi.color,l.cwLabel,l.side),
       label:'Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')}));
     // Stitch preview: the embroidery DST drawn in this garment's color-way threads.
+    // Same color-way resolution as the logo detail (garment-color match, reversible side B).
     itemArtDecos.forEach(d=>{const art=allArtFiles.find(a=>a&&a.id===d.art_file_id);if(!art||art.deco_type!=='embroidery')return;
-      const cwId=d.color_way_id||((art.color_ways||[]).length===1?art.color_ways[0].id:'');
-      const sp=stitchPreviews[art.id+'|'+cwId];if(!sp||p.logos.some(l=>l.url===sp.url))return;
-      p.logos.push({url:sp.url,bg:logoDetailBg(gi.color,sp.garment,''),label:'Stitch preview — '+_upEsc(art.name||'Design')+(sp.garment?' · CW: '+_upEsc(sp.garment):'')})});
+      [[d.color_way_id,d.reversible?'A':''],...(d.reversible?[[d.color_way_id_b,'B']]:[])].forEach(([cwRaw,side])=>{
+        const cwId=resolveLogoColorWay(art,cwRaw||null,gi.color,side);if(cwId===undefined)return;
+        const sp=stitchPreviews[art.id+'|'+(cwId||'')];if(!sp||p.logos.some(l=>l.url===sp.url))return;
+        p.logos.push({url:sp.url,bg:logoDetailBg(gi.color,sp.garment,side),label:'Stitch preview — '+_upEsc(art.name||'Design')+(sp.garment?' · CW: '+_upEsc(sp.garment):'')+(side?' · Side '+side:'')})})});
   });
   const _decoGroups=groupByDecoration(itemParts,p=>p.key);
   const _imgBox=(src,h,bg)=>'<div style="border:1px solid #e2e8f0;border-radius:6px;background:'+(bg||'#fff')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:'+h+'px;display:flex;align-items:center;justify-content:center;padding:6px"><img src="'+src+'" style="max-height:'+(h-12)+'px;max-width:100%;object-fit:contain"/></div>';

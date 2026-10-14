@@ -168,7 +168,10 @@ describe('parseThreadColors', () => {
     expect(parseThreadColors(SAN_MATEO_PROOF)).toEqual(['White', 'Navy Blue (17)', 'Dark Green (1)', 'White']);
   });
   test('falls back to the Color Film page when there is no stop table', () => {
-    expect(parseThreadColors('#: 1.\t#: 2.\nColor: WHITE\tColor: NAVY BLUE\nCode:\tCode: 17')).toEqual(['White', 'Navy Blue']);
+    expect(parseThreadColors('#: 1.\t#: 2.\nColor: WHITE\tColor: NAVY BLUE\nCode:\tCode: 17\nStitches: 4773\tStitches: 4869')).toEqual(['White', 'Navy Blue']);
+  });
+  test('a mockup PDF with a garment "Color:" line is not read as threads', () => {
+    expect(parseThreadColors('Mockup for coach approval\nStyle: A230 Polo\nColor: Navy\nSizes: S-XL')).toBeNull();
   });
   test('does not read "Colors: 3" / "Color changes:" as threads', () => {
     expect(parseThreadColors('Colors:\t3\nColor changes:\t3\nColorway:\tColorway 1')).toBeNull();

@@ -1567,14 +1567,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);
         if(!stitches&&!dimensions&&!threads)continue;
         const got=[];
+        // ONE library write for size + stitches + threads: a second updateLibArt in the same tick
+        // starts from the not-yet-refreshed customer copy and would drop the first write.
+        // Thread colors fill only empty color-way thread lists (same rule as the order editors).
         let before=null,after=null;
-        if((stitches||dimensions)&&updateLibArt(a=>{before=a;after=fillEmbroiderySpecs(a,{dimensions,stitches});return after})&&after){
-          setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches}:d);
+        if(updateLibArt(a=>{before=a;after=fillThreadColorWays(fillEmbroiderySpecs(a,{dimensions,stitches}),threads);return after})&&after){
+          setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches,color_ways:after.color_ways}:d);
           if(after.art_size!==before.art_size)got.push(after.art_size);
           if(after.stitches!==before.stitches)got.push(Number(after.stitches).toLocaleString()+' stitches');
         }
-        // Thread colors fill only empty color-way thread lists (same rule as the order editors).
-        if(threads){const next=fillThreadColorWays(art,threads);if(next!==art){persistColorWays(next.color_ways);got.push(threads.length+' thread color'+(threads.length===1?'':'s'))}}
+        if(threads){
+          // Order copies of this art get the threads too (blank lists only), each order saved once.
+          let filled=!!(after&&before&&after.color_ways!==before.color_ways);
+          if(saveArt)_liveSOs().forEach(so=>{let ch=false;const upd=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;const n=fillThreadColorWays(a,threads);if(n!==a)ch=true;return n});
+            if(ch){filled=true;saveArt({...so,art_files:upd,updated_at:new Date().toLocaleString()})}});
+          if(!after){const next=fillThreadColorWays(art,threads);if(next!==art)setCustArtDetail(d=>d?{...d,color_ways:next.color_ways}:d)}
+          if(filled)got.push(threads.length+' thread color'+(threads.length===1?'':'s'));
+        }
         nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches/threads kept');
         return;
       }

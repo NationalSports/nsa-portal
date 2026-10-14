@@ -302,7 +302,8 @@ export default function GarmentMockCard({ label, sub, mocks, candidates: baseCan
   const [auto, setAuto] = useState(null); // { url (object URL), file }
   const autoKey = autoOn && autoDesign ? [autoMock.garmentUrl, (autoMock.stitch.inks || []).join('|'), autoMock.position, autoMock.artSize].join('~') : '';
   useEffect(() => {
-    if (!autoKey) { setAuto(null); return; }
+    setAuto(null); // never show a revoked object URL while the new mock composes
+    if (!autoKey) return;
     let live = true, objUrl = '';
     composeStitchMock(autoDesign, autoMock.stitch.inks, autoMock.garmentUrl, { position: autoMock.position, artSize: autoMock.artSize })
       .then(file => { if (!live) return; objUrl = URL.createObjectURL(file); setAuto({ url: objUrl, file }); }, () => live && setAuto(null));

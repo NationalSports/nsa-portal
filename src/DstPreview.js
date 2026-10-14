@@ -184,7 +184,9 @@ function stitchSourceFor(art, colorWayId) {
   const dstUrl = dst ? (typeof dst === 'string' ? dst : (dst.url || '')) : '';
   if (!/^https?:\/\//i.test(dstUrl)) return null;
   const cw = (art.color_ways || []).find(c => c && c.id === colorWayId) || ((art.color_ways || []).length === 1 ? art.color_ways[0] : null);
-  return { dstUrl, inks: cw?.inks || [], label: cw?.garment_color || '' };
+  // No resolved color way, or no threads in it → nothing honest to draw (it would be all grey).
+  if (!cw || !(cw.inks || []).some(x => String(x || '').trim())) return null;
+  return { dstUrl, inks: cw.inks, label: cw.garment_color || '' };
 }
 // Transparent stitch render sized to its box (logo detail frame paints the garment color behind).
 function StitchCanvas({ design, inks, style }) {
