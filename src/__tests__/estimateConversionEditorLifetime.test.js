@@ -35,7 +35,7 @@ test('conversion preparation and failure keep the estimate editor mounted with i
     return React.createElement('button', {onClick: () => setMemo('latest unsaved memo')}, memo);
   }
   const Boundary = ({children}) => children;
-  const Preview = Function('React','ComponentErrorBoundary','ActiveOrderEditor','LazyFallback',compiled+';return Preview;')(React,Boundary,Editor,() => null);
+  const Preview = Function('React','ComponentErrorBoundary','ActiveOrderEditor','LazyFallback','_awaitingItems',compiled+';return Preview;')(React,Boundary,Editor,() => null,() => false);
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
