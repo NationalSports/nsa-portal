@@ -83,7 +83,9 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
         // Try auto sign-in; if email confirmation required, show confirm screen
         const signIn=await withStartupDeadline(()=>_sbSignIn(email.trim(),password),'Signing in');
         if(signIn.error){setMode('confirm');return}
-        onLogin({...member,_authSession:true});
+        // The roster entry is only id/name/role/email (login_roster); the signed-in profile is the full row.
+        const profile=await withStartupDeadline(()=>_sbGetMyProfile(),'Loading your staff profile');
+        onLogin({...(profile||member),_authSession:true});
       }else{
         // Normal sign-in
         const res=await withStartupDeadline(()=>_sbSignIn(email.trim(),password),'Signing in');

@@ -374,6 +374,11 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   logo:'NSA',logoUrl:'/NEW%20NSA%20Logo%20on%20white.png',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
+// The company_info app_state row over the defaults, with fullAddr derived (App.js applies the same
+// rule inline where it loads company_info).
+export const companyInfoFrom=(info)=>{const ci={...NSA_DEFAULTS,...(info||{})};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;return ci};
+// Coach-portal settings used until staff save their own (App.js state + Settings page, CoachPortalApp).
+export const PORTAL_SETTINGS_DEFAULTS={followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.',ccFeePct:0.029,paymentNote:''};
 // Estimate footer: quote the customer's account terms. Only prepay accounts get the deposit
 // line; net-terms accounts (and accounts with no terms set, which default to net30 everywhere
 // else) are told their Net N terms instead of a 50% deposit they don't actually owe.
