@@ -32,14 +32,14 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  localStorage.removeItem('nsa_outbox');
+  Object.keys(localStorage).filter(k=>k.startsWith('nsa_outbox')).forEach(k=>localStorage.removeItem(k));
   window.localStorage.setItem('nsa_user', JSON.stringify({
     id: '00000000-0000-0000-0000-000000000001', name: 'Test Admin', role: 'admin',
   }));
 });
 
 afterEach(() => {
-  localStorage.removeItem('nsa_outbox');
+  Object.keys(localStorage).filter(k=>k.startsWith('nsa_outbox')).forEach(k=>localStorage.removeItem(k));
   localStorage.removeItem('nsa_user');
 });
 
@@ -89,4 +89,10 @@ test('another rep’s conflict is retained without appearing in an admin’s per
   emitConflict();
   expect(screen.getByText(/1 unsaved edit from this browser/)).toBeTruthy();
   expect(screen.queryByText('EST-other-rep')).toBeNull();
+});
+
+test('a later conflict in the same editing session replaces the obsolete banner',()=>{
+  render(<App/>);emitConflict();emitConflict();
+  expect(screen.getAllByText(/EST-9001 — Big Team LLC/)).toHaveLength(1);
+  expect(_outboxList()).toHaveLength(1);
 });

@@ -15,14 +15,14 @@ test('running save is quiet, but failure exposes the preserved backup',async()=>
  expect(journal.acknowledge).not.toHaveBeenCalled();
 });
 
-test('rep filter scopes the rows and count without acknowledging hidden copies',async()=>{
+test('all of this editor’s backups are visible regardless of order assignment',async()=>{
  const other={...draft,key:'other',id:'SO-2',payload:{...draft.payload,id:'SO-2'}};
- const journal={list:jest.fn().mockResolvedValue([draft,other]),acknowledge:jest.fn()};
- const {rerender}=render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}} isVisible={d=>d.id==='SO-1'}/>);
- await screen.findByText('SO-1');expect(screen.queryByText('SO-2')).toBeNull();
- expect(screen.getByText('Draft recovery (1)')).toBeTruthy();
- rerender(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}} isVisible={()=>false}/>);
- expect(screen.queryByText(/Draft recovery/)).toBeNull();
+ const foreign={...draft,key:'foreign',owner:'staff-b',id:'SO-3',payload:{...draft.payload,id:'SO-3'}};
+ const journal={list:jest.fn().mockResolvedValue([draft,other,foreign]),acknowledge:jest.fn()};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');expect(screen.getByText('SO-2')).toBeTruthy();
+ expect(screen.queryByText('SO-3')).toBeNull();
+ expect(screen.getByText('Draft recovery (2)')).toBeTruthy();
  expect(journal.acknowledge).not.toHaveBeenCalled();
 });
 

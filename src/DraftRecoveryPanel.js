@@ -1,7 +1,7 @@
 import React, {useCallback,useEffect,useState,useRef} from 'react';
 import {draftJournal,DRAFT_CHANGE_KEY} from './lib/draftJournal';
 
-export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal,isVisible=()=>true}) {
+export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}) {
   const [drafts,setDrafts]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const ownerRef=useRef(owner);ownerRef.current=owner;
   const refreshSequence=useRef(0);
@@ -28,7 +28,9 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal,
   },[refresh]);
   // A durable safety copy for a running save is not a recovery task. A failed
   // save or a fresh session exposes it again without deleting any backup.
-  const visibleDrafts=drafts.filter(d=>d.owner===String(owner)&&isVisible(d)&&(!d.durable||!journal.isSaving?.(d)));
+  // A recovery copy belongs to the signed-in editor, even when that editor
+  // is not the order's assigned sales rep (or the order has no customer yet).
+  const visibleDrafts=drafts.filter(d=>d.owner===String(owner)&&(!d.durable||!journal.isSaving?.(d)));
   if(!owner||(!visibleDrafts.length&&!error))return null;
   const download=()=>{
     const blob=new Blob([JSON.stringify({format:'nsa-draft-recovery-v1',exportedAt:new Date().toISOString(),drafts:visibleDrafts},null,2)],{type:'application/json'});
