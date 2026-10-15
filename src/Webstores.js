@@ -9849,14 +9849,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'art' && !isBundle && <React.Fragment>
 
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
-        {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <LogoChoiceSwitcher item={item} catalog={catalog} onEdit={onEditItem} />}
+        {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <LogoChoiceSwitcher key={item.id} item={item} catalog={catalog} onEdit={onEditItem} {...(teamLogoChoices ? { onUpdate: onUpdateSchoolLogoOption, onSetFirst: onSetFirstSchoolLogo, firstLogoByStyle: firstSchoolLogoByStyle } : {})} />}
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
           onAddLogoChoice={teamLogoChoices ? addLogoChoice : undefined}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
-      {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <SchoolLogoOptionsEditor productionSetup={isAllSchool} item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
+      {isAllSchool && <SchoolLogoOptionsEditor productionSetup={isAllSchool} item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>

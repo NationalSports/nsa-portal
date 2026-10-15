@@ -95,3 +95,18 @@ test('logo choice switcher stays out of the way for a single-logo item', () => {
   const { container } = render(<LogoChoiceSwitcher item={row} catalog={[row]} onEdit={jest.fn()} />);
   expect(container.innerHTML).toBe('');
 });
+
+test('team-store switcher carries rename, show-first and hide controls for the current choice', async () => {
+  const onUpdate = jest.fn(async () => true);
+  const onSetFirst = jest.fn(async () => true);
+  const mk = (id, vg, label, art) => ({ id, kind: 'single', product_id: 'black', variant_group_id: vg, school_style_group_id: 'style', school_design_label: label, active: true, image_url: 'blank.png', decorations: [{ art_id: art, art_url: `https://example.com/${art}.png`, side: 'front' }] });
+  const catalog = [mk('orig', 'orig', 'Original logo', 'a'), mk('arch', 'arch', 'Arched', 'b')];
+  render(<LogoChoiceSwitcher item={catalog[1]} catalog={catalog} onEdit={jest.fn()} onUpdate={onUpdate} onSetFirst={onSetFirst} firstLogoByStyle={{ style: 'orig' }} />);
+  fireEvent.change(screen.getByLabelText('Logo choice name'), { target: { value: 'Arched MO' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+  await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(catalog[1], { school_design_label: 'Arched MO' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Show first' }));
+  await waitFor(() => expect(onSetFirst).toHaveBeenCalledWith(catalog[1]));
+  fireEvent.click(screen.getByRole('button', { name: 'Hide from store' }));
+  await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(catalog[1], { active: false }));
+});
