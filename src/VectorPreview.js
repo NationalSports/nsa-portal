@@ -21,9 +21,11 @@ const _url = f => (typeof f === 'string' ? f : (f && f.url) || '');
 
 // The art folder's newest live .svg, else its newest live .ai: { url, name, kind } or null.
 // An SVG wins because it needs no conversion (and an artist's own SVG export is exact).
-function vectorSourceFor(art) {
+// files: the folder's files when they don't live on art.files/prod_files (customer Art
+// Library gathers production files from every order that uses the design).
+function vectorSourceFor(art, files) {
   if (!art || art.deco_type === 'embroidery') return null;
-  const live = [...(art.files || []), ...(art.prod_files || [])].filter(f => !isStaleFile(f) && /^https?:\/\//i.test(_url(f)));
+  const live = (files || [...(art.files || []), ...(art.prod_files || [])]).filter(f => !isStaleFile(f) && /^https?:\/\//i.test(_url(f)));
   for (const kind of ['svg', 'ai']) {
     const f = live.filter(x => _ext(x) === kind).slice(-1)[0];
     if (f) return { url: _url(f), name: (typeof f === 'object' && f.name) || _url(f).split('?')[0].split('/').pop(), kind };
@@ -40,7 +42,8 @@ function loadVector(url, kind) {
       .then(text => {
         if (!/<(?:[\w-]+:)?svg\b/i.test(text)) throw new Error('Not a readable SVG');
         const svg = withDefaultFill(text);
-        return { svg, palette: svgPalette(svg), kind };
+        // images: a pasted-in picture (photo / PNG) inside the art — its pixels can't be recolored.
+        return { svg, palette: svgPalette(svg), kind, images: /<(?:[\w-]+:)?image\b/i.test(svg) };
       });
     p.catch(() => _cache.delete(url));
     _cache.set(url, p);
@@ -165,7 +168,9 @@ function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, 
   return <div style={{ width, flexShrink: 0, background: 'white', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f6' }}>
       {!compact && <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: '#475569', borderRadius: 6, padding: '2px 7px', flexShrink: 0 }}>{cw ? `CW ${idx + 1}` : 'All garments'}</span>}
-      <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, whiteSpace: 'nowrap' }}>Art preview</span>
+      {compact || !cw
+        ? <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, whiteSpace: 'nowrap' }}>Art preview</span>
+        : <span style={{ fontSize: 11, fontWeight: 600, color: cw.garment_color ? '#334155' : '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cw.garment_color || 'Garment color not set'}</span>}
       {dropped > 0 && <span title={cw ? undefined : 'Not saved — add a color way to keep these picks'} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#b45309', whiteSpace: 'nowrap' }}>{dropped} dropped{cw ? ' out' : ' · not saved'}</span>}
     </div>
     <div style={{ position: 'relative', cursor: onEnlarge ? 'zoom-in' : 'default', background: garmentHex ? undefined : _checker }} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
@@ -216,10 +221,40 @@ function VectorNotes({ art, err, colorWays, palette }) {
   const unknown = [...new Set((colorWays || []).flatMap(cw => (cw && cw.inks) || []).filter(x => String(x || '').trim() && !inkToHex(x, palette)))];
   return <>
     {art.kind === 'ai' && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>Preview converted from the .ai — Pantone spot colors show as close screen colors. The .ai stays the production file.</div>}
-    {grouped && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>This art has many shades (traced or shaded art) — look-alike shades are grouped, so each color above may cover several.</div>}
+    {art.images && <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ Part of this art is a pasted-in picture (not vector), so its colors won't change here — ask the artist for a fully vector file.</div>}
+    {grouped && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>Look-alike shades are treated as one color (e.g. every white changes together){art.palette.length >= 12 ? ' — this art has many shades, so similar ones are grouped more loosely' : ''}.</div>}
     {unknown.length > 0 && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>No swatch for {unknown.join(', ')} — those colors stay as they are in the file. Use a PMS code (e.g. 186 C), a common color name, or a hex code like #1b5e20.</div>}
   </>;
 }
+// Standalone block (customer Art Library): header + one tile per color way + notes — the
+// counterpart of DstPreview's default export. onRecolor(ci, art_recolor) saves a color way's
+// picks; without it (read-only view) picks last for the session.
+function VectorArtPreview({ src, colorWays, onRecolor, onEnlarge, onUseAsLogo, palette }) {
+  const { art, err } = useVectorArt(src);
+  const [busy, setBusy] = useState(false);
+  const [drops, setDrops] = useState([]); // no-color-way drop-outs (session only)
+  const [local, setLocal] = useState({}); // cw id → picks, when there's no onRecolor
+  if (!src) return null;
+  const cws = (colorWays || []).length ? colorWays : [null];
+  const useAsLogo = onUseAsLogo && (async (blob, cw) => { setBusy(true); try { await onUseAsLogo(blob, cw); } finally { setBusy(false); } });
+  return <div style={{ marginBottom: 8 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 0.3 }}>ART PREVIEW</span>
+      <span style={{ fontSize: 9, color: '#94a3b8' }}>Drawn from the {src.kind === 'ai' ? '.ai' : 'SVG'} — pick an ink for each color, or drop it out</span>
+      <VectorBadge art={art} />
+    </div>
+    {!err && !art && <VectorLoading kind={src.kind} />}
+    {art && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      {cws.map((cw, ci) => {
+        const c = cw && !onRecolor && local[cw.id] ? { ...cw, art_recolor: local[cw.id] } : cw;
+        return <VectorTile key={cw?.id || ci} art={art} cw={c} idx={ci} width={240} dropouts={cw ? [] : drops} onDropouts={setDrops}
+          onRecolor={m => (onRecolor ? onRecolor(ci, m) : setLocal(l => ({ ...l, [cw.id]: m })))}
+          onEnlarge={onEnlarge} onUseAsLogo={useAsLogo} busy={busy} palette={palette} name={src.name} />;
+      })}
+    </div>}
+    <VectorNotes art={art} err={err} colorWays={colorWays} palette={palette} />
+  </div>;
+}
 const VectorLoading = ({ width = 220, kind }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>{kind === 'ai' ? 'Converting .ai…' : 'Loading art…'}</div>;
 
-export { vectorSourceFor, useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };
+export { vectorSourceFor, useVectorArt, VectorArtPreview, VectorTile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };

@@ -40,6 +40,12 @@ describe('withDefaultFill', () => {
     const t = withDefaultFill('<svg:svg xmlns:svg="x" width="10px"><svg:text>Hi</svg:text></svg:svg>');
     expect(t).toContain('<svg:svg xmlns:svg="x" width="10px" fill="#000000">');
     expect(svgColors(t)).toEqual([{ hex: '#000000', uses: 1 }]);
+    // pdf.js (converted .ai): black text is a <tspan> with no fill inside a <text>
+    expect(withDefaultFill('<svg:svg><svg:text><svg:tspan font-size="1px">A</svg:tspan></svg:text></svg:svg>')).toContain('fill="#000000"');
+  });
+  test('no phantom black when every shape sets its own fill (attribute, class or style)', () => {
+    const t = '<svg><rect fill="#1b365d"/><path class="st0"/><circle style="fill:#fff"/><text><tspan fill="#c8102e">A</tspan></text></svg>';
+    expect(withDefaultFill(t)).toBe(t);
   });
   test('leaves a root that already sets fill alone', () => {
     const t = '<svg fill="red"><path/></svg>';
@@ -50,6 +56,17 @@ describe('withDefaultFill', () => {
 describe('svgPalette', () => {
   test('clean spot-color art keeps every color as its own entry', () => {
     expect(svgPalette(AI_EXPORT).map(g => g.hex)).toEqual(['#1b365d', '#ffffff', '#c8a24a', '#000000']);
+  });
+  test('all of one color is one entry: whites / off-whites (and blacks) group together, distinct colors stay apart', () => {
+    const t = '<svg><path fill="#ffffff"/><path fill="#fdfdfd"/><path fill="#1b365d"/><path fill="#fefefe"/><path fill="#f6f6f6"/>'
+      + '<path fill="#000000"/><path fill="#050505"/><path fill="#c8102e"/><path fill="#e6e6e6"/></svg>';
+    const pal = svgPalette(t);
+    expect(pal.map(g => g.members.slice().sort())).toEqual([
+      ['#f6f6f6', '#fdfdfd', '#fefefe', '#ffffff'], ['#1b365d'], ['#000000', '#050505'], ['#c8102e'], ['#e6e6e6']]);
+    // One pick on the white group changes every white in the file.
+    const out = recolorSvg(t, recolorMap(pal, { inks: ['Gold'] }, [], () => '#ffb81c'));
+    expect(svgColors(out).map(c => c.hex)).toEqual(['#ffb81c', '#1b365d', '#000000', '#050505', '#c8102e', '#e6e6e6']);
+    expect(recolorSvg(t, recolorMap(pal, { inks: [], art_recolor: { [pal[0].hex]: 'drop' } }, [], () => null))).not.toMatch(/#f[6def]f[6def]f[6def]|#ffffff/);
   });
   test('traced art with hundreds of near-identical shades is grouped down to the cap', () => {
     const paths = [];

@@ -71,13 +71,26 @@ function walkColors(svgText, visit) {
 }
 
 // Shapes and text with no fill of their own are painted black by default — a color no
-// attribute names, so it could never be swapped. Writing fill="#000000" on the root <svg>
-// (inherited, so it changes nothing visually) makes that black a color like any other.
-// pdf.js writes its black text this way, so every converted .ai needs it.
+// attribute names, so it could never be swapped. When the file has such an element, writing
+// fill="#000000" on the root <svg> (inherited, so it changes nothing visually) makes that black
+// a color like any other. pdf.js writes its black text this way, so converted .ai files need it.
+// Only added when something relies on it, so art without a default-black part doesn't list a
+// phantom black (an element styled by a class or style="" is assumed to set its own fill).
+const _SHAPE_RE = /<(?:[\w-]+:)?(path|rect|circle|ellipse|polygon|polyline|text|tspan)\b([^>]*)>/gi;
+function usesDefaultFill(s) {
+  for (const m of s.matchAll(_SHAPE_RE)) {
+    const attrs = m[2];
+    // A <text> wrapping <tspan>s: the tspans carry (or lack) the fill, and are checked themselves.
+    if (m[1].toLowerCase() === 'text' && /^\s*<(?:[\w-]+:)?tspan\b/i.test(s.slice(m.index + m[0].length, m.index + m[0].length + 200))) continue;
+    if (/\sfill\s*=/i.test(attrs) || /\sclass\s*=/i.test(attrs) || /\sstyle\s*=\s*["'][^"']*fill\s*:/i.test(attrs)) continue;
+    return true;
+  }
+  return false;
+}
 function withDefaultFill(svgText) {
   const s = String(svgText || '');
   const m = s.match(/<(?:[\w-]+:)?svg\b[^>]*>/i);
-  if (!m || /\sfill\s*=/i.test(m[0])) return s;
+  if (!m || /\sfill\s*=/i.test(m[0]) || !usesDefaultFill(s)) return s;
   const tag = m[0].replace(/(\/?>)$/, ' fill="#000000"$1');
   return s.slice(0, m.index) + tag + s.slice(m.index + m[0].length);
 }
@@ -95,25 +108,28 @@ function colorDist(a, b) {
   const [r1, g1, b1] = p(a), [r2, g2, b2] = p(b), rm = (r1 + r2) / 2;
   return Math.sqrt((2 + rm / 256) * (r1 - r2) ** 2 + 4 * (g1 - g2) ** 2 + (2 + (255 - rm) / 256) * (b1 - b2) ** 2);
 }
-// The colors a rep actually picks inks for. Clean spot-color art keeps every color as is;
-// traced / anti-aliased art (hundreds of near-identical shades) is merged into groups of
-// look-alike shades, loosening until there are at most maxColors. Each group is named by
-// its most-used shade, listed in first-appearance order: [{ hex, uses, members: [hex…] }].
+// The colors a rep actually picks inks for, as groups of look-alike shades — so one pick
+// changes ALL of a color: every white in the file (#ffffff, an off-white #fdfdfd left by a
+// CMYK conversion, anti-aliased edges) recolors or drops out together. Shades within about
+// 10 per RGB channel always share a group; traced art with hundreds of shades loosens the
+// grouping until there are at most maxColors. Each group is named by its most-used shade and
+// listed in first-appearance order: [{ hex, uses, members: [hex…] }].
+const SAME_COLOR = 32; // redmean distance ≈ 10 per channel on light colors
 function svgPalette(svgText, maxColors = 12) {
   const all = svgColors(svgText);
-  let groups = all.map(c => ({ hex: c.hex, uses: c.uses, members: [c.hex], first: c }));
-  for (const tol of [12, 24, 40, 64, 96, 140]) {
-    if (groups.length <= maxColors) break;
+  const order = new Map(all.map((c, i) => [c.hex, i]));
+  let groups = [];
+  for (const tol of [SAME_COLOR, 48, 64, 96, 140]) {
     // Busiest shades seed the groups; every other shade joins the nearest seed within tol.
     const seeds = [];
-    [...all].sort((a, b) => b.uses - a.uses).forEach(c => {
+    [...all].sort((a, b) => b.uses - a.uses || order.get(a.hex) - order.get(b.hex)).forEach(c => {
       let best = null, bd = Infinity;
       for (const g of seeds) { const d = colorDist(c.hex, g.hex); if (d < bd) { bd = d; best = g; } }
       if (best && bd <= tol) { best.members.push(c.hex); best.uses += c.uses; } else seeds.push({ hex: c.hex, uses: c.uses, members: [c.hex] });
     });
-    const order = new Map(all.map((c, i) => [c.hex, i]));
     seeds.forEach(g => { g.at = Math.min(...g.members.map(h => order.get(h))); });
     groups = seeds.sort((a, b) => a.at - b.at);
+    if (groups.length <= maxColors) break;
   }
   return groups.map(g => ({ hex: g.hex, uses: g.uses, members: g.members }));
 }

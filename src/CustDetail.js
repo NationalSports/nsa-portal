@@ -13,6 +13,7 @@ import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
 import DstPreview from './DstPreview';
+import { VectorArtPreview, vectorSourceFor } from './VectorPreview';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, decoSplitQty, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
@@ -1713,6 +1714,18 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       (names||[]).forEach((nm,i)=>{const n=(nm||'').trim(),k=n.toLowerCase();if(!n||have.has(k))return;have.add(k);add.push({id:'cw'+Date.now()+'_'+i,garment_color:n,inks:['']})});
       return add.length?[...cur,...add]:cur;
     };
+    // A stitch render (embroidery DST) or art render (recolored .svg/.ai) → this color way's web logo
+    // (stores + logo detail). Newest first replaces it. kind: 'stitch' | 'art'.
+    const saveRenderLogo=async(blob,cw,kind)=>{
+      const nm=(cw?.garment_color||'').trim();
+      const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
+      if(existing&&!window.confirm('Replace the current web logo for '+(nm||'all garments')+' with this '+kind+' render?'))return;
+      nf&&nf('Saving web logo...');
+      let url;try{url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+(nm||'all').replace(/[^\w-]+/g,'_')+'_'+kind+'.png',{type:'image/png'}),'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+      const entry=nm?{url,color_way:nm,source:kind}:{url,color_way:'',is_default:true,source:kind};
+      saveWebLogos([entry,...webLogos.filter(w=>w!==existing)],nm?_cwsWith([nm]):undefined);
+      nf&&nf('Web logo saved for '+(nm||'all garments'));
+    };
     // Tie one cutout URL to a set of color ways (reuse — no re-uploading the same file per
     // CW): replace this URL's web-logo entries with one per chosen color way (+ an
     // "all garments" default when asDefault). Other cutouts are untouched.
@@ -1814,17 +1827,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Stitch preview — the live DST drawn in each color way's threads */}
         {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'thread_colors')} onUseAsLogo={saveArt?async(blob,cw)=>{
-            // Stitch render → this color way's web logo (stores + logo detail). Newest first replaces it.
-            const nm=(cw?.garment_color||'').trim();
-            const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
-            if(existing&&!window.confirm('Replace the current web logo for '+(nm||'all garments')+' with this stitch render?'))return;
-            nf&&nf('Saving web logo...');
-            let url;try{url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+(nm||'all').replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-            const entry=nm?{url,color_way:nm,source:'stitch'}:{url,color_way:'',is_default:true,source:'stitch'};
-            saveWebLogos([entry,...webLogos.filter(w=>w!==existing)],nm?_cwsWith([nm]):undefined);
-            nf&&nf('Web logo saved for '+(nm||'all garments'));
-          }:undefined}/></div>})()}
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'thread_colors')} onUseAsLogo={saveArt?(blob,cw)=>saveRenderLogo(blob,cw,'stitch'):undefined}/></div>})()}
+        {/* Art preview — print art's .svg (or .ai, converted) drawn in each color way's inks; each color can be
+            swapped or dropped out, and the picks save on the color way (library + every order using this art) */}
+        {(()=>{const src=vectorSourceFor(art,[...(art.files||[]),...prodFiles.map(m=>m.file||m.url)].filter(Boolean));if(!src)return null;
+          return<div style={{marginBottom:16}}><VectorArtPreview src={src} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'pantone_colors')}
+            onRecolor={saveArt?(ci,m)=>persistColorWays(cws.map((c,x)=>x===ci?{...c,art_recolor:m}:c)):undefined}
+            onUseAsLogo={saveArt?(blob,cw)=>saveRenderLogo(blob,cw,'art'):undefined}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
