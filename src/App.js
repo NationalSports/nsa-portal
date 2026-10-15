@@ -1,3 +1,4 @@
+import { artAssignmentOwner, artistCanSeeWork } from './lib/artAssignment';
 import SalesOrderEditGate from './SalesOrderEditGate';import StockReceiptDialog from './StockReceiptDialog';
 import {buildStockReceiptLabel, saveStockReceiptState} from './lib/stockReceiptLabels';
 import StoreCloseoutReview from './StoreCloseoutReview';
@@ -24294,22 +24295,10 @@ export default function App(){
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
     const filtered=allArtJobs.filter(j=>{
-      // Artist sees a job when it's assigned to them OR the open art request names them —
-      // assigned_artist can go stale (e.g. it held a deactivated duplicate team-member id
-      // while the request pointed at the live one), and either link should surface the job.
-      // A job whose assignee resolves to NO live artist (never assigned — e.g. approved via
-      // quick-mock/skip-artist and now needing production files — or a stale/deactivated id)
-      // is the shared UNASSIGNED POOL: every artist sees it. Hiding it from all boards is how
-      // artist-actionable work silently vanished. Only a job owned by a DIFFERENT live artist
-      // is hidden from this artist.
-      if(_isArtistUser){const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
-        const _mine=j.assigned_artist===cu.id||_actReq?.artist===cu.id;
-        const _ownedByLiveArtist=artistMembers.some(r=>r.id===j.assigned_artist||r.id===_actReq?.artist);
-        if(!_mine&&_ownedByLiveArtist)return false}
+      if(_isArtistUser&&!artistCanSeeWork(j,cu.id,REPS))return false;
       if(!_isArtistUser&&artFilter!=='all'){
         if(artArtistScopeId){
-          const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
-          if(j.assigned_artist!==artArtistScopeId&&_actReq?.artist!==artArtistScopeId)return false;
+          if(artAssignmentOwner(j,REPS)!==artArtistScopeId)return false;
         }else if(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter)return false;
       }
       if(artSearch){const s=artSearch.toLowerCase();
@@ -24515,7 +24504,9 @@ export default function App(){
     // Card renderer shared between both views
     const renderArtCard=(j,view,col)=>{
       const urgent=j.daysOut!=null&&j.daysOut<=3;
-      const artist=REPS.find(r=>r.id===j.assigned_artist);
+      const ownerId=artAssignmentOwner(j,REPS);
+      const artist=REPS.find(r=>r.id===ownerId);
+      const artistLabel=artist?.name||(ownerId===cu.id?cu.name:null)||(j.art_requests||[]).find(r=>r.artist===ownerId)?.artist_name||'Assigned artist';
       const af=j.artFile;
       const isMethodic=(j.art_requests||[]).some(r=>r?.source==='methodic');
       const cardKey=j.id+j.soId+view;
@@ -24586,17 +24577,15 @@ export default function App(){
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
             <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-              {_isArtistUser?(artistMembers.some(r=>r.id===j.assigned_artist)?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
+              {_isArtistUser?(ownerId?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artistLabel}</span>
               // Unassigned-pool job on an artist's board: one click takes ownership, so it leaves
               // the other artists' boards once someone picks it up.
               :<><span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>
                 <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={e=>{e.stopPropagation();assignArtist(j,cu.id)}}>🎨 Claim</button></>)
-              // Admin/rep: assign (or re-assign) the artist right from the card. The value only
-              // reads as assigned when it resolves to an ACTIVE artist — a stale id (deactivated
-              // duplicate team member) shows as unassigned so it gets fixed instead of hiding the
-              // job from every artist's board.
-              :<select className="form-select" style={{fontSize:10,padding:'2px 6px',maxWidth:170}} value={artistMembers.some(r=>r.id===j.assigned_artist)?j.assigned_artist:''} onClick={e=>e.stopPropagation()} onChange={e=>assignArtist(j,e.target.value)}>
-                <option value="">🎨 {artist?'Unassigned (was '+artist.name+(artist.is_active===false?' — inactive':'')+')':'Unassigned — pick artist'}</option>
+              // Preserve unknown owner IDs in the picker while the roster loads.
+              :<select className="form-select" style={{fontSize:10,padding:'2px 6px',maxWidth:170}} value={ownerId||''} onClick={e=>e.stopPropagation()} onChange={e=>assignArtist(j,e.target.value)}>
+                <option value="">🎨 Unassigned — pick artist</option>
+                {ownerId&&!artistMembers.some(r=>r.id===ownerId)&&<option value={ownerId}>🎨 {artistLabel}</option>}
                 {artistMembers.map(r=><option key={r.id} value={r.id}>🎨 {r.name}</option>)}
               </select>}
             </div>
