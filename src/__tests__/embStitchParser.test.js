@@ -201,3 +201,17 @@ describe('fillThreadColorWays', () => {
     expect(artNeedsThreadColors(art)).toBe(false);
   });
 });
+
+describe('stitches 0 counts as blank; threadLineGaps', () => {
+  const { threadLineGaps } = require('../lib/embStitchParser');
+  test('a saved 0 stitch count is filled from the proof', () => {
+    expect(fillEmbroiderySpecs({ id: 'a', art_size: '3in', stitches: 0 }, { stitches: 10645 }).stitches).toBe(10645);
+  });
+  test('one thread per DST stop, per color way', () => {
+    const art = { deco_type: 'embroidery', color_ways: [{ id: 'c1', garment_color: 'Black', inks: ['Black', 'Vegas', '', 'Vegas', 'White'] }, { id: 'c2', inks: ['a', 'b', 'c', 'd', 'e'] }, { id: 'c3', inks: ['a', 'b'] }] };
+    expect(threadLineGaps(art, 5)).toEqual([{ index: 0, label: 'CW 1 (Black)', filled: 4, stops: 5 }, { index: 2, label: 'CW 3', filled: 2, stops: 5 }]);
+    expect(threadLineGaps(art, null)).toEqual([]);
+    expect(threadLineGaps({ ...art, deco_type: 'screen_print' }, 5)).toEqual([]);
+    expect(threadLineGaps({ deco_type: 'embroidery', color_ways: [] }, 3)).toEqual([{ index: 0, label: 'CW 1', filled: 0, stops: 3 }]);
+  });
+});

@@ -90,7 +90,8 @@ function fillEmbroiderySpecs(art, specs, { allowStitches = true } = {}) {
   const next = { ...art };
   const dimensions = specs.dimensions || specs;
   if (!String(art.art_size || '').trim() && typeof dimensions.artSize === 'string' && dimensions.artSize.trim()) next.art_size = dimensions.artSize;
-  if (allowStitches && (art.stitches == null || art.stitches === '') && Number.isFinite(Number(specs.stitches)) && Number(specs.stitches) > 0) next.stitches = Number(specs.stitches);
+  // 0 is the column's "never entered" value (SO-1023), not a real count — treat it as blank.
+  if (allowStitches && !(Number(art.stitches) > 0) && Number.isFinite(Number(specs.stitches)) && Number(specs.stitches) > 0) next.stitches = Number(specs.stitches);
   return next;
 }
 
@@ -157,6 +158,19 @@ function artNeedsThreadColors(art) {
     && !(art.color_ways || []).some(cw => (cw?.inks || []).some(x => String(x || '').trim()));
 }
 
+// Color ways still missing a thread for one of the DST's `stops` needle stops (blank
+// line, or fewer lines than stops). Production needs one thread per stop, in sew order.
+// [{ index, label, filled, stops }] — empty when complete or when stops is unknown.
+function threadLineGaps(art, stops) {
+  const n = Number(stops);
+  if (!art || art.deco_type !== 'embroidery' || !(n > 0)) return [];
+  const cws = Array.isArray(art.color_ways) && art.color_ways.length ? art.color_ways : [null];
+  return cws.map((cw, index) => {
+    const filled = (cw?.inks || []).slice(0, n).filter(x => String(x || '').trim()).length;
+    return { index, label: 'CW ' + (index + 1) + (cw?.garment_color ? ' (' + cw.garment_color + ')' : ''), filled, stops: n };
+  }).filter(g => g.filled < n);
+}
+
 // The EM.sb price tier a stitch count lands in, as a short human label. Kept here
 // (not in decoPricing) because it's UI sugar; the brackets mirror EM.sb defaults.
 function embStitchTierLabel(stitches) {
@@ -169,5 +183,5 @@ function embStitchTierLabel(stitches) {
   return '20k+';
 }
 
-export { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel, MIN_STITCHES, MAX_STITCHES };
+export { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, threadLineGaps, embStitchTierLabel, MIN_STITCHES, MAX_STITCHES };
 export default parseStitchCount;

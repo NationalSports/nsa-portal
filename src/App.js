@@ -74,6 +74,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
+import { repairPdfDashNulls, browserInflate } from './lib/pdfNulRepair';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG, PORTAL_SETTINGS_DEFAULTS } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates, logoReferenceFor } from './lib/logoDetail';
@@ -1849,7 +1850,17 @@ const extractPdfText=async(file,opts={})=>{
   const _extract=async()=>{
   await loadPdfJs();
   const ab=await file.arrayBuffer();
-  const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+  const first=await _extractPdfBytes(new Uint8Array(ab).slice());
+  if(first.fullText.trim())return first;
+  // Empty text: a Wilcom/pdfFactory proof whose NUL-mangled dash patterns make pdf.js drop
+  // the whole page. Repair those streams and read once more; anything else stays empty.
+  try{const fixed=await repairPdfDashNulls(new Uint8Array(ab),browserInflate);if(fixed){const second=await _extractPdfBytes(fixed);if(second.fullText.trim())return second}}catch(e){}
+  return first;
+  };
+  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
+};
+const _extractPdfBytes=async(data)=>{
+  const pdf=await window.pdfjsLib.getDocument({data}).promise;
   let fullText='';
   const pages=[];// per-page text for multi-document splitting
   for(let i=1;i<=pdf.numPages;i++){
@@ -1888,8 +1899,6 @@ const extractPdfText=async(file,opts={})=>{
     fullText+=pageText+'\n';
   }
   return{fullText,pages};
-  };
-  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
 };
 // Render PDF pages to JPEG images for the vision fallback (scanned bills with no text
 // layer — the Sports Inc "Needs Manual Upload" bucket). ~1400px wide keeps line items
