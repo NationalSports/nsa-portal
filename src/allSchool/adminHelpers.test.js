@@ -4,6 +4,10 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './tra
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
   expect(b.purchasing.enabled).toBe(false); expect(b.purchasing.minimum_cents).toBe(20000); expect(b.target_ship_days).toBe(14);
+  expect(b.production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: true } }).production.auto_release_enabled).toBe(true);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 'true' } }).production.auto_release_enabled).toBe(false);
+  expect(normalizeAllSchoolSettings({ production: { auto_release_enabled: 1 } }).production.auto_release_enabled).toBe(false);
   expect(normalizeAllSchoolSettings({ dtf: { supplier_id: 'Astra' } }).dtf).toEqual({ supplier_id: 'Astra', auto_send: false });
   expect(normalizeAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch' } }).first_logo_by_style).toEqual({ hoodie: 'arch' });
   expect(validateAllSchoolSettings(b)).toBe('');
@@ -18,11 +22,12 @@ it('copies core blanks with isolated art and group IDs and skips existing overri
   expect(coreOfferingCopies([{ ...core[0], school_program_ids: ['soccer'] }], 'football', 'store')).toEqual([]);
 });
 it('makes an inactive logo group with every source color and its own exact artwork', () => {
-  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, size_skus: { '2XL': 'BLUE-2XL' }, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
   const copies = logoDesignCopies(source, 'store', 'listing', 'arched-colors', 'Arched Serra', { code: 'ARCH' }, { id: 'arch-web', url: 'arch.png' });
   expect(copies.map((row) => row.product_id)).toEqual(['blue-blank', 'black-blank']);
   expect(copies.every((row) => row.school_style_group_id === 'listing' && row.variant_group_id === 'arched-colors' && row.school_design_label === 'Arched Serra' && row.active === false && row.school_template_id === null)).toBe(true);
   expect(copies.every((row) => row.transfer_codes[0] === 'ARCH' && row.decorations[0].art_id === 'arch-web')).toBe(true);
+  expect(copies[0].size_skus).toEqual({ '2XL': 'BLUE-2XL' });
   copies[0].decorations[0].art_id = 'changed'; expect(source[0].decorations[0].art_id).toBe('script');
 });
 it('shows each logo choice once with its own colors and keeps unrelated items separate', () => {
@@ -32,7 +37,7 @@ it('shows each logo choice once with its own colors and keeps unrelated items se
 });
 it('links a screen-print choice to its approved art folder instead of DTF stock', () => {
   const source = [{ id: 'blue', kind: 'single', product_id: 'blank', sku: 'HOODIE', image_url: 'old.png', transfer_codes: ['OLD'] }];
-  const art = { id: 'serra-arch', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
+  const art = { id: 'serra-arch', web_logo_url: 'arch.png', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
   const [copy] = logoDesignCopies(source, 'store', 'listing', 'design', 'Serra arch', null, art);
   expect(copy.active).toBe(false);
   expect(copy.image_url).toBeNull();
@@ -82,6 +87,7 @@ it('requires exact production files for approval and identifies setup invalidati
   expect(productionSetupError({ ...item, takes_name: true }, [stock])).toMatch(/personalization/);
   expect(changesProductionSetup({ decorations: [] })).toBe(true);
   expect(changesProductionSetup({ personalization_template: {} })).toBe(true);
+  expect(changesProductionSetup({ size_skus: { '2XL': 'TEE-2XL' } })).toBe(true);
   expect(changesProductionSetup({ retail_price: 30 })).toBe(false);
   expect(changesProductionSetup({ production_approved_at: '2026-10-02' })).toBe(false);
 });
@@ -127,4 +133,11 @@ describe('normal visual art choices', () => {
     expect(() => visualLogoCopies(rows, rows, entries.slice(1))).toThrow('every color');
     expect(() => visualLogoCopies(rows, rows, entries.map((r) => ({ ...r, image_url: null })))).toThrow('blank garment');
   });
+});
+
+it('production allowance is separate and cannot silently become zero or accept invalid days', () => {
+  expect(normalizeAllSchoolSettings({}).production.business_days).toBeNull();
+  expect(validateAllSchoolSettings({ production: { business_days: 4 } })).toBe('');
+  expect(validateAllSchoolSettings({ production: { business_days: -1 } })).toMatch(/Production allowance/);
+  expect(validateAllSchoolSettings({ production: { business_days: 2.5 } })).toMatch(/Production allowance/);
 });

@@ -39,9 +39,10 @@ describe('atomic webstore batch finalization', () => {
     expect(webstores).not.toContain("supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' })");
   });
 
-  test('manual settlement repair awaits durable invoice persistence', () => {
-    expect(app).toContain('const createAndSettleWebstoreInvoice=async(so,settle)=>');
-    expect(app).toContain('const ok=await _dbSaveInvoice(inv)');
-    expect(app).toContain('finally{webstoreInvoiceCreating.current.delete(so.id)}');
+  test('closeout uses the server transaction instead of a client invoice save', () => {
+    expect(app).toContain("fetch('/.netlify/functions/close-store'");
+    expect(app).toContain("stageDocumentBaseline(_dbSnap,'invs',inv)");
+    expect(app).toContain('finally{closeStoreLocks.current.delete(so.id)}');
+    expect(app).not.toContain('createAndSettleOmgInvoice(newSO)');
   });
 });

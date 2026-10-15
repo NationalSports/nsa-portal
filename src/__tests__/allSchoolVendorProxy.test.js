@@ -5,7 +5,7 @@ const { guardAllSchoolVendorRequest } = require('../../netlify/functions/_allSch
 const ss = require('../../netlify/functions/ss-proxy').handler;
 const sanmar = require('../../netlify/functions/sanmar-proxy').handler;
 const token = '00000000-0000-4000-8000-000000000001';
-const savedEnv = Object.fromEntries(['SS_ACCOUNT_NUMBER', 'SS_API_KEY', 'SANMAR_USERNAME', 'SANMAR_PASSWORD'].map(key => [key, process.env[key]]));
+const savedEnv = Object.fromEntries(['SS_ACCOUNT_NUMBER', 'SS_API_KEY', 'SANMAR_USERNAME', 'SANMAR_PASSWORD', 'MOMENTEC_LOGON_ID', 'MOMENTEC_PASSWORD'].map(key => [key, process.env[key]]));
 const oldFetch = global.fetch;
 const oldTimeout = AbortSignal.timeout;
 beforeEach(() => {
@@ -13,6 +13,7 @@ beforeEach(() => {
   verifyUserOrInternal.mockResolvedValue({ ok: true });
   process.env.SS_ACCOUNT_NUMBER = 'test'; process.env.SS_API_KEY = 'test';
   process.env.SANMAR_USERNAME = 'test'; process.env.SANMAR_PASSWORD = 'test';
+  process.env.MOMENTEC_LOGON_ID='test'; process.env.MOMENTEC_PASSWORD='test';
   AbortSignal.timeout = () => undefined;
   guardAllSchoolVendorRequest.mockResolvedValue({ ok: true });
   global.fetch = jest.fn(async () => ({ status: 200, ok: true, headers: { get: () => null }, text: async () => JSON.stringify([{ orderNumber: 'supplier-1' }]) }));
@@ -39,4 +40,22 @@ test('read-only S&S calls do not consume purchase claims', async () => {
   await ss({ httpMethod: 'GET', queryStringParameters: { path: '/Styles' }, headers: {} });
   expect(guardAllSchoolVendorRequest).not.toHaveBeenCalled();
   expect(global.fetch).toHaveBeenCalledTimes(1);
+});
+
+test('Momentec consumes claim before POST and strips the token',async()=>{
+ const mt=require('../../netlify/functions/momentec-proxy').handler;
+ const event={httpMethod:'POST',queryStringParameters:{service:'order',env:'prod'},body:JSON.stringify({poNum:'NSA 1234',items:[{sku:'790.080.M',quantity:'2'}],_allSchoolSubmissionToken:token})};
+ guardAllSchoolVendorRequest.mockResolvedValueOnce({ok:false,statusCode:409,error:'already started'});
+ expect((await mt(event)).statusCode).toBe(409);expect(global.fetch).not.toHaveBeenCalled();
+ global.fetch.mockResolvedValueOnce({ok:true,status:200,text:async()=>JSON.stringify({orderId:'MT-1'})});
+ expect((await mt(event)).statusCode).toBe(200);
+ const body=JSON.parse(global.fetch.mock.calls[0][1].body);
+ expect(body._allSchoolSubmissionToken).toBeUndefined();expect(body.credentials.logonId).toBe('test');
+});
+
+test('Momentec freight quotes never consume purchase claims',async()=>{
+ const mt=require('../../netlify/functions/momentec-proxy').handler;
+ await mt({httpMethod:'POST',queryStringParameters:{service:'shipping-cost',env:'prod'},body:JSON.stringify({asgOrderSubmitProducts:[{sku:'790.080.M',quantity:'2'}]})});
+ expect(guardAllSchoolVendorRequest).not.toHaveBeenCalled();
+ expect(global.fetch).toHaveBeenCalledTimes(1);
 });

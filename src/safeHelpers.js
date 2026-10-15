@@ -496,30 +496,78 @@ export const soHasOpenShipWork = (so) =>
 // Resolved per size and per job-item (keyed by the job's items[] index) so the warehouse's
 // per-job Ready-to-Ship rows can subtract exactly what shipped for THAT job's garments.
 // jobShippedUnits is the sum of this map — one apportioning rule, no second copy to sync.
+// Root of a job's split family (a parent job plus the backorder / per-size slices peeled off it
+// via split_from). Guarded against cycles and missing parents.
+const splitFamilyRoot = (job, byId) => {
+  let cur = job, guard = 0; const seen = {};
+  while (cur && cur.split_from && byId[cur.split_from] && !seen[cur.id] && guard++ < 64) { seen[cur.id] = 1; cur = byId[cur.split_from]; }
+  return (cur && cur.id) || job?.id;
+};
 export const jobShippedSizes = (job, allJobs, shippedSizes) => {
   const jobs = safeArr(allJobs);
   const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
   const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
+  // Backorder / per-size split slices (split_from) partition one line just like art-split slices
+  // do, but carry no split_group. Without this, a 1-unit backorder slice was credited with the
+  // parent's whole shipped box (SO-1450 / SO-1588): Ready to Ship listed the order with no rows
+  // to pack, and Mark Shipped would have flipped a garment that never left the building.
+  // Family members claim shipped units root-first, then in job order.
+  const byId = {}; jobs.forEach(j2 => { if (j2 && j2.id) byId[j2.id] = j2; });
+  const root = job ? splitFamilyRoot(job, byId) : null;
+  const family = root ? jobs.filter(j2 => j2 && splitFamilyRoot(j2, byId) === root) : [];
+  const inFamily = family.length > 1;
+  const famOrdered = inFamily ? [...family.filter(j2 => j2.id === root), ...family.filter(j2 => j2.id !== root)] : [];
+  const famPos = famOrdered.findIndex(j2 => j2.id === job?.id);
+  const famBefore = famPos > 0 ? famOrdered.slice(0, famPos) : [];
   const out = {};
   safeArr(job?.items).forEach((gi, gidx) => {
     if (!gi) return;
     const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
     if (!shipped) return;
     const row = out[gidx] || (out[gidx] = {});
-    const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
+    const hasOwnSizes = gi.sizes && Object.keys(gi.sizes).length > 0;
+    const share = hasOwnSizes && (gi.split_group || inFamily) ? gi.sizes : null;
     if (!share) { Object.entries(shipped).forEach(([sz, v]) => { row[sz] = (row[sz] || 0) + safeNum(v); }); return; }
     Object.entries(share).forEach(([sz, want]) => {
       const w = safeNum(want);
       if (w <= 0) return;
       let avail = safeNum(shipped[sz]);
-      before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
-        if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
-      }));
+      if (gi.split_group) {
+        before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+          if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+        }));
+      } else {
+        famBefore.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+          if (g2 && g2.item_idx === gi.item_idx && !g2.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+        }));
+      }
       row[sz] = (row[sz] || 0) + Math.max(0, Math.min(w, avail));
     });
   });
   return out;
 };
+// What of THIS job is still physically left to pack, per job item (keyed by items[] index):
+// the job's own garments (a slice's own sizes, else the live SO line) minus what shipped for it.
+// The single source for both the Ready to Ship queue (whether a job shows, and its unit count)
+// and the card's rows — they used to disagree (queue used job.total_units, which drifts from
+// the real garments), leaving cards with a unit count but nothing to pack or clear (SO-1271).
+export const jobUnshippedSizes = (job, so, shippedSizes) => {
+  const items = safeItems(so);
+  const shippedByGi = jobShippedSizes(job, safeJobs(so), shippedSizes || shippedSizesByLine(so?._shipments));
+  const out = {};
+  safeArr(job?.items).forEach((gi, gidx) => {
+    if (!gi) return;
+    const base = (gi.sizes && Object.keys(gi.sizes).length) ? gi.sizes : safeSizes(items[gi.item_idx]);
+    const shipped = shippedByGi[gidx] || {};
+    const sizes = {};
+    Object.entries(base || {}).forEach(([sz, v]) => { const rem = safeNum(v) - safeNum(shipped[sz]); if (rem > 0) sizes[sz] = rem; });
+    if (Object.keys(sizes).length) out[gidx] = sizes;
+  });
+  return out;
+};
+export const jobUnshippedUnits = (job, so, shippedSizes) =>
+  Object.values(jobUnshippedSizes(job, so, shippedSizes))
+    .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
 export const jobShippedUnits = (job, allJobs, shippedSizes) =>
   Object.values(jobShippedSizes(job, allJobs, shippedSizes))
     .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
@@ -650,11 +698,28 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
       // would inflate "remaining to invoice" and enable over-invoicing.
       if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
+        // "Sub unfilled items" moves units off an already-invoiced line onto a replacement
+        // line that carries the source's key as an alias (SO-2640: 2 of 31 invoiced JM1033
+        // moved to AT208). The billed qty then exceeds the source line's units, so pour the
+        // overflow into the alias holders instead of leaving the source over-invoiced and the
+        // replacement showing as unbilled. With no alias holders this is the old direct add.
+        const holders = aliasBuckets.get(li._so_line_key);
+        if (holders) {
+          const exactIdx = items.findIndex((it, idx) => soLineKey(it, idx) === li._so_line_key);
+          pourInto([exactIdx, ...holders.filter(h => h !== exactIdx)], q);
+          return;
+        }
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
         return;
       }
       if (li?._so_line_key && aliasBuckets.has(li._so_line_key)) {
-        pourInto(aliasBuckets.get(li._so_line_key), q);
+        // The original line's position shifted, so its exact key no longer matches. If the
+        // original still holds its own prior key (a partial move stamps it), fill it before the
+        // replacement so the source isn't drained into its substitute.
+        const keySkuColor = li._so_line_key.slice(0, li._so_line_key.lastIndexOf('|'));
+        const holders = aliasBuckets.get(li._so_line_key);
+        const original = holders.filter(idx => (safeStr(items[idx]?.sku)||'')+'|'+(safeStr(items[idx]?.color)||'') === keySkuColor);
+        pourInto([...original, ...holders.filter(idx => !original.includes(idx))], q);
         return;
       }
       // Legacy fallback chain: parse sku/color from explicit fields or the desc
@@ -690,6 +755,20 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
 
 export const buildInvoicedQtyMap = (so, invoicesForSO) =>
   _reconcileInvoicedQty(so, invoicesForSO).map;
+
+// "Sub unfilled items" moves open units from line `src` (at srcIdx) onto a replacement line.
+// Stamp the source's invoice identity onto both so units that were already invoiced on the
+// source count as invoiced on the replacement — no re-invoice prompt for a same-price swap.
+// The source keeps its own key too, so a later index shift still finds it first. Price
+// differences are left to the final invoice's existing balance adjustment.
+export const linkMovedLineInvoiceKeys = (src, srcIdx, moved) => {
+  const clean = (keys) => safeArr(keys).map(safeStr).filter(Boolean);
+  const srcKeys = [...new Set([...clean(src?.invoice_line_keys), soLineKey(src, srcIdx)])];
+  return {
+    src: { ...src, invoice_line_keys: srcKeys },
+    moved: { ...moved, invoice_line_keys: [...new Set([...clean(moved?.invoice_line_keys), ...srcKeys])] },
+  };
+};
 
 // Detect quantities that were invoiced after the Create Invoice modal loaded.
 // The modal calculates its remaining quantities from the client's invoice snapshot;
@@ -815,6 +894,23 @@ export const scopeSoItemsToInvoice = (inv, soItems) => {
   // than printing an invoice with no items at all.
   if (!scoped.length && !extraLines.length) return { items: all(), extraLines: [] };
   return { items: scoped, extraLines };
+};
+
+// ── Print an invoice line as garment + decoration rows, like the sales order does ──
+// A stored invoice line's amount already carries its decorations (KD5420 on INV-64434:
+// $30 polo + $7 embroidery stored as one $37 rate), and the documents used to print that
+// combined $37 next to a "+$7.00/ea" note, which read as $37 AND $7. Given the line's billed
+// amount and each decoration's billed amount (as the SO prices it, already deposit-scaled
+// where the line is), returns the garment-only remainder so the garment row and the deco
+// rows add back up to exactly the invoice's amount. Returns null when the line can't be
+// split cleanly (no decorations, no qty, or decorations worth more than the line, e.g. a
+// comped line) — callers then keep the combined rate with decorations as detail.
+export const splitInvoiceLine = (lineAmt, qty, decoAmts) => {
+  const decoTotal = safeArr(decoAmts).reduce((a, v) => a + safeNum(v), 0);
+  if (!(safeNum(qty) > 0) || !(decoTotal > 0)) return null;
+  const garmentAmt = Math.round((safeNum(lineAmt) - decoTotal) * 100) / 100;
+  if (garmentAmt < 0) return null;
+  return { garmentAmt, garmentRate: Math.round((garmentAmt / safeNum(qty)) * 100) / 100 };
 };
 
 // Sum of paid-but-non-unit-billing invoice amounts on an SO (deposits today).

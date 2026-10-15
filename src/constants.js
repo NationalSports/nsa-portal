@@ -73,10 +73,10 @@ export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colo
 // until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
 export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','location','archived','prod_files_attached','is_tbd','reused_from_so']);
 // Columns that may not exist in so_jobs — stripped on retry
-export const _jobExtraCols=new Set(['completed_at','_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed']);
+export const _jobExtraCols=new Set(['roster_change','completed_at','_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed']);
 // `_draft` is deliberately absent: it is a session-only flag marking an uncommitted job (see
 // splitJobPricing), has no so_jobs column, and sending it made PostgREST reject the whole batch.
-export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','deco_types','positions','art_status','item_status','prod_status','total_units','fulfilled_units','completed_at','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed'];
+export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','deco_types','positions','art_status','item_status','prod_status','total_units','fulfilled_units','completed_at','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed','roster_change'];
 export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','logo_url','school_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
@@ -277,20 +277,22 @@ export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().to
   return threadHex(s)||null;};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
-export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
-'red':'#dc2626','royal':'#4169e1','royal blue':'#4169e1','silver':'#C0C0C0','green':'#166534','dark green':'#006400',
-'orange':'#EA580C','maroon':'#800000','purple':'#6B21A8','kelly green':'#4CBB17','scarlet':'#FF2400',
-'columbia blue':'#9BDDFF','light blue':'#ADD8E6','vegas gold':'#C5B358','old gold':'#CFB53B',
-'athletic gold':'#FFB81C','charcoal':'#36454F','grey':'#808080','gray':'#808080','light gray':'#C0C0C0',
-'pink':'#FF69B4','hot pink':'#FF1493','brown':'#8B4513','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
-'teal':'#008080','yellow':'#FFD700','bright yellow':'#FFFF00','powder blue':'#B0E0E6','sky blue':'#87CEEB',
-'forest green':'#228B22','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#800020',
+// Team / embroidery-thread shades (close to the Pantone team standards — e.g. forest green is a deep
+// green, not kelly), so swatches and DST stitch previews read like the real thread.
+export const THREAD_COLORS={'cardinal':'#8C1D40','navy':'#1F2A44','gold':'#FFB81C','white':'#FFFFFF','black':'#000000',
+'red':'#C8102E','royal':'#1E4FA8','royal blue':'#1E4FA8','silver':'#A7A8AA','green':'#007A33','dark green':'#154734',
+'orange':'#F26522','maroon':'#6B1F2E','purple':'#4F2683','kelly green':'#00843D','scarlet':'#BA0C2F',
+'columbia blue':'#8BB8E8','light blue':'#9BCBEB','vegas gold':'#C5B358','old gold':'#B3995D',
+'athletic gold':'#FFB81C','charcoal':'#3C4043','grey':'#8D9093','gray':'#8D9093','light gray':'#C0C0C0',
+'pink':'#F4A6C4','hot pink':'#FF1493','brown':'#5C3A21','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
+'teal':'#00778B','yellow':'#FFCD00','bright yellow':'#FFFF00','powder blue':'#A7C6ED','sky blue':'#7BAFD4',
+'forest green':'#1E4D2B','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#7A1F35',
 'rust':'#B7410E','copper':'#B87333','sand':'#C2B280','ivory':'#FFFFF0','slate':'#708090',
 'pewter':'#8E8E8E','graphite':'#383838','midnight':'#191970','cobalt':'#0047AB','cyan':'#00FFFF',
 'turquoise':'#40E0D0','aqua':'#00FFFF','magenta':'#FF00FF','lavender':'#E6E6FA','lilac':'#C8A2C8',
 'violet':'#7F00FF','maize':'#FBEC5D','lemon':'#FFF44F','peach':'#FFCBA4','salmon':'#FA8072',
-'brick':'#CB4154','crimson':'#DC143C','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
-'olive':'#808000','hunter green':'#355E3B','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
+'brick':'#CB4154','crimson':'#A6192E','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
+'olive':'#808000','hunter green':'#2C5234','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
 'seafoam':'#93E9BE','ice blue':'#D6ECEF','baby blue':'#89CFF0','steel blue':'#4682B4',
 'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
 export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
@@ -374,6 +376,11 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   logo:'NSA',logoUrl:'/NEW%20NSA%20Logo%20on%20white.png',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
+// The company_info app_state row over the defaults, with fullAddr derived (App.js applies the same
+// rule inline where it loads company_info).
+export const companyInfoFrom=(info)=>{const ci={...NSA_DEFAULTS,...(info||{})};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;return ci};
+// Coach-portal settings used until staff save their own (App.js state + Settings page, CoachPortalApp).
+export const PORTAL_SETTINGS_DEFAULTS={followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.',ccFeePct:0.029,paymentNote:''};
 // Estimate footer: quote the customer's account terms. Only prepay accounts get the deposit
 // line; net-terms accounts (and accounts with no terms set, which default to net30 everywhere
 // else) are told their Net N terms instead of a 50% deposit they don't actually owe.
@@ -647,14 +654,9 @@ export const szRank=(s)=>{
   return 999;
 };
 const _szCompare=(a,b)=>szRank(a)-szRank(b);
-// Adidas represents half shoe sizes with a trailing dash ("10-"), while catalog/order data may
-// already contain the normal decimal spelling ("10.5"). Keep one internal display spelling so a
-// mixed feed cannot render duplicate columns. The fraction form is accepted for the same reason.
-export const normalizeFootwearSize=(size)=>{
-  const s=String(size??'').trim();
-  const m=/^(\d{1,2})(-|½)$/.exec(s);
-  return m?String(Number(m[1])+0.5):s;
-};
+// Footwear half-size spelling ("10-" / "10½" → "10.5") and the spelling-tolerant size-map
+// readers live in the shared module so businessLogic (CJS) uses the same rule as the editors.
+export const { normalizeFootwearSize, sizeQtyIn, sizeKeyIn } = SIZE_NAMES;
 export const normalizeFootwearSizeList=(sizes)=>[...new Set((Array.isArray(sizes)?sizes:[]).map(normalizeFootwearSize).filter(Boolean))].sort(_szCompare);
 
 // Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /

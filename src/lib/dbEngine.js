@@ -30,9 +30,11 @@ import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unacc
 import { isOutsideArtJob, wantsOutsideArt } from './outsideArt';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
+import { salesOrderSequenceNumber } from './salesOrderIds';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
 import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
 import { resilientAuthStorage } from './authStorage';
+import { createRowBaseStore, snapshotRow, mergeStaleJobRow, changedSinceBase, addedSinceBase, fingerprint } from './staleRowMerge';
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -130,7 +132,10 @@ const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_pric
 const _PAGE_TIEBREAK_PARENT={so_jobs:'so_id',so_art_files:'so_id',estimate_art_files:'estimate_id'};
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
-  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL){_unconfirmedLoadTables.add(table);return Promise.resolve({data:[],error:null,status:200});}
+  // opts._track: the calling _dbLoad's own untrusted-table set (see _dbLoad). The module sets above are
+  // shared by every load in the tab, so an overlapping load could clear another load's marks.
+  const _mark=set=>{set.add(table);opts?._track?.add(table)};
+  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL){_mark(_unconfirmedLoadTables);return Promise.resolve({data:[],error:null,status:200});}
   if(cachedAt)_missing404Tables.delete(table);// expired — retry
   const hardLimit=opts?.limit||20000;// safety cap to avoid runaway paging
   const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
@@ -151,13 +156,13 @@ const _safeQuery=(table,opts)=>{
     return q.range(start,start+pageSize-1);
   };
   const _classifyPage=(r)=>{
-    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){_unconfirmedLoadTables.add(table);return'missing';}
+    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){_mark(_unconfirmedLoadTables);return'missing';}
     // RLS/grant denial (Postgres 42501): the table is intentionally unreadable for this role — e.g.
     // `messages` after migration 00162 revoked anon access. Empty is the authoritative view for this
     // role, NOT a load failure: the anonymous coach portal (?portal=) boots through _dbLoad, and a
     // fatal error here blanked the whole load and broke every portal link. Matched narrowly by code/
     // message (not HTTP 401) so expired-JWT errors still reach _isAuthError → _recoverSession.
-    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied')){_unconfirmedLoadTables.add(table);return'denied';}
+    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied')){_mark(_unconfirmedLoadTables);return'denied';}
     if(r.error)return'error';
     return'ok';
   };
@@ -174,11 +179,16 @@ const _safeQuery=(table,opts)=>{
     // later fails RLS and turns into an outbox conflict card (the 2026-07-28 storm). Probe → prompt re-login.
     if(c0==='denied'){_probeDeniedSession(table);console.warn('[DB] '+table+' not readable by current role (permission denied) — treating as empty');return{data:[],error:null,status:200};}
     if(c0==='error'){
+      // An expired or revoked login (the nightly session revoke, a tab left open overnight) fails EVERY
+      // table with 401. Treated as a timeout alone, the tab showed "load did not complete — will retry"
+      // and retried forever with a token that can never work. Verify the session: a dead one goes to
+      // the login screen (same path as the denied-read probe); a live one leaves this a plain failure.
+      if(first.status===401||_isAuthError(first.error))_probeDeniedSession(table);
       // Partial/incomplete load: a page failed. Treat it exactly like a timeout — mark the table
       // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
       // flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
       // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
-      _lastLoadTimedOut.add(table);return first;
+      _mark(_lastLoadTimedOut);return first;
     }
     const all=(first.data||[]).slice();
     if(all.length<pageSize){_truncatedTables.delete(table);return{data:all,error:null,status:200};}
@@ -208,27 +218,27 @@ const _safeQuery=(table,opts)=>{
       for(const r of results){
         const c=_classifyPage(r);
         if(c==='missing'||c==='denied'){if(c==='denied')_probeDeniedSession(table);done=true;break;}// table vanished / access revoked mid-page (unlikely) — stop, keep what we have
-        if(c==='error'){_lastLoadTimedOut.add(table);return r;}
+        if(c==='error'){_mark(_lastLoadTimedOut);return r;}
         const rows=r.data||[];
         all.push(...rows);
         if(rows.length<pageSize)done=true;// reached the final (short) page
       }
     }
     // Exiting with pages still full means the server has rows beyond hardLimit — flag it.
-    if(!done){_truncatedTables.add(table);console.warn('[DB] '+table+' hit the '+hardLimit+'-row cap — loaded data is INCOMPLETE (oldest rows dropped for date-ordered tables)');}
+    if(!done){_mark(_truncatedTables);console.warn('[DB] '+table+' hit the '+hardLimit+'-row cap — loaded data is INCOMPLETE (oldest rows dropped for date-ordered tables)');}
     else _truncatedTables.delete(table);
     return{data:all,error:null,status:200};
   };
   // Add per-query timeout to prevent individual queries from hanging forever
   const timeout=new Promise(resolve=>setTimeout(()=>resolve({data:[],error:{message:'Query timeout for '+table},status:408}),20000));
   return Promise.race([pagedFetch(),timeout]).then(r=>{
-    if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
+    if(r.status===408){_mark(_lastLoadTimedOut);return{data:[],error:null,status:408}}
     return r;
   }).catch(e=>{
     // Catch network/CORS/fetch errors — log at most once per 30s to avoid console spam
     const now=Date.now();
     if(now-_fetchErrorLoggedAt>30000){_fetchErrorLoggedAt=now;console.warn('[DB] Fetch error ('+table+'):',e.message||e)}
-    _lastLoadTimedOut.add(table);
+    _mark(_lastLoadTimedOut);
     return{data:[],error:{message:e.message||'Fetch failed'},status:0};
   });
 };
@@ -414,14 +424,27 @@ const _dbLoadHistInvoices=async()=>{
   return{rows:(r.data||[]).map(_mapHistInvoice),status:'ok'};
 };
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
-  if (!supabase) return null;
-  if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
+  // `source(table, queryOpts)` → {data} supplies each table's rows instead of querying, already in
+  // the order _safeQuery would fetch them (the coach portal: netlify/functions/coach-portal-data.js
+  // returns one team's rows, and this assembles them exactly as it assembles the full load).
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false, source=null, assembleOnly=false} = opts;
+  if (!supabase && !source) return null;
+  if (_dbSavingCount>0&&!assembleOnly) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
-    const recoveryOwner=currentDraftOwner();
+    // This load's OWN untrusted tables. Hydration flags, _everHydratedItems and the timed-out guards
+    // below must describe THIS load's results. They used to read the module-wide sets, which every
+    // _dbLoad clears on start: a poll/realtime/products reload overlapping a slow load (flaky wifi)
+    // wiped its 401/timeout marks, so an order came back items:[] with _itemsHydrated:true (SO-1518).
+    const _loadBad=new Set();
+    const _loadTableUntrusted=table=>_loadBad.has(table);
+    const _q0=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):(table,o)=>_safeQuery(table,{...o,_track:_loadBad});
+    const _q=(table,o)=>{if(_curGroup)_tableGroup.set(table,_curGroup);return _q0(table,o)};
+    // A supplied read-only view has no local drafts to reconcile against.
+    const recoveryOwner=source?null:currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
     const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
-    _lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();
+    // A supplied-rows load never touches the network, so it must not wipe the last real load's record.
+    if(!source){_lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();}
     // Load tables through a bounded pool (at most `size` tables in flight) so a tab can't flood the
     // Supabase connection pool. It used to run lock-step groups of 5 — every group waited for its
     // slowest table before the next group could start — which made a 2026-10-07 boot take 18.7s
@@ -435,7 +458,12 @@ const _dbLoad = async (opts={}) => {
     // groups — a realtime products change shouldn't re-download estimates, SOs, invoices, etc.
     // A group bundles a parent with every child table _dbLoad joins into it, so partial loads
     // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
-    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
+    // Which load group each table was fetched for, recorded as the group's queries start (q() calls _q()
+    // synchronously). _badGroups below is derived from it, so callers that skip unchanged groups
+    // (src/lib/dataVersions.js) never record a group whose tables came back untrusted this load.
+    const _tableGroup=new Map();let _curGroup=null;
+    const _run=(g,q)=>{_curGroup=g;try{return q()}finally{_curGroup=null}};
+    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?_run(g,q):_skip();if(cold&&coreOnly)return _skip();return _run(g,q)};
     const _cold=q=>()=>(coreOnly||only)?_skip():q();
     // Mirror of the _grp('products',…,true) gate: products are (re)built on initial + full polls + a
     // products-realtime reload, but NOT on coreOnly polls or non-products selective reloads. Drives
@@ -451,15 +479,15 @@ const _dbLoad = async (opts={}) => {
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
-      _cold(()=>_safeQuery('team_members',{order:'name'})),
+      _cold(()=>_q('team_members',{order:'name'})),
       // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
       // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
       // Parent and ALL children share the cold flag so a coreOnly load skips them together (group
       // parity); setCust below is .length-guarded and the snapshot is preserved on coreOnly so an
       // empty skip can never wipe customer state or the _diffSave baseline.
-      _grp('customers',()=>_safeQuery('customers',{order:'name'}),true),
-      _grp('customers',()=>_safeQuery('customer_contacts'),true),
-      _cold(()=>_safeQuery('vendors',{order:'name'})),
+      _grp('customers',()=>_q('customers',{order:'name'}),true),
+      _grp('customers',()=>_q('customer_contacts'),true),
+      _cold(()=>_q('vendors',{order:'name'})),
       // products + product_inventory are COLD: a 17k-row catalog that changes only via the daily
       // vendor syncs. Realtime (products channel) + the ~10-min full poll keep them fresh; re-pulling
       // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
@@ -468,29 +496,29 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
-      essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
-      _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
-      _grp('estimates',()=>_safeQuery('estimate_art_files')),
-      _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
-      _grp('estimates',()=>_safeQuery('estimate_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('sales_orders',{order:'id'})),
-      _grp('sales_orders',()=>_safeQuery('so_art_files')),
-      _grp('sales_orders',()=>_safeQuery('so_firm_dates')),
-      _grp('sales_orders',()=>_safeQuery('so_items',{order:'item_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_decorations',{order:'deco_index'})),
-      _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
-      _grp('sales_orders',()=>_safeQuery('so_jobs')),
-      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
-      _grp('invoices',()=>_safeQuery('invoice_payments')),
-      _grp('invoices',()=>_safeQuery('invoice_items')),
-      _grp('invoices',()=>_safeQuery('invoice_credit_memos',{order:'created_at'})),
-      _grp('messages',()=>_safeQuery('messages',{order:'id'})),
-      _grp('messages',()=>_safeQuery('message_reads')),
-      _cold(()=>_safeQuery('omg_stores',{order:'id'})),
-      _cold(()=>_safeQuery('omg_store_products')),
-      _cold(()=>_safeQuery('issues')),
+      essential?_skip:_grp('products',()=>_q('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
+      essential?_skip:_grp('products',()=>_q('product_inventory'),true),
+      _grp('estimates',()=>_q('estimates',{order:'id'})),
+      _grp('estimates',()=>_q('estimate_art_files')),
+      _grp('estimates',()=>_q('estimate_items',{order:'item_index'})),
+      _grp('estimates',()=>_q('estimate_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_q('sales_orders',{order:'id'})),
+      _grp('sales_orders',()=>_q('so_art_files')),
+      _grp('sales_orders',()=>_q('so_firm_dates')),
+      _grp('sales_orders',()=>_q('so_items',{order:'item_index'})),
+      _grp('sales_orders',()=>_q('so_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_q('so_item_pick_lines')),
+      _grp('sales_orders',()=>_q('so_item_po_lines')),
+      _grp('sales_orders',()=>_q('so_jobs')),
+      _grp('invoices',()=>_q('invoices',{order:'id'})),
+      _grp('invoices',()=>_q('invoice_payments')),
+      _grp('invoices',()=>_q('invoice_items')),
+      _grp('invoices',()=>_q('invoice_credit_memos',{order:'created_at'})),
+      _grp('messages',()=>_q('messages',{order:'id'})),
+      _grp('messages',()=>_q('message_reads')),
+      _cold(()=>_q('omg_stores',{order:'id'})),
+      _cold(()=>_q('omg_store_products')),
+      _cold(()=>_q('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
       // A full SELECT * here was ~1.66 MB/call (~14% of DB CPU). Routine poll/realtime reloads apply
@@ -508,7 +536,7 @@ const _dbLoad = async (opts={}) => {
         // same cure, as the `_qb_link_v1_*` exclusion below. `qb_config` is NOT matched by this
         // pattern (`qbo_` vs `qb_`) and still loads, so the QuickBooks page is unaffected.
         const _SCRATCH=['id','like','qbo_*'];
-        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
+        if(fullState&&!essential)return _q('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
         // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
         const not=[['id','in','(so_history,est_history)'],_SCRATCH];
@@ -519,28 +547,28 @@ const _dbLoad = async (opts={}) => {
         // every QBO link on fresh tabs.
         not.push(['id','like','_qb_link_v1_*']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
-        return _safeQuery('app_state',not.length?{not}:undefined);
+        return _q('app_state',not.length?{not}:undefined);
       },
-      _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
-      _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_credits'),true),
-      _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping'),true),
-      _grp('customers',()=>_safeQuery('customer_pending_shipping_usage'),true),
-      _cold(()=>_safeQuery('rep_csr_assignments')),
-      _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
-      _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
-      _cold(()=>_safeQuery('deco_vendors',{order:'name'})),
-      _cold(()=>_safeQuery('deco_vendor_pricing')),
-      _cold(()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
-      _cold(()=>_safeQuery('quote_request_items',{order:'sort_order'})),
-      _cold(()=>_safeQuery('dismissed_todos')),
-      _cold(()=>_safeQuery('dismissed_notifs')),
+      _grp('customers',()=>_q('customer_promo_programs'),true),
+      _grp('customers',()=>_q('customer_promo_periods'),true),
+      _grp('customers',()=>_q('customer_promo_usage'),true),
+      _grp('customers',()=>_q('customer_credits'),true),
+      _grp('customers',()=>_q('customer_credit_usage'),true),
+      _grp('customers',()=>_q('customer_pending_shipping'),true),
+      _grp('customers',()=>_q('customer_pending_shipping_usage'),true),
+      _cold(()=>_q('rep_csr_assignments')),
+      _grp('assigned_todos',()=>_q('assigned_todos'),true),
+      _grp('assigned_todos',()=>_q('todo_comments'),true),
+      _cold(()=>_q('deco_vendors',{order:'name'})),
+      _cold(()=>_q('deco_vendor_pricing')),
+      _cold(()=>_q('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
+      _cold(()=>_q('quote_request_items',{order:'sort_order'})),
+      _cold(()=>_q('dismissed_todos')),
+      _cold(()=>_q('dismissed_notifs')),
       // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
-      ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
+      ()=>histInvoices?_q('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -616,6 +644,7 @@ const _dbLoad = async (opts={}) => {
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=_estArtFor(est.id).map(_loadArtRow);
+      art_files.forEach(a=>_recordArtBase(est.id,a,'db'));// three-way merge base (see _rowBases)
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
@@ -667,6 +696,7 @@ const _dbLoad = async (opts={}) => {
       // them (no live decorations), and persist jobs:[] — which now deletes so_jobs rows. Filtering
       // them out here would hide the UI symptom without ever writing the delete.
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
+      jobs.forEach(j=>_recordJobBase(so.id,j,'db'));art_files.forEach(a=>_recordArtBase(so.id,a,'db'));// three-way merge bases (see _rowBases)
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
       // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
@@ -709,7 +739,7 @@ const _dbLoad = async (opts={}) => {
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
       const credit_memos=invCreditMemos.filter(cm=>cm.invoice_id===inv.id);
-      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
+      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_loadBad.has('invoice_items'),_paymentsHydrated:!_loadBad.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
@@ -747,13 +777,74 @@ const _dbLoad = async (opts={}) => {
     const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
     const recoveryCandidates=await recoveryDrafts;
     for(const [table,documents] of [['sales_orders',sales_orders],['estimates',estimates]]){
-      if(only&&!only.has(table))continue;
+      if(source||(only&&!only.has(table)))continue;
       // Each document's _recoveryHydrated flag covers its own full set of tables.
       // Storage failure keeps the copies; reconciliation never writes cloud data.
       reconcileSavedDocumentDrafts({owner:recoveryOwner,drafts:recoveryCandidates,documents,table,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));
     }
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly,
+      // Load groups with at least one table that timed out / failed / 404'd this load (app_state counts as
+      // its own group). Their rows may be hollow, so they must not be recorded as "current".
+      _badGroups:[...new Set([..._loadBad].map(t=>t==='app_state'?'app_state':_tableGroup.get(t)).filter(Boolean))]};
   }catch(e){console.error('[DB] Load failed:',e);return null}
+};
+// Per-order refresh for live updates. When another session saves an order, other tabs used to
+// re-download every order with all its lines, POs, picks, jobs and art (8 full tables) — on slow
+// connections that crowded out the rep's own saves (2026-10-14, airplane wifi). This reads only the
+// named orders' rows and assembles them through _dbLoad's own `source` path, so the result is the
+// exact shape, dedup, carry-over filtering and hydration flags a full load produces. Returns null on
+// any read failure (the caller retries once, then falls back to the full reload). `itemIds` (so_items.id from a pick-line
+// event) resolve to their order; ids that no longer exist are simply skipped. `missing` lists
+// requested order ids with no row, so the caller can let the full reload handle a deletion.
+const _DELTA_CHUNK=100;
+// Same per-request deadline as _safeQuery: a request that hangs on a dead connection must fail (and
+// so retry / fall back) instead of holding the live-update queue forever (it waits on this promise).
+const _DELTA_TIMEOUT_MS=20000;
+const _withDeadline=(run)=>Promise.race([run(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('timed out after '+_DELTA_TIMEOUT_MS/1000+'s')),_DELTA_TIMEOUT_MS))]);
+const _readRowsIn=async(table,col,values)=>{
+  const out=[];
+  for(let i=0;i<values.length;i+=_DELTA_CHUNK){
+    const chunk=values.slice(i,i+_DELTA_CHUNK);
+    for(let offset=0;;offset+=1000){
+      // Deterministic paging: composite-key tables need their parent column too (see _PAGE_TIEBREAK_PARENT).
+      const parent=_PAGE_TIEBREAK_PARENT[table];
+      const{data,error}=await _withDeadline(()=>_retryNet(()=>{let q=supabase.from(table).select('*').in(col,chunk);if(parent)q=q.order(parent);return q.order('id').range(offset,offset+999)}));
+      if(error||!Array.isArray(data))throw new Error(table+': '+(error?.message||'no rows returned'));
+      out.push(...data);
+      if(data.length<1000)break;
+    }
+  }
+  return out;
+};
+const _dbLoadSalesOrdersByIds=async(soIds=[],itemIds=[],{maxOrders=Infinity}={})=>{
+  if(!supabase)return null;
+  try{
+    const ids=new Set(soIds);
+    if(itemIds.length)(await _readRowsIn('so_items','id',itemIds)).forEach(r=>{if(r.so_id)ids.add(r.so_id)});
+    const wanted=[...ids];
+    if(!wanted.length)return{sales_orders:[],missing:[]};
+    // Counted after pick-line events collapse to their order: one save re-inserts every pick line.
+    if(wanted.length>maxOrders)return{tooMany:true,sales_orders:[],missing:[]};
+    const parents=await _readRowsIn('sales_orders','id',wanted);
+    const found=parents.map(r=>r.id);
+    const missing=soIds.filter(id=>!found.includes(id));
+    if(!found.length)return{sales_orders:[],missing};
+    const[art,firm,items,jobs]=await Promise.all([
+      _readRowsIn('so_art_files','so_id',found),_readRowsIn('so_firm_dates','so_id',found),
+      _readRowsIn('so_items','so_id',found),_readRowsIn('so_jobs','so_id',found)]);
+    const childOf=items.map(r=>r.id);
+    const[decos,picks,pos]=childOf.length?await Promise.all([
+      _readRowsIn('so_item_decorations','so_item_id',childOf),_readRowsIn('so_item_pick_lines','so_item_id',childOf),
+      _readRowsIn('so_item_po_lines','so_item_id',childOf)]):[[],[],[]];
+    const rows={sales_orders:parents,so_art_files:art,so_firm_dates:firm,so_items:items,so_jobs:jobs,
+      so_item_decorations:decos,so_item_pick_lines:picks,so_item_po_lines:pos};
+    // assembleOnly: these rows are already read, so a save that started meanwhile must not make _dbLoad
+    // drop them (its save-in-progress skip guards network loads). The caller's merge keeps the local
+    // copy of any order whose save is in flight.
+    const d=await _dbLoad({only:new Set(['sales_orders']),source:table=>({data:rows[table]||[]}),assembleOnly:true});
+    if(!d)return null;
+    return{sales_orders:d.sales_orders,missing};
+  }catch(e){console.warn('[DB] Per-order refresh read failed:',e?.message||e);return null}
 };
 const _dbSeed = async (d) => {
   if (!supabase) return;
@@ -958,6 +1049,29 @@ const _writeRowsSchemaSafe=async(table,rows,send,extraCols)=>{
 };
 const _schemaGapMsg=(what,table,dropped)=>what+' saved WITHOUT '+dropped.join(', ')+' — '+table+' is missing '+(dropped.length>1?'those columns':'that column')+'. Run the pending DB migration before relying on these fields.';
 const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
+// ─── Row bases for three-way merging of stale job / artwork rows (lib/staleRowMerge) ───
+// Each job and artwork row is fingerprinted at every _version this client loads or writes, so a
+// later save holding a stale copy can tell which fields the client actually changed (keep) from
+// fields it merely never refreshed (take the database's newer value). Loaded rows are the
+// database's own content at that version and replace a snapshot recorded from this client's write.
+// 64 versions per row: a light art/jobs save rewrites every job on the order, so a tab left open
+// while an artist works can fall dozens of versions behind and still needs its base. Snapshots are
+// per-field fingerprints (a few hundred bytes); only rows that actually change accumulate versions.
+const _rowBases=createRowBaseStore({keepVersions:64});
+const _JOB_BASE_OPTS={fields:_jobCols.filter(c=>c!=='id')};
+const _jobBaseRow=j=>_fuDefaults({..._pick(j,_jobCols),art_reuse_confirmed:j.art_reuse_confirmed===true});
+const _jobBaseKey=(soId,id)=>'job|'+soId+'|'+id;
+const _artBaseKey=(parentId,id)=>'art|'+parentId+'|'+id;
+const _recordBase=(key,version,build,src)=>{
+  if(version==null)return;
+  const cur=_rowBases.get(key,version);
+  if(cur&&(cur.src==='db'||src!=='db'))return;// DB content at a version never changes; a write never replaces it
+  _rowBases.record(key,version,{...build(),src});
+};
+const _recordJobBase=(soId,j,src,version=j?._version)=>{if(soId&&j&&j.id)_recordBase(_jobBaseKey(soId,j.id),version,()=>snapshotRow(_jobBaseRow(j),_JOB_BASE_OPTS),src)};
+// _ART_BASE_OPTS is defined after the art field lists below; resolved at call time.
+const _recordArtBase=(parentId,a,src,version=a?._version)=>{if(parentId&&a&&a.id)_recordBase(_artBaseKey(parentId,a.id),version,()=>snapshotRow(a,_ART_BASE_OPTS),src)};
+export const _rowBaseStats=()=>({rows:_rowBases.size});
 // ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
 // When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
 // unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
@@ -974,6 +1088,7 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived','is_tbd'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
 const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
+const _ART_BASE_OPTS={fields:[..._ART_CONTENT_FIELDS],fileCollections:_ART_FILE_COLLECTIONS,mapCollections:['item_mockups','mock_links']};
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
   // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
@@ -1008,16 +1123,24 @@ const _applyArtDeletes=(merged,clientArt)=>{
   }
   return merged;
 };
-const _mergeArtConflict=(clientArt,dbRow)=>{
+// `base` (when this client recorded the row at its version — see _rowBases) turns the overlay into a
+// real three-way merge: only content the client CHANGED overrides the newer DB row, and only files the
+// client ADDED join the DB's lists — so a stale copy can neither revert another user's rename/color-way
+// edit nor resurrect a file they deleted. Without a base the previous behavior stands (overlay all
+// content, union all files).
+const _mergeArtConflict=(clientArt,dbRow,base=null)=>{
   const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
-  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt)merged[f]=clientArt[f]});// overlay this client's typed content
-  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],clientArt[f])});// union uploads from both sides
+  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt&&changedSinceBase(base,f,clientArt[f]))merged[f]=clientArt[f]});// overlay this client's typed content
+  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],base?addedSinceBase(clientArt[f],base.files[f]):clientArt[f])});// union uploads from both sides
   const im={...(dbRow.item_mockups||{})};// per-item mockup map: union each item's url list
-  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],v)});
+  const _bIm=base?(base.maps.item_mockups||{}):null;
+  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],_bIm?addedSinceBase(v,Array.isArray(_bIm[k])?_bIm[k]:[]):v)});
   merged.item_mockups=im;
   // mock_links: small {garmentKey -> sourceKey} map. Shallow-merge so neither side's reuse links are
-  // dropped on a concurrent edit; the client's link wins for any key it set.
-  merged.mock_links={...(dbRow.mock_links||{}),...(clientArt.mock_links||{})};
+  // dropped on a concurrent edit; the client's link wins for any key it set (with a base: changed).
+  const _bMl=base?(base.maps.mock_links||{}):null;
+  const _clientLinks=Object.fromEntries(Object.entries(clientArt.mock_links||{}).filter(([k,v])=>!_bMl||_bMl[k]!==fingerprint(v)));
+  merged.mock_links={...(dbRow.mock_links||{}),..._clientLinks};
   // Preview / web-logo replacements are user-authoritative only when this tab actually edited the field.
   // Otherwise the DB copy wins so an unrelated stale save cannot restore an older asset URL.
   const edited=new Set(Array.isArray(clientArt._artEditedFields)?clientArt._artEditedFields:[]);
@@ -1034,8 +1157,8 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   let conflicts=0;
   const out=clientArtFiles.map(a=>{
     const db=dbById.get(a.id);
-    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db),baseVersion:db._version||0}}
-    return{client:a,row:a,baseVersion:a._version||0};
+    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db,_rowBases.get(_artBaseKey(parentId,a.id),a._version||0)),baseVersion:db._version||0,parentId}}
+    return{client:a,row:a,baseVersion:a._version||0,parentId};
   });
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
@@ -1052,9 +1175,10 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
 const _dbWrittenArtIds=new Map();
 const _markArtWritten=(table,parentId,ids)=>{const k=table+':'+parentId;let s=_dbWrittenArtIds.get(k);if(!s){s=new Set();_dbWrittenArtIds.set(k,s)}(ids||[]).forEach(id=>{if(id)s.add(id)})};
 const _knownArtIdsFor=(table,doc)=>new Set([...(Array.isArray(doc._hydratedArtIds)?doc._hydratedArtIds:[]),...(_dbWrittenArtIds.get(table+':'+doc.id)||[])]);
-const _adoptResolvedArtRow=({client,row,baseVersion})=>{
+const _adoptResolvedArtRow=({client,row,baseVersion,parentId})=>{
   Object.assign(client,row,{_version:baseVersion+1});
   delete client._artDeletes;delete client._artEditedFields;
+  _recordArtBase(parentId,client,'write');
   return client;
 };
 const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
@@ -1325,6 +1449,7 @@ const _dbSaveEstimateInner = async (est) => {
       // _dbSavePendingIds non-empty, which permanently blocked the build-version poller from reloading stale tabs.
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
@@ -1359,6 +1484,7 @@ const _dbSaveEstimateInner = async (est) => {
       // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
       if(_rpcRes.data&&_rpcRes.data.stale===true){
         console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
+        if(await _staleWriteAlreadySaved('estimates',est))return true;
         _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
@@ -1443,7 +1569,29 @@ const _refreshMaxId=async(table,prefix)=>{
   const{data}=await supabase.from(table).select('id').like('id',prefix+'%').order('id',{ascending:false}).limit(1000);
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
-const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
+// SO numbers only count canonical SO-#### ids. The generic first-digit-run scan above read the saved
+// test row SO-TEST-SAVE-20261008 as 20261008, so every collision re-mint from 2026-10-08 produced
+// SO-20261009, -10, -11 ... (ten orders before it was caught).
+const _refreshSoMaxId=async()=>{
+  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%').order('id',{ascending:false}).limit(1000);
+  return(data||[]).reduce((mx,r)=>Math.max(mx,salesOrderSequenceNumber(r.id)),0);
+};
+// The one place a new SO-#### number comes from: the DB counter (next_sales_order_id → app_counters
+// 'sales_order', row-locked, never below the highest canonical SO), so two reps creating at the same
+// moment can't get the same number. Falls back to the caller's local max+1 only when the RPC is
+// unreachable — the save-time identity guard below still catches a collision on that path.
+const _dbMintSalesOrderId=async(fallbackId)=>{
+  if(!supabase)return fallbackId;
+  try{
+    const{data,error}=await Promise.race([
+      supabase.rpc('next_sales_order_id'),
+      new Promise(res=>setTimeout(()=>res({data:null,error:{message:'next_sales_order_id timed out'}}),5000))
+    ]);
+    if(!error&&salesOrderSequenceNumber(data))return data;
+    console.warn('[DB] next_sales_order_id failed — using local SO number',fallbackId,error?.message||data);
+  }catch(e){console.warn('[DB] next_sales_order_id threw — using local SO number',fallbackId,e)}
+  return fallbackId;
+};
 // Map an in-memory PO line to its so_item_po_lines row shape. Extracted so the full-SO save (below)
 // and the durable create-time write (_dbPersistNewPoLine) build the row IDENTICALLY — a lesson from
 // this codebase's hand-synced-duplicate history: two copies of this column mapping WILL drift.
@@ -1451,6 +1599,146 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
   return{so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
     billed:billed||{},tracking_numbers:tracking_numbers||[],
     sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
+// Prepare so_jobs upsert rows with every stale-copy guard (coach decisions, art-status regression,
+// receipt regression, append-only history). Shared by the full order save and the art+jobs save, so
+// an Art Dashboard action that skips the line items keeps exactly the same protections. Returns the
+// rows to write and `adopt`, which must run only after the write commits.
+const _prepareJobUpserts=async(so,jobs)=>{
+      const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
+      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
+      // order with one reviewed job and older jobs would otherwise send NULL for
+      // the older rows rather than using the database default.
+      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
+      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
+      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
+      // decision columns and silently reverts it. Never null a non-null coach column unless this save
+      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
+      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
+      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
+      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('*').eq('so_id',so.id);
+      if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
+      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
+      // Three-way merge first (lib/staleRowMerge): a stale job row starts from the newer DB row and keeps
+      // only the fields this client changed since the version it holds. The column guards below then run
+      // on the merged row, exactly as before. No recorded base → unchanged behavior (guards only).
+      {let _merged3=0;const _keptCols=new Set();
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db||(j._version||0)>=(db._version||0))return;
+        const r=mergeStaleJobRow(row,db,_rowBases.get(_jobBaseKey(so.id,row.id),j._version||0));
+        if(!r.kept)return;
+        jobRows[i]=r.row;_merged3++;r.kept.forEach(c=>_keptCols.add(c));
+      });
+      if(_merged3)console.warn('[DB] Three-way merged',_merged3,'stale job row(s) on',so.id,'— newer DB values kept; this client\'s own changes kept for:',[..._keptCols].join(', ')||'(none)');}
+      {let _preserved=0;
+      jobRows.forEach((row,i)=>{
+        if(dedupedJobs[i]._coach_cleared)return;
+        const db=_dbCoachById.get(row.id);if(!db)return;
+        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
+        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
+      });
+      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
+      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
+      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
+      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
+      // already cleared. A stale copy may never move art_status BACKWARD through the review
+      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
+      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
+      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
+      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
+      // rep wants persisted. The three production-files stages share one rank: which of them a job
+      // sits in is a per-deco routing detail, not review progress.
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      let _artKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
+        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
+        const _stale=(j._version||0)<(db._version||0);
+        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
+      });
+      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
+      // Receipt-state regression guard (same SO-1131 incident — the stale save also wiped the job's
+      // received count 6→0 and flipped it back to Need to Order; 124 such regressions in the prior
+      // 30 days). A stale copy may not LOWER a job's fulfilled_units. Restored as a PAIR with
+      // item_status, which is derived from fulfilled_units — restoring one without the other would
+      // write a contradictory shape. Version-gated: a current tab's deliberate un-receive / receipt
+      // edit passes untouched, and the receiving flows re-derive both on their own saves anyway.
+      {let _rcptKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        const _stale=(j._version||0)<(db._version||0);
+        const _dbFul=Number(db.fulfilled_units)||0;
+        if(_stale&&('fulfilled_units'in row)&&(Number(row.fulfilled_units)||0)<_dbFul){
+          row.fulfilled_units=db.fulfilled_units;
+          if(('item_status'in row)&&db.item_status)row.item_status=db.item_status;
+          _rcptKept++;
+        }
+      });
+      if(_rcptKept)console.warn('[DB] Preserved',_rcptKept,'job receipt state(s) on',so.id,'that a stale save would have lowered (client job copy behind DB _version)');}
+      // Append-only history guard: art_messages / sent_history / rejections only ever GROW — no UI
+      // deletes an artist message, a coach-send record, or a rejection. A stale copy writing its
+      // shorter list permanently drops entries another session appended since this tab loaded
+      // (46 / 17 / 5 shrink-writes respectively in the 30 days before this guard) — unlike the
+      // status columns those never self-heal. On a stale copy, union DB + client entries (DB order
+      // first, client-only entries appended, so a fresh reply still lands at the end) instead of
+      // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
+      // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
+      {const _HIST_COLS=['art_messages','sent_history','rejections'];
+      // rejections key deliberately ignores timestamps: the coach portal writes the decision
+      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
+      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
+      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
+      // twice. by+reason identifies the logical decision across both writes.
+      const _histKey=(c,e)=>{
+        if(!e||typeof e!=='object')return JSON.stringify(e);
+        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
+        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
+      };
+      let _histKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        if(((j._version||0)>=(db._version||0)))return;// current copy — its list is authoritative
+        _HIST_COLS.forEach(c=>{
+          if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
+          const client=Array.isArray(row[c])?row[c]:[];
+          // DB order first; where the client holds its own copy of the same logical entry, the
+          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
+          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
+          // entries append at the end, so a fresh reply still lands last.
+          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
+          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
+          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
+          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
+        });
+      });
+      if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
+      // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
+      // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
+      // client sends on every save (_draft, priced_separately, price_override, split_group) — one
+      // more and the strip-all fallback fired, silently dropping split_open (which mis-orders
+      // split-family receipt apportioning, SO-1462) along with the coach/follow-up flags. Both
+      // halves of that are kept: the helper's budget is far above any real gap, AND this branch
+      // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
+      // other three now have a migration, so the retry should never fire here at all.
+      return{jobRows,adopt:()=>dedupedJobs.forEach((j,i)=>{
+        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
+        // protected first save promotes stale local content to the current version and a second save can
+        // regress art status, receipts, or append-only history with the guards now disarmed.
+        Object.assign(j,jobRows[i]);
+        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
+        if(j._art_moved)delete j._art_moved;
+        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
+        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
+        // were never rebased before, so after ONE save every tab read as "stale" forever — which
+        // would make the regression guard above block this tab's own later deliberate backward
+        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
+        // copy genuinely behind ANOTHER client's write is treated as stale.
+        const _db=_dbCoachById.get(j.id);
+        j._version=((_db?_db._version:j._version)||0)+1;
+        _recordJobBase(so.id,j,'write');
+      })};
+};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return false;
   // Stale-write circuit breaker (mirrors _dbSaveEstimateInner). A save rejected as STALE_SO_WRITE is
@@ -1477,6 +1765,10 @@ const _dbSaveSOInner = async (so) => {
       _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'sales_orders: version check failed — save deferred for retry');_persistFailedIds();
       return false;
     }}
+  // A rebased re-save after our own lost write (_resolveStaleWrite → 'own'): the version check now
+  // passes, but treat it exactly like another session's save so the deco-PO, header-decision and
+  // stale-content guards protect whatever the cloud holds that this copy lacks.
+  if(!_versionConflict&&_ownRebase.has(so.id))_versionConflict=_ownRebase.get(so.id);
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let {data:saveToken,error:tokenError}=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
@@ -1508,12 +1800,12 @@ const _dbSaveSOInner = async (so) => {
     let _remintedFrom=null;
     if(_idHeldByOtherSO){
       const oldId=so.id;
-      if(!so._version){
+      if(!so._version&&/^SO-\d+$/.test(String(oldId||''))){
         // Never successfully saved (no _version has ever been read back), so this is a brand-new order whose
         // number was taken while the tab sat idle. Claim a free number instead of overwriting the incumbent.
         // Safe to renumber here precisely because it has no children under the old id yet.
         const freshMax=await _refreshSoMaxId();
-        so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        so.id=soRowInitial.id=await _dbMintSalesOrderId('SO-'+(Math.max(freshMax,salesOrderSequenceNumber(oldId))+1));
         soRowInitial.updated_at=finalUpdatedAt;// drop the incumbent's timestamp copied above — it isn't ours
         _isNewSO=true;_remintedFrom=oldId;
         console.warn('[DB] SO',oldId,'is held by a different order (created',existingSO.created_at,'vs ours',so.created_at,') — re-minted to',so.id);
@@ -2230,129 +2522,9 @@ const _dbSaveSOInner = async (so) => {
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
-      const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
-      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
-      // order with one reviewed job and older jobs would otherwise send NULL for
-      // the older rows rather than using the database default.
-      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
-      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
-      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
-      // decision columns and silently reverts it. Never null a non-null coach column unless this save
-      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
-      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
-      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
-      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
-      if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
-      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
-      {let _preserved=0;
-      jobRows.forEach((row,i)=>{
-        if(dedupedJobs[i]._coach_cleared)return;
-        const db=_dbCoachById.get(row.id);if(!db)return;
-        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
-        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
-      });
-      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
-      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
-      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
-      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
-      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
-      // already cleared. A stale copy may never move art_status BACKWARD through the review
-      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
-      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
-      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
-      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
-      // rep wants persisted. The three production-files stages share one rank: which of them a job
-      // sits in is a per-deco routing detail, not review progress.
-      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
-      let _artKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
-        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
-        const _stale=(j._version||0)<(db._version||0);
-        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
-      });
-      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
-      // Receipt-state regression guard (same SO-1131 incident — the stale save also wiped the job's
-      // received count 6→0 and flipped it back to Need to Order; 124 such regressions in the prior
-      // 30 days). A stale copy may not LOWER a job's fulfilled_units. Restored as a PAIR with
-      // item_status, which is derived from fulfilled_units — restoring one without the other would
-      // write a contradictory shape. Version-gated: a current tab's deliberate un-receive / receipt
-      // edit passes untouched, and the receiving flows re-derive both on their own saves anyway.
-      {let _rcptKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
-        const _stale=(j._version||0)<(db._version||0);
-        const _dbFul=Number(db.fulfilled_units)||0;
-        if(_stale&&('fulfilled_units'in row)&&(Number(row.fulfilled_units)||0)<_dbFul){
-          row.fulfilled_units=db.fulfilled_units;
-          if(('item_status'in row)&&db.item_status)row.item_status=db.item_status;
-          _rcptKept++;
-        }
-      });
-      if(_rcptKept)console.warn('[DB] Preserved',_rcptKept,'job receipt state(s) on',so.id,'that a stale save would have lowered (client job copy behind DB _version)');}
-      // Append-only history guard: art_messages / sent_history / rejections only ever GROW — no UI
-      // deletes an artist message, a coach-send record, or a rejection. A stale copy writing its
-      // shorter list permanently drops entries another session appended since this tab loaded
-      // (46 / 17 / 5 shrink-writes respectively in the 30 days before this guard) — unlike the
-      // status columns those never self-heal. On a stale copy, union DB + client entries (DB order
-      // first, client-only entries appended, so a fresh reply still lands at the end) instead of
-      // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
-      // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
-      {const _HIST_COLS=['art_messages','sent_history','rejections'];
-      // rejections key deliberately ignores timestamps: the coach portal writes the decision
-      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
-      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
-      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
-      // twice. by+reason identifies the logical decision across both writes.
-      const _histKey=(c,e)=>{
-        if(!e||typeof e!=='object')return JSON.stringify(e);
-        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
-        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
-      };
-      let _histKept=0;
-      jobRows.forEach((row,i)=>{
-        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
-        if(((j._version||0)>=(db._version||0)))return;// current copy — its list is authoritative
-        _HIST_COLS.forEach(c=>{
-          if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
-          const client=Array.isArray(row[c])?row[c]:[];
-          // DB order first; where the client holds its own copy of the same logical entry, the
-          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
-          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
-          // entries append at the end, so a fresh reply still lands last.
-          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
-          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
-          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
-          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
-        });
-      });
-      if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
-      // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
-      // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
-      // client sends on every save (_draft, priced_separately, price_override, split_group) — one
-      // more and the strip-all fallback fired, silently dropping split_open (which mis-orders
-      // split-family receipt apportioning, SO-1462) along with the coach/follow-up flags. Both
-      // halves of that are kept: the helper's budget is far above any real gap, AND this branch
-      // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
-      // other three now have a migration, so the retry should never fire here at all.
-      savePlan.job_upserts=jobRows;
-      afterCommit.push(()=>dedupedJobs.forEach((j,i)=>{
-        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
-        // protected first save promotes stale local content to the current version and a second save can
-        // regress art status, receipts, or append-only history with the guards now disarmed.
-        Object.assign(j,jobRows[i]);
-        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
-        if(j._art_moved)delete j._art_moved;
-        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
-        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
-        // were never rebased before, so after ONE save every tab read as "stale" forever — which
-        // would make the regression guard above block this tab's own later deliberate backward
-        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
-        // copy genuinely behind ANOTHER client's write is treated as stale.
-        const _db=_dbCoachById.get(j.id);
-        j._version=((_db?_db._version:j._version)||0)+1;
-      }));
+      const _jobPrep=await _prepareJobUpserts(so,jobs);
+      savePlan.job_upserts=_jobPrep.jobRows;
+      afterCommit.push(_jobPrep.adopt);
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
@@ -2485,6 +2657,7 @@ const _dbSaveSOInner = async (so) => {
         po_lines:(po_lines||[]).map(po=>{const row=_poLineToRow(null,po);delete row.so_item_id;return row})};
     });
     if(saveFailed)throw new Error(_failMsg||'Sales-order validation failed');
+    _rememberSaveAttempt('sales_orders',so);
     const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{
       p_so_id:so.id,p_expected_token:saveToken,p_plan:{...savePlan,...(so._editLease?{edit_lease:so._editLease}:{})},
     }));
@@ -2495,6 +2668,15 @@ const _dbSaveSOInner = async (so) => {
           _logClientEvent('so_edit_lease_blocked',{id:so.id,session:so._editLease?.session||null,reason:commitError.message});
           if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('nsa:edit-lease-lost',{detail:{id:so.id,session:so._editLease?.session}}));
           if(_dbNotify)_dbNotify('This order is being edited elsewhere or your editing session expired. Your draft is kept for review.','error');
+        }else{
+          const _resolved=await _resolveStaleWrite('sales_orders',so);
+          if(_resolved==='saved')return true;
+          if(_resolved?.own&&!_ownRebaseTried.has(so.id)){
+            _ownRebase.set(so.id,{local:so._obBaseVersion??so._version,server:_resolved.version});
+            so._version=_resolved.version;delete so._obBaseVersion;
+            _ownRebaseTried.add(so.id);
+            try{return await _dbSaveSOInner(so)}finally{_ownRebaseTried.delete(so.id);_ownRebase.delete(so.id)}
+          }
         }
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
@@ -2554,10 +2736,31 @@ const _dbSaveMemoCommand=command=>{
   return data;
 }));
 };
+// Header "touch" after an art/job-only save (migration so_touch_without_version_bump). Those saves
+// write so_art_files/so_jobs but not the sales_orders row, and every other session only adopts an
+// order's new art/jobs when that row changes: realtime watches sales_orders, the poll merge's fast
+// path keys on updated_at, and the open editor's sync keys on updated_at/_version. touch_sales_order
+// bumps updated_at WITHOUT advancing _version — a change signal, not an edit — so other screens
+// refresh while a rep's open edit on the same order stays valid (SO-2444, 2026-10-12).
+// Best-effort: the art/job rows are already committed. If the RPC isn't deployed, remember it so
+// savSO routes art/job saves back through the full order save (which bumps the header itself).
+let _soTouchSupported=null;// null = unknown, false = RPC missing
+export const _soTouchAvailable=()=>_soTouchSupported!==false;
+const _touchSalesOrder=async(soId)=>{
+  if(!supabase||_soTouchSupported===false)return false;
+  try{
+    const{error}=await _retryNet(()=>supabase.rpc('touch_sales_order',{p_so_id:soId}));
+    if(!error){_soTouchSupported=true;return true}
+    if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'')){
+      _soTouchSupported=false;console.warn('[DB] touch_sales_order not deployed — art/job saves fall back to full order saves');
+    }else console.warn('[DB] touch_sales_order failed for',soId,'— other screens pick this change up on their next refresh:',error.message);
+  }catch(e){console.warn('[DB] touch_sales_order threw for',soId,e?.message||e)}
+  return false;
+};
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
-const _dbSaveArtFilesInner = async (so) => {
+const _dbSaveArtFilesInner = async (so,{quiet=false}={}) => {
   if(!supabase)return false;
   await _ensureFreshSession();
   return _dbSavingGuard(async()=>{try{
@@ -2578,14 +2781,68 @@ const _dbSaveArtFilesInner = async (so) => {
     if(data?.saved!==true)throw new Error('Database did not confirm the artwork save');
     resolved.forEach(_adoptResolvedArtRow);
     _markArtWritten('so_art_files',so.id,plan.art_upserts.map(r=>r.id));
+    await _touchSalesOrder(so.id);// let other screens see the new art (see _touchSalesOrder)
     return true;
   }catch(error){
     if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
-    if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
+    if(quiet)console.warn('[DB] art-only save failed for',so.id,'— retrying as a full order save:',error.message);
+    else if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
     return false;
   }});
 };
-const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesInner,true);
+// quiet: the caller (App's order-save router) retries a failure as a full order save, which reports
+// its own outcome — an "Artwork was not saved" toast before a save that then succeeds is just noise.
+// Stable function identities so _queuedEntitySave can still coalesce repeated saves of one kind.
+const _dbSaveArtFilesQuietInner=so=>_dbSaveArtFilesInner(so,{quiet:true});
+const _dbSaveArtFiles = (so,{quiet=false}={}) => _saveDocument('sales_orders',so,quiet?_dbSaveArtFilesQuietInner:_dbSaveArtFilesInner,true);
+// Art + jobs save for Art Dashboard actions (file uploads, prod-files confirmation, status moves,
+// artist assignment). Writes ONLY so_art_files and so_jobs rows, then touches the header without a
+// version bump — so an artist's click no longer deletes/re-inserts every item, decoration, pick and
+// PO line, and no longer moves the order's _version under a rep's open editor (SO-2444, 2026-10-12:
+// one seps upload = 6 whole-order rewrites in 20s; the rep's next edit was rejected as stale), while
+// every other screen still refreshes. Each art and job row keeps its own optimistic-version guards;
+// job rows go through the same _prepareJobUpserts protections as the full save. Upsert-only for
+// jobs: removing a job still needs the full save.
+const _dbSaveArtJobsInner = async (so,{quiet=false}={}) => {
+  if(!supabase)return false;
+  await _ensureFreshSession();
+  return _dbSavingGuard(async()=>{try{
+    if(!Array.isArray(so.art_files)&&!Array.isArray(so.jobs))return false;
+    const token=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
+    if(token.error)throw new Error(token.error.message);
+    let resolved=[],art_deletes=[];
+    if(Array.isArray(so.art_files)){
+      const {data:dbArt,error:readError}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
+      if(readError)throw new Error(readError.message);
+      resolved=_resolveArtRows(so.art_files,dbArt,so.id);
+      const present=new Set(so.art_files.map(a=>a.id));
+      const known=_knownArtIdsFor('so_art_files',so);
+      art_deletes=so._artHydrated===false?[]:(dbArt||[]).filter(a=>known.has(a.id)&&!present.has(a.id)).map(a=>a.id);
+    }
+    const jobPrep=Array.isArray(so.jobs)&&so.jobs.length?await _prepareJobUpserts(so,so.jobs):{jobRows:[],adopt:()=>{}};
+    // No `items`/`firm_dates` keys at all (not even null): their mere presence makes the RPC demand the
+    // order's edit lease, which would refuse an artist's art/job save whenever a rep has the order open.
+    // Art and job rows are each guarded by their own _version, so they don't need the order-wide lease.
+    const plan={header:{id:so.id},write_header:false,is_new:false,
+      art_upserts:resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id})),
+      art_deletes,job_upserts:jobPrep.jobRows,job_deletes:[]};
+    const {data,error}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{p_so_id:so.id,p_expected_token:token.data,p_plan:plan}));
+    if(error)throw new Error(error.message);
+    if(data?.saved!==true)throw new Error('Database did not confirm the artwork save');
+    resolved.forEach(_adoptResolvedArtRow);
+    jobPrep.adopt();
+    if(plan.art_upserts.length)_markArtWritten('so_art_files',so.id,plan.art_upserts.map(r=>r.id));
+    await _touchSalesOrder(so.id);// let other screens see the new art/jobs (see _touchSalesOrder)
+    return true;
+  }catch(error){
+    if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
+    if(quiet)console.warn('[DB] art/job save failed for',so.id,'— retrying as a full order save:',error.message);
+    else if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
+    return false;
+  }});
+};
+const _dbSaveArtJobsQuietInner=so=>_dbSaveArtJobsInner(so,{quiet:true});
+const _dbSaveArtJobs = (so,{quiet=false}={}) => _saveDocument('sales_orders',so,quiet?_dbSaveArtJobsQuietInner:_dbSaveArtJobsInner,true);
 const _invCols=['id','payment_revision','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
@@ -4073,6 +4330,39 @@ const _dbOwnVersions={};// id → last _version this client successfully wrote
 // ourselves. Entries not in this set keep the original time-boxed skip. Deliberately separate from
 // _dbOwnVersions so _rebaseOntoOwnWrite's existing behaviour is untouched.
 const _dbOwnVersionExact=new Set();
+// Lost save reply (flaky / airplane wifi, 2026-10-14): a save commits on the server but its reply
+// never arrives, so the client counts it as failed. The retry, or the next save built on it, then
+// carries the old base version and is rejected as stale: a conflict with ITSELF, shown to the rep as
+// "saving needs review" (SO-1518, SO-2793). Before raising that card, read the authoritative document:
+//  - 'saved': it already holds exactly this content, so the save landed. Adopt the server version.
+//  - 'own':   it holds exactly one of THIS tab's recent full-save attempts, so the version gap is our own
+//             lost write, not another person's. The caller re-runs the save once on the server version,
+//             with the "another session saved" guards armed (_ownRebase), so anything the cloud holds
+//             that this copy lacks is restored or blocked, never silently dropped.
+// Any read failure or other difference returns null and keeps today's conflict card, so another
+// user's change is never adopted or overwritten.
+const _saveAttempts=new Map();// 'table:id' → JSON of the last few payloads this tab sent to the commit RPC
+const _rememberSaveAttempt=(table,doc)=>{try{const k=table+':'+doc.id;const list=_saveAttempts.get(k)||[];list.push(JSON.stringify(doc));while(list.length>3)list.shift();_saveAttempts.set(k,list)}catch(_){/* best effort */}};
+const _ownRebase=new Map();// id → {local,server}: arms _versionConflict for one rebased re-save
+const _ownRebaseTried=new Set();// ids mid-rebase: at most one retry per rejection
+const _resolveStaleWrite=async(table,doc)=>{
+  try{
+    const{row}=await loadRecoveryDocument(supabase,table,doc.id);
+    const key=table+':'+doc.id;
+    if(savedDocumentMatchesDraft(doc,row)){
+      doc._version=row._version;delete doc._obBaseVersion;
+      _dbOwnVersions[doc.id]=row._version;_dbOwnVersionExact.add(doc.id);_dbRecentSaves[doc.id]=Date.now();
+      _dbSaveFailedIds.delete(doc.id);_clearSaveError(doc.id);_persistFailedIds();_dbStaleCooldown.delete(doc.id);
+      _saveAttempts.delete(key);
+      console.warn('[DB]',doc.id,'was rejected as stale, but the cloud already holds this exact content (lost save reply) — saved as v'+row._version);
+      return 'saved';
+    }
+    const own=(_saveAttempts.get(key)||[]).some(json=>{try{return savedDocumentMatchesDraft(JSON.parse(json),row)}catch(_){return false}});
+    if(own){console.warn('[DB]',doc.id,'was rejected as stale; the cloud holds this tab\'s own earlier save (lost reply) — re-saving on v'+row._version);return {own:true,version:row._version}}
+    return null;
+  }catch(e){console.warn('[DB] stale-write content check failed for',doc.id,'—',e?.message||e);return null}
+};
+const _staleWriteAlreadySaved=async(table,doc)=>(await _resolveStaleWrite(table,doc))==='saved';
 const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
@@ -4136,6 +4426,10 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadSalesOrdersByIds,
+  _staleWriteAlreadySaved,
+  _resolveStaleWrite,
+  _rememberSaveAttempt,
   _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,
@@ -4152,8 +4446,10 @@ export {
   _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
+  _dbMintSalesOrderId,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
+  _dbSaveArtJobs,
   _dbSaveInvoice,
   _dbNotify,
   _dataLossAlert,

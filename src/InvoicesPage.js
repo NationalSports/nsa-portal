@@ -40,7 +40,7 @@ function AutoRunOnce({run}){
 
 export default function InvoicesPage(){
   const [invoiceStripe,setInvoiceStripe]=React.useState(null);
-  const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSelC,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -480,7 +480,9 @@ export default function InvoicesPage(){
           </div>
 
 
-          {!inv._hist&&<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe}/>}
+          {/* One click to the customer's page — handy for applying one payment across several of their invoices. */}
+          {(()=>{const custBtn=ic&&<button className="btn btn-sm btn-secondary" style={{marginLeft:8}} title={'Open '+ic.name+"'s customer page"} onClick={()=>{setViewInvoice(null);setInvBackPg(null);setSelC(ic);setPg('customers')}}>Customer Homepage</button>;
+            return inv._hist?(custBtn&&<div style={{padding:'10px 24px',background:'#f8fafc',fontSize:13}}>{custBtn}</div>):<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe} extra={custBtn}/>})()}
           {/* Rep field */}
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
@@ -537,6 +539,9 @@ export default function InvoicesPage(){
               onClick={openCreditMemo}>Credit Memo</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
+                // An invoice without stored lines builds them from its order. If that order's items missed
+                // the last load the lines come out empty, and saving would drop the total (SO-1518 follow-up).
+                if(!storedLineItems.length&&so?._itemsHydrated===false){nf(so.id+" hasn't finished loading, so this invoice's lines can't be shown. Reload the page, then edit.",'error');return}
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
                 const _parent=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;
                 const _alts=(_parent?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
@@ -1618,26 +1623,9 @@ export default function InvoicesPage(){
       const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||so?.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
-    // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──
-    // Store/webstore orders are paid from funds the store platform already
-    // collected, not billed to a coach. Once the store's sales order is
-    // invoiced, those collected funds should settle the invoice. We only
-    // PROPOSE the match here and let accounting confirm each with one click —
-    // nothing is auto-posted. Idempotent: a store drops off once its invoice
-    // carries a payment with our source-tagged ref ('OMG <sale code>' /
-    // 'WEB <so id>'). Payment method is inert to commissions and QB sync
-    // (neither reads it), so 'store' behaves exactly like a check downstream.
+    // Closeout reuses recorded sales and payments after fulfillment/cost review.
     const _r2=n=>Math.round((+n||0)*100)/100;
-    // OMG: funds are collected in a lump by the OMG platform, which deducts its
-    // fees before remitting to NSA. The settlement figure is the NET REMIT
-    // (collected − OMG & CC fees). COVERAGE model: the remit also contains the
-    // tax + processing the parents paid, which are deliberately NOT on the
-    // (tax-exempt, product-only) invoice — so remit ≥ balance is the healthy
-    // state, we apply the invoice balance, and the leftover surplus is NSA's
-    // processing revenue plus tax NSA must remit. Only a remit SHORT of the
-    // balance is a real discrepancy. Stores closed with missing data (no
-    // Accounting Report, SO never invoiced) surface as actionable rows instead
-    // of hiding — that's where the pipeline actually stalls.
+    // Gross collections are the payment basis; platform fees remain costs.
     const omgProps=(omgStores||[]).map(s=>{
       if(!s||!s.id)return null;
       const grand=+s._omg_grand_total||0, acct=+s._omg_acct_collected||0;
@@ -1650,15 +1638,15 @@ export default function InvoicesPage(){
       const so=(sos||[]).find(x=>x.omg_store_id===s.id);
       const ref='OMG '+(s._omg_sale_code||(so&&so.id)||s.id);
       const soInvs=so?enrichedInvs.filter(i=>i.so_id===so.id):[];
-      if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
+      if(so?.store_closed_at)return null;
       if(!(acct>0))return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'report',reason:'Accounting Report missing — enter it on the OMG page',so:so||null,inv:null,collected:null,teamTab:0};
       if(Math.abs(acct-grand)>=1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:'Dollar & Accounting reports disagree',so:so||null,inv:null,collected:null,teamTab:0};
-      const netRemit=_r2(acct-omgFees-ccFees);
+      const netRemit=_r2(acct);
       if(!so)return null; // SO not pulled yet — the OMG page gate walks the rep through that
       const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
       if(!openInvs.length){
-        if(soInvs.length)return null; // invoiced & fully paid some other way
-        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Funds in hand — one click creates the invoice and settles it',so,inv:null,collected:netRemit,teamTab:0,ref};
+        if(soInvs.length)return{key:'close:'+so.id,source:so.omg_store_id?'omg':'web',name,status:'action',act:'invoice',reason:'Payments recorded — fulfillment and cost review still required',so,inv:soInvs[0],collected:null,teamTab:0};
+        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Review shipment and all costs, then Close Store',so,inv:null,collected:netRemit,teamTab:0,ref};
       }
       if(openInvs.length>1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:netRemit,teamTab:0,ref};
       const inv=openInvs[0];
@@ -1693,14 +1681,13 @@ export default function InvoicesPage(){
       if(prepaid<=0.5&&teamTab<=0.5)return null; // no money in play yet
       const ref='WEB '+so.id;
       const soInvs=enrichedInvs.filter(i=>i.so_id===so.id);
-      if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
+      if(so?.store_closed_at)return null;
       const name=agg.name||(soInvs[0]&&soInvs[0]._cname)||cust.find(c=>c.id===so.customer_id)?.name||so.id;
       const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
       if(!openInvs.length){
-        if(soInvs.length)return null; // invoiced & fully paid some other way
-        if(prepaid<=0.5)return null;  // pure team-tab store, nothing prepaid — normal AR flow
+        if(soInvs.length)return{key:'close:'+so.id,source:so.omg_store_id?'omg':'web',name,status:'action',act:'invoice',reason:'Payments recorded — fulfillment and cost review still required',so,inv:soInvs[0],collected:null,teamTab:0};
         return{key:'web:'+so.id,source:'web',name,status:'action',act:'invoice',
-          reason:'Stripe funds in hand — one click creates the invoice and settles it',
+          reason:'Review shipment and all costs, then Close Store',
           so,inv:null,collected:prepaid,teamTab,_agg:agg,ref};
       }
       if(openInvs.length>1)return{key:'web:'+so.id,source:'web',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:prepaid,teamTab,ref};
@@ -1728,11 +1715,10 @@ export default function InvoicesPage(){
     const stAction=storeSettlements.filter(p=>p.status==='action');
     const stMismatch=storeSettlements.filter(p=>p.status==='mismatch');
     const stBlocked=storeSettlements.filter(p=>p.status==='blocked');
-    // Pre-fill the existing payment modal; the modal's "Record $X" button is
-    // accounting's one-click confirm (amount stays editable for exceptions).
+    // Every store application uses the same guarded closeout transaction.
     const proposeSettlement=(p)=>{
       if(!p||!p.inv)return;
-      setPayModal({inv:{...p.inv,_bal:p.inv._bal},amount:_r2(p.applyAmount),method:'store',ref:p.ref});
+      if(p.so){void (p.source==='web'?createAndSettleWebstoreInvoice(p.so):createAndSettleOmgInvoice(p.so));}
     };
     const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
@@ -1859,13 +1845,13 @@ export default function InvoicesPage(){
       {/* Store settlements — apply collected store/webstore funds to invoices */}
       {storeSettlements.length>0&&<div className="card" style={{marginBottom:12,border:'1px solid #c7d2fe'}}><div className="card-body" style={{padding:'12px 16px'}}>
         <div style={{fontSize:12,fontWeight:700,color:'#4338ca',marginBottom:2,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-          🏫 STORE SETTLEMENTS
+          🏫 STORE CLOSEOUTS
           {stMatched.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534',padding:'1px 7px',borderRadius:10}}>{stMatched.length} ready</span>}
           {stAction.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af',padding:'1px 7px',borderRadius:10}}>{stAction.length} needs action</span>}
           {stMismatch.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',padding:'1px 7px',borderRadius:10}}>{stMismatch.length} short</span>}
           {stBlocked.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#f1f5f9',color:'#64748b',padding:'1px 7px',borderRadius:10}}>{stBlocked.length} blocked</span>}
         </div>
-        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>Store &amp; webstore orders are paid from funds the store already collected (not the coach). "Ready" means the collected funds cover the invoice — confirming applies the invoice balance, and the surplus shown is NSA's processing revenue plus collected tax to remit. OMG collected = net remit (collected − OMG &amp; card fees); webstores = prepaid Stripe total, leaving any team-tab balance owed.</div>
+        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>Close Store after all items have shipped and all costs are recorded. Existing payments are applied automatically; duplicate invoices or ambiguous receipts require accounting review. Team-tab balances remain owed.</div>
         <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
           <th style={{padding:'4px 8px'}}>SRC</th><th style={{padding:'4px 8px'}}>STORE / CUSTOMER</th><th style={{padding:'4px 8px'}}>SO</th><th style={{padding:'4px 8px'}}>INVOICE</th>
           <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED</th><th style={{padding:'4px 8px',textAlign:'right'}}>INVOICE BAL</th>
@@ -1883,13 +1869,13 @@ export default function InvoicesPage(){
               <td style={{padding:'6px 8px',textAlign:'right'}}>{p.inv?$(p.inv._bal):'—'}</td>
               <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
                 {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeSettlement(p)}>
-                  {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
+                  Close Store</button>}
                 {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{
                   if(p.act!=='invoice'||!p.so){setPg('omg');return}
                   if(p.source==='web'){const a=p._agg||{};void createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
                   else createAndSettleOmgInvoice(p.so);
                 }}>
-                  {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}
+                  {p.act==='invoice'?'Close Store':'OMG Page'}</button>}
                 {p.status==='matched'&&p.note&&<span style={{marginLeft:8,fontSize:10,color:'#64748b'}}>{p.note}</span>}
                 {p.status==='action'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>{p.reason}</span>}
                 {p.status==='mismatch'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>⚠ {p.reason}</span>}

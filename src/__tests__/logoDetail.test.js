@@ -260,3 +260,22 @@ describe('logo detail pane', () => {
     expect(onUpload).not.toHaveBeenCalled();
   });
 });
+
+describe('logoReferenceFor', () => {
+  const { logoReferenceFor } = require('../lib/logoDetail');
+  it('prefers a mockup image and lists every art file once', () => {
+    const art = { id: 'a1', preview_url: 'https://x/prev.png', mockup_files: ['https://x/mock.jpg'],
+      files: [{ url: 'https://x/logo.ai', name: 'logo.ai' }], prod_files: ['https://x/logo.ai', 'https://x/sep.png'] };
+    const r = logoReferenceFor(art, null);
+    expect(r.thumb).toBe('https://x/mock.jpg');
+    expect(r.files.map(f => f.name)).toEqual(['logo.ai', 'sep.png']);
+    expect(r.source.name).toBe('logo.ai');
+  });
+  it('falls back to an svg when there is no .ai file', () => {
+    expect(logoReferenceFor({ files: ['https://x/a.png', 'https://x/logo.svg?v=2'] }).source.url).toBe('https://x/logo.svg?v=2');
+  });
+  it('returns an empty reference when the design has no files', () => {
+    expect(logoReferenceFor({ id: 'a2' }, null)).toEqual({ thumb: '', files: [], source: null });
+    expect(logoReferenceFor(null)).toEqual({ thumb: '', files: [], source: null });
+  });
+});

@@ -1,7 +1,7 @@
-// Team Shop / Club — auto-release sweep (automation trio #2).
+// Team Shop / Club / All School — auto-release sweep (automation trio #2).
 //
 // Scheduled ~every 15 min (netlify.toml [functions."teamshop-auto-release"]).
-// Finds so_jobs on teamshop/club SOs sitting at prod_status='hold' whose readiness
+// Finds eligible webstore so_jobs sitting at prod_status='hold' whose readiness
 // can be PROVEN by a server-side recompute, and releases each through
 // advance_job_stage('release', …) — the SAME 00205 gate a staff scan uses. It NEVER
 // writes prod_status directly and never weakens the gate: it makes item_status
@@ -44,6 +44,11 @@
 // Gated by teamshop_settings (00208): auto_release_enabled (default FALSE) and
 // auto_release_scope ('auto_art_only' = only jobs born art_complete via trio #1's
 // auto-art, identified by their 'created' event; 'all' = any ready hold job).
+// All School uses an independent per-store opt-in at
+// webstores.all_school_settings.production.auto_release_enabled. This allows an
+// All School store to automate fully verified jobs without enabling the legacy
+// Team Shop / Club switch. The same strict art, garment, DTF, and material checks
+// still apply; the per-store opt-in permits staff-approved art jobs as well.
 //
 // NEVER throws: every job is independently try/caught and the handler always returns
 // 200 with a summary. Scheduled invocation runs with no auth (same posture as
@@ -63,6 +68,10 @@ const isMissingRelation = (e) => {
   const msg = (e.message || '') + ' ' + (e.details || '') + ' ' + (e.hint || '');
   return code === '42P01' || code === '42703' || code === '42883' || /does not exist|could not find|schema cache/i.test(msg);
 };
+
+function allSchoolAutoReleaseEnabled(store) {
+  return store?.all_school_settings?.production?.auto_release_enabled === true;
+}
 
 // ── Pure readiness recompute (unit-tested directly) ──────────────────────────
 function hasDst(files) {
@@ -161,6 +170,41 @@ function jobReleasable(job, artLookup, ctx) {
   return { ready: true, ful };
 }
 
+// Transfer-code decorations are stored on SO items; job.items carries the deco
+// indexes that belong to that production job. Older job payloads may have only
+// deco_idx, so retain that singular form too.
+function jobTransferCodes(job, itemForIndex, decorationsByItem) {
+  const codes = new Set();
+  for (const ji of (job.items || [])) {
+    const item = itemForIndex(ji.item_idx);
+    if (!item) continue;
+    const rows = decorationsByItem[item.id] || [];
+    const indices = Array.isArray(ji.deco_idxs) ? ji.deco_idxs.map(String)
+      : ji.deco_idx != null ? [String(ji.deco_idx)] : null;
+    const matching = indices
+      ? rows.filter((d) => indices.includes(String(d.deco_index)))
+      : rows.filter((d) => (d.type || d.deco_type) === job.deco_type);
+    matching.forEach((d) => { if (d.transfer_code) codes.add(String(d.transfer_code)); });
+  }
+  return [...codes];
+}
+
+function clubTransferPullReady(job, transferCodes, pullOrders, decorationsAvailable = true) {
+  if (decorationsAvailable !== true) {
+    return { required: true, ready: false, reason: 'transfer_readiness_unavailable' };
+  }
+  if (!transferCodes.length) return { required: false, ready: true };
+  if (!Array.isArray(pullOrders) || !pullOrders.length) {
+    return { required: true, ready: false, reason: 'transfer_pull_unverified' };
+  }
+  const ready = pullOrders.every((order) => {
+    if (order.transfers_pulled !== true || !order.transfers_pull_verified_at) return false;
+    const verifiedCodes = new Set(Array.isArray(order.transfers_pull_verified_codes) ? order.transfers_pull_verified_codes.map(String) : []);
+    return transferCodes.every((code) => verifiedCodes.has(code));
+  });
+  return { required: true, ready, reason: ready ? null : 'transfer_pull_unverified' };
+}
+
 // ── Data loading ─────────────────────────────────────────────────────────────
 async function loadSettings(admin) {
   const res = await admin.from('teamshop_settings').select('*').limit(1);
@@ -175,18 +219,23 @@ async function loadSettings(admin) {
   };
 }
 
-async function teamshopClubSoIds(admin) {
+async function webstoreSoIds(admin) {
   const res = await admin.from('webstore_orders')
-    .select('so_id, order_source').in('order_source', SOURCES).not('so_id', 'is', null)
+    .select('so_id, order_source, store_id').in('order_source', SOURCES).not('so_id', 'is', null)
     // Exclude terminated orders. Without this gate a refunded/cancelled order's
     // jobs (still hold + art_complete, never cleaned up) get auto-released into
     // production and decorated — money already returned to the buyer (audit HIGH).
     .not('status', 'in', '(refunded,cancelled,void,disputed,deleted,archived)')
     .limit(5000);
   if (res.error) throw res.error;
-  const map = {};
-  (res.data || []).forEach((r) => { if (r.so_id) map[r.so_id] = r.order_source; });
-  return map;
+  const sourceBySo = {};
+  const storeBySo = {};
+  (res.data || []).forEach((r) => {
+    if (!r.so_id) return;
+    sourceBySo[r.so_id] = r.order_source;
+    if (r.store_id) storeBySo[r.so_id] = r.store_id;
+  });
+  return { sourceBySo, storeBySo };
 }
 
 // ── Orchestration ────────────────────────────────────────────────────────────
@@ -197,12 +246,42 @@ async function runRelease(admin, actor) {
   };
 
   const settings = await loadSettings(admin);
-  if (settings.error && settings.enabled === false) { summary.enabled = false; summary.note = settings.error; return summary; }
-  if (settings.error) { summary.ok = false; summary.errors.push({ step: 'settings', error: settings.error }); return summary; }
-  summary.scope = settings.scope;
-  if (!settings.autoReleaseEnabled) { summary.note = 'auto_release_enabled is false'; return summary; }
+  const globalSettingsAvailable = !(settings.error && settings.enabled === false);
+  if (settings.error && settings.enabled !== false) {
+    summary.ok = false;
+    summary.errors.push({ step: 'settings', error: settings.error });
+    return summary;
+  }
+  summary.scope = settings.scope || 'auto_art_only';
 
-  const soIdMap = await safe('so_id_map', () => teamshopClubSoIds(admin), {});
+  const sources = await safe('so_id_map', () => webstoreSoIds(admin), { sourceBySo: {}, storeBySo: {} });
+  const sourceBySo = sources.sourceBySo || {};
+  const storeBySo = sources.storeBySo || {};
+  const allSchoolStoreIds = [...new Set(Object.entries(sourceBySo)
+    .filter(([, source]) => ['club','all_school'].includes(source))
+    .map(([soId]) => storeBySo[soId]).filter(Boolean))];
+  const schoolStores = allSchoolStoreIds.length ? await safe('all_school_settings', async () => {
+    const r = await admin.from('webstores').select('id,org_type,source,all_school_settings').in('id', allSchoolStoreIds);
+    if (r.error) throw r.error;
+    return r.data || [];
+  }, []) : [];
+  const enabledSchoolStoreIds = new Set(schoolStores.filter(s => s.source !== 'omg' && ['club','all_school'].includes(s.org_type) && allSchoolAutoReleaseEnabled(s)).map((s) => s.id));
+  const allSchoolEnabled = enabledSchoolStoreIds.size > 0;
+  const globalEnabled = globalSettingsAvailable && settings.autoReleaseEnabled;
+  summary.enabled = globalEnabled || allSchoolEnabled;
+  summary.all_school_stores = enabledSchoolStoreIds.size;
+  if (!summary.enabled) {
+    summary.note = settings.enabled === false ? settings.error : 'auto_release_enabled is false and no All School store opted in';
+    return summary;
+  }
+
+  // Preserve legacy source behavior while allowing opted-in All School stores to
+  // run independently of teamshop_settings.auto_release_enabled.
+  const soIdMap = {};
+  Object.entries(sourceBySo).forEach(([soId, source]) => {
+    if (['club','all_school'].includes(source) && enabledSchoolStoreIds.has(storeBySo[soId])) soIdMap[soId] = source;
+    else if (source !== 'all_school' && globalEnabled) soIdMap[soId] = source;
+  });
   const soIds = Object.keys(soIdMap);
   if (!soIds.length) return summary;
 
@@ -222,10 +301,11 @@ async function runRelease(admin, actor) {
     if (r.error) throw r.error; return r.data || [];
   }, []);
   let jobs = jobsRes;
+  const optedInAllSchoolJobs = jobs.filter((j) => enabledSchoolStoreIds.has(storeBySo[j.so_id]));
 
   // Scope: auto_art_only -> keep only jobs BORN art_complete (trio #1 auto-art),
   // identified by their 'created' job_stage_event to_state.art_status.
-  if (settings.scope === 'auto_art_only') {
+  if (globalEnabled && settings.scope === 'auto_art_only') {
     const bornAutoArt = await safe('created_events', async () => {
       const r = await admin.from('job_stage_events')
         .select('so_id, job_id, to_state, payload').in('so_id', soIds).eq('event', 'created').limit(5000);
@@ -234,17 +314,34 @@ async function runRelease(admin, actor) {
       (r.data || []).forEach((e) => {
         const bornComplete = e.to_state && e.to_state.art_status === 'art_complete';
         const flagged = e.payload && e.payload.auto_art === true;
-        if (bornComplete || flagged) set.add(e.so_id + ' ' + e.job_id);
+        if (bornComplete || flagged) set.add(e.so_id + '\u0000' + e.job_id);
       });
       return set;
     }, null);
     // If we could not read the events, do NOT release anything in this scope (conservative).
-    jobs = bornAutoArt ? jobs.filter((j) => bornAutoArt.has(j.so_id + ' ' + j.id)) : [];
+    jobs = bornAutoArt ? jobs.filter((j) => enabledSchoolStoreIds.has(storeBySo[j.so_id]) || bornAutoArt.has(j.so_id + '\u0000' + j.id)) : [];
+    // The per-store All School opt-in covers staff-approved art jobs too; only
+    // legacy jobs without a per-store opt-in use the global auto_art_only event filter.
+    const included = new Set(jobs.map((j) => j.so_id + '\u0000' + j.id));
+    optedInAllSchoolJobs.forEach((j) => {
+      const key = j.so_id + '\u0000' + j.id;
+      if (!included.has(key)) { jobs.push(j); included.add(key); }
+    });
   }
   summary.candidates = jobs.length;
   if (!jobs.length) return summary;
 
   const candidateSoIds = [...new Set(jobs.map((j) => j.so_id))];
+  const clubSoIds = candidateSoIds.filter((soId) => soIdMap[soId] === 'club');
+  const clubPullRows = clubSoIds.length ? await safe('club_transfer_pull_status', async () => {
+    const r = await admin.from('webstore_orders')
+      .select('so_id, transfers_pulled, transfers_pull_verified_at, transfers_pull_verified_codes')
+      .in('so_id', clubSoIds);
+    if (r.error) throw r.error;
+    return r.data || [];
+  }, null) : [];
+  const pullOrdersBySo = {};
+  (clubPullRows || []).forEach((order) => { (pullOrdersBySo[order.so_id] ||= []).push(order); });
 
   // ── Art pool: so_art_files (per SO) + customers.art_files (per SO customer) ──
   const soArt = await safe('so_art_files', async () => {
@@ -253,7 +350,7 @@ async function runRelease(admin, actor) {
     if (r.error) throw r.error; return r.data || [];
   }, []);
   const soArtByKey = {};
-  soArt.forEach((a) => { soArtByKey[a.so_id + ' ' + String(a.id)] = a; });
+  soArt.forEach((a) => { soArtByKey[a.so_id + '\u0000' + String(a.id)] = a; });
 
   const custIds = [...new Set(candidateSoIds.map((s) => custBySo[s]).filter(Boolean))];
   const custArt = await safe('customers', async () => {
@@ -273,7 +370,7 @@ async function runRelease(admin, actor) {
       const frozen = items.filter(it => it.so_id === soId).flatMap(it => it.recipe_snapshot?.art_files || []);
       return frozen.find(af => String(af.id) === key) || null;
     }
-    if (soArtByKey[soId + ' ' + key]) return soArtByKey[soId + ' ' + key];
+    if (soArtByKey[soId + '\u0000' + key]) return soArtByKey[soId + '\u0000' + key];
     const cust = custBySo[soId];
     return (cust && custArtByCust[cust] && custArtByCust[cust][key]) || null;
   };
@@ -286,7 +383,16 @@ async function runRelease(admin, actor) {
   }, []);
   const itemBySoIdx = {};
   const itemIds = [];
-  items.forEach((it) => { itemBySoIdx[it.so_id + ' ' + it.item_index] = it; itemIds.push(it.id); });
+  items.forEach((it) => { itemBySoIdx[it.so_id + '\u0000' + it.item_index] = it; itemIds.push(it.id); });
+
+  const decorationRows = itemIds.length ? await safe('so_item_decorations', async () => {
+    const r = await admin.from('so_item_decorations')
+      .select('so_item_id, deco_index, type, transfer_code').in('so_item_id', itemIds);
+    if (r.error) throw r.error; return r.data || [];
+  }, null) : [];
+  const decorationsAvailable = decorationRows !== null;
+  const decorationsByItem = {};
+  (decorationRows || []).forEach((row) => { (decorationsByItem[row.so_item_id] ||= []).push(row); });
 
   const picks = itemIds.length ? await safe('pick_lines', async () => {
     const r = await admin.from('so_item_pick_lines').select('so_item_id, sizes, status').in('so_item_id', itemIds);
@@ -297,17 +403,17 @@ async function runRelease(admin, actor) {
     if (r.error) throw r.error; return r.data || [];
   }, []) : [];
 
-  const pulledBy = {};   // so_item_id\0size -> qty (status 'pulled')
+  const pulledBy = {};   // so_item_id\u0000size -> qty (status 'pulled')
   picks.forEach((p) => {
     if (p.status !== 'pulled') return;
     Object.entries(p.sizes || {}).forEach(([sz, q]) => {
-      pulledBy[p.so_item_id + ' ' + sz] = (pulledBy[p.so_item_id + ' ' + sz] || 0) + (Number(q) || 0);
+      pulledBy[p.so_item_id + '\u0000' + sz] = (pulledBy[p.so_item_id + '\u0000' + sz] || 0) + (Number(q) || 0);
     });
   });
-  const receivedBy = {}; // so_item_id\0size -> qty
+  const receivedBy = {}; // so_item_id\u0000size -> qty
   pos.forEach((po) => {
     Object.entries(po.received || {}).forEach(([sz, q]) => {
-      receivedBy[po.so_item_id + ' ' + sz] = (receivedBy[po.so_item_id + ' ' + sz] || 0) + (Number(q) || 0);
+      receivedBy[po.so_item_id + '\u0000' + sz] = (receivedBy[po.so_item_id + '\u0000' + sz] || 0) + (Number(q) || 0);
     });
   });
 
@@ -316,10 +422,27 @@ async function runRelease(admin, actor) {
     if (summary.released.length >= RELEASE_LIMIT) { summary.note = 'release limit reached'; break; }
     try {
       const ctx = {
-        itemForIndex: (idx) => itemBySoIdx[job.so_id + ' ' + idx] || null,
-        pulledFor: (itemId, sz) => pulledBy[itemId + ' ' + sz] || 0,
-        receivedFor: (itemId, sz) => receivedBy[itemId + ' ' + sz] || 0,
+        itemForIndex: (idx) => itemBySoIdx[job.so_id + '\u0000' + idx] || null,
+        pulledFor: (itemId, sz) => pulledBy[itemId + '\u0000' + sz] || 0,
+        receivedFor: (itemId, sz) => receivedBy[itemId + '\u0000' + sz] || 0,
       };
+      if (soIdMap[job.so_id] === 'club') {
+        const transferCodes = decorationsAvailable
+          ? jobTransferCodes(job, ctx.itemForIndex, decorationsByItem)
+          : [];
+        // If the decoration read failed, heat_press may be a transfer-code job;
+        // fail closed rather than allowing an unavailable lookup to bypass stock.
+        const transferCheck = clubTransferPullReady(
+          job,
+          transferCodes,
+          pullOrdersBySo[job.so_id],
+          decorationsAvailable || job.deco_type !== 'heat_press',
+        );
+        if (!transferCheck.ready) {
+          summary.skipped.push({ so_id: job.so_id, job_id: job.id, reason: transferCheck.reason });
+          continue;
+        }
+      }
       if (soIdMap[job.so_id] === 'all_school') {
         const material = await admin.rpc('all_school_materials_ready', { p_so_id: job.so_id, p_job_id: job.id });
         if (material.error || material.data?.ready !== true) {
@@ -398,3 +521,5 @@ module.exports.jobFulfillment = jobFulfillment;
 module.exports.artRecordProdReady = artRecordProdReady;
 module.exports.jobArtIds = jobArtIds;
 module.exports.hasDst = hasDst;
+module.exports.jobTransferCodes = jobTransferCodes;
+module.exports.clubTransferPullReady = clubTransferPullReady;

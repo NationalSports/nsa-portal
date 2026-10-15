@@ -49,7 +49,7 @@ test('an unknown or submitting result is never resent', async () => {
 
 const dispatchAdmin = (vendorEnabled = true, claimed = true) => ({
   from: table => {
-    const result = table === 'teamshop_auto_po_settings' ? { data: { auto_submit_enabled: vendorEnabled }, error: null } : { data: [{ sku: 'PC61', size: 'M', qty: 1 }], error: null };
+    const result = table === 'teamshop_auto_po_settings' ? { data: { all_school_auto_submit_enabled: vendorEnabled }, error: null } : { data: [{ sku: 'PC61', size: 'M', qty: 1 }], error: null };
     const query = { select: () => query, eq: () => query, order: () => Promise.resolve(result), maybeSingle: () => Promise.resolve(result) };
     return query;
   },

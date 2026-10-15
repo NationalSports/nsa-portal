@@ -20,7 +20,7 @@ traverse(ast, { JSXElement(p) {
   const code = transformFromAstSync({ type: 'File', program: { type: 'Program', sourceType: 'module', body: [{ type: 'ExpressionStatement', expression: p.node }] } }, '', {
     configFile: false, babelrc: false, plugins: ['@babel/plugin-transform-react-jsx'],
   }).code;
-  cards.push(new Function('React', 'GarmentMockCard', 'garmentSlotCandidates', 'safeArt', 'slotMockFiles', 'slot', 'gi', 'so', '_repSlots', '_slots', 'artJobDetailUploading', 'logoDetailProps', 'return ' + code));
+  cards.push(new Function('React', 'GarmentMockCard', 'garmentSlotCandidates', 'safeArt', 'slotMockFiles', 'slot', 'gi', 'so', '_repSlots', '_slots', 'artJobDetailUploading', 'logoDetailProps', 'stitchAutoMock', 'return ' + code));
 } });
 
 const garment = { sku: 'LE5122', color: 'Navy' };
@@ -36,7 +36,7 @@ test('both Art Dashboard dialogs offer the matching store garment before the sew
   const slot = { key: 'LE5122|Navy|d1', kind: 'art', primary: false, artId: 'new', artFile: replacement, label: replacement.name };
   const logoDetailProps = (_so, s, g) => ({ url: '', bg: '#1f2a44', colorName: g.color, onUpload: () => true });
   for (const card of cards) {
-    const element = card(React, GarmentMockCard, garmentSlotCandidates, safeArt, slotMockFiles, slot, garment, so, [slot], [slot], false, logoDetailProps);
+    const element = card(React, GarmentMockCard, garmentSlotCandidates, safeArt, slotMockFiles, slot, garment, so, [slot], [slot], false, logoDetailProps, () => null);
     expect(element.props.candidates.map(f => f.url)).toEqual(['store-polo.png', 'sew-out.png']);
     expect(element.props.mocks).toEqual([]);
     const html = renderToStaticMarkup(element);

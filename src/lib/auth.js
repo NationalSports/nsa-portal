@@ -64,11 +64,16 @@ export const sbGetMyProfile = async () => {
 };
 
 // Team roster for the gate's first-time-setup and admin-impersonation modes.
-// Small table (dozens of rows); a normal sign-in never blocks on it — the gate
+// Small (dozens of rows); a normal sign-in never blocks on it — the gate
 // seeds reps from localStorage/defaults and refreshes with this in the
-// background. Mirrors App.js's `_safeQuery('team_members',{order:'name'})`.
+// background. team_members is staff-only (migration
+// 20261013120000_staff_only_business_reads), so a signed-out visitor gets the
+// login_roster() columns (id, name, role, email, is_active) instead. The table
+// read is the fallback until that migration is applied.
 export const sbGetTeam = async () => {
   if (!supabase) return [];
+  const roster = await supabase.rpc('login_roster');
+  if (!roster.error) return roster.data || [];
   const { data, error } = await supabase.from('team_members').select('*').order('name');
   if (error) return [];
   return data || [];

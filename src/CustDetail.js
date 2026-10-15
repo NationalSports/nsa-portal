@@ -3,17 +3,19 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import StandaloneArtRequest from './StandaloneArtRequest';
 import './StandaloneArtRequest.css';
-import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
-import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
+import { isDstFile, isStaleFile, _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
+import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice, splitInvoiceLine } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from './businessLogic';
 import { mergeWebLogoEdit } from './lib/logoDetail';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
+import DstPreview from './DstPreview';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
-import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
+import { dP, decoSplitQty, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, buildPdfAttachment, _brevoKey, _portalAction, greetLine, withGreeting } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
@@ -138,7 +140,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,supabase:requestSupabase}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,supabase:requestSupabase,extractPdfText}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[histRetrying,setHistRetrying]=useState(false);// NetSuite-history retry in flight (banner below)
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
@@ -1473,6 +1475,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       color_ways:art.color_ways||[],files:art.files||[],mockup_files:_seedFiles('_allMockups','mockup_files'),
       item_mockups:art.item_mockups||{},prod_files:_seedFiles('_allProd','prod_files'),notes:art.notes||'',
       kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString(),...extra});
+    // Duplicate this art into a NEW program-library record — every field, color way, web logo,
+    // mockup and production file comes along — then open the copy so it can be adjusted. Works
+    // for order-only art too (_libSeed gathers its files from every order that uses it). The
+    // " (copy)" name keeps it from matching the original, since art rows also match by name.
+    const dupArt=()=>{
+      const live=_liveCust();if(!live){_custGone();return}
+      const libRec=(live.art_files||[]).find(_libMatch)||{};
+      const newId='caf'+Date.now();
+      // Unique name across the library and this customer's orders — two "X (copy)" rows would
+      // collapse into one card and match each other's writes.
+      const taken=new Set([...(live.art_files||[]),..._liveSOs().flatMap(so=>so.art_files||[])].map(a=>(a&&a.name||'').trim().toLowerCase()));
+      const base=((art.name||'Artwork').trim())+' (copy';let name=base+')';for(let n=2;taken.has(name.toLowerCase());n++)name=base+' '+n+')';
+      const copy={...libRec,..._libSeed({status:art.status||'waiting_for_art',location:art.location||'',web_logos:webLogos,web_logo_url:art.web_logo_url||''}),
+        id:newId,name,uploaded:new Date().toLocaleDateString()};
+      if(!addLibArt(copy))return;
+      const _bag=list=>(list||[]).filter(Boolean).map(f=>({file:f,url:urlOf(f),src:'Program Library'}));
+      setCustArtDetail({...copy,_src:'library',_usedOnSOs:[],_allMockups:_bag(copy.mockup_files),_allProd:_bag(copy.prod_files)});
+      nf&&nf('Copied — rename it and adjust anything you need');
+    };
     const removeMockFromArt=(url)=>{
       if(!url)return;
       if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" everywhere it\'s used (orders + program library)? This cannot be undone.'))return;
@@ -1535,10 +1556,45 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     };
     const _addedMsg=(mocks,prods)=>[mocks.length?mocks.length+' mockup'+(mocks.length>1?'s':''):'',prods.length?prods.length+' production file'+(prods.length>1?'s':''):''].filter(Boolean).join(' + ')+' added';
     // Upload a new mockup and attach it to this artwork — on its source order and/or the program library.
+    // Embroidery proof PDFs: read the design size + stitch count straight off the dropped file
+    // (same parser the order editor uses). Fills blanks only, on the program-library copy —
+    // a size or stitch count someone already typed is never overwritten.
+    const _autoReadEmbPdf=async(fileList)=>{
+      if(art.deco_type!=='embroidery'||!extractPdfText)return;
+      const pdfs=Array.from(fileList||[]).filter(f=>f&&/\.pdf$/i.test(f.name||''));
+      for(const f of pdfs){
+        let text='';try{text=(await extractPdfText(f))?.fullText||''}catch(e){continue}
+        const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text),threads=parseThreadColors(text);
+        if(!stitches&&!dimensions&&!threads)continue;
+        const got=[];
+        // ONE library write for size + stitches + threads: a second updateLibArt in the same tick
+        // starts from the not-yet-refreshed customer copy and would drop the first write.
+        // Thread colors fill only empty color-way thread lists (same rule as the order editors).
+        let before=null,after=null;
+        if(updateLibArt(a=>{before=a;after=fillThreadColorWays(fillEmbroiderySpecs(a,{dimensions,stitches}),threads);return after})&&after){
+          setCustArtDetail(d=>d?{...d,art_size:after.art_size,stitches:after.stitches,color_ways:after.color_ways}:d);
+          if(after.art_size!==before.art_size)got.push(after.art_size);
+          if(after.stitches!==before.stitches)got.push(Number(after.stitches).toLocaleString()+' stitches');
+        }
+        if(threads){
+          // Order copies of this art get the threads too (blank lists only), each order saved once.
+          let filled=!!(after&&before&&after.color_ways!==before.color_ways);
+          if(saveArt)_liveSOs().forEach(so=>{let ch=false;const upd=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;const n=fillThreadColorWays(a,threads);if(n!==a)ch=true;return n});
+            if(ch){filled=true;saveArt({...so,art_files:upd,updated_at:new Date().toLocaleString()})}});
+          if(!after){const next=fillThreadColorWays(art,threads);if(next!==art)setCustArtDetail(d=>d?{...d,color_ways:next.color_ways}:d)}
+          if(filled)got.push(threads.length+' thread color'+(threads.length===1?'':'s'));
+        }
+        nf&&nf(got.length?'Read '+got.join(' · ')+' from '+f.name:'PDF read; existing size/stitches/threads kept');
+        return;
+      }
+      if(pdfs.length)nf&&nf('No size, stitch count or thread colors found in that PDF — enter them manually','error');
+    };
     const addMockToArt=async(fileList)=>{
       if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
-      const{mocks,prods}=await _uploadArtBatch(fileList,'mock');
+      const files=Array.from(fileList||[]);
+      const{mocks,prods}=await _uploadArtBatch(files,'mock');
       if(!_attachArtBatch({mocks,prods}))return;
+      _autoReadEmbPdf(files);
       nf&&nf(_addedMsg(mocks,prods)+(prods.length?' — seps filed under Production Files':''));
       if(!mocks.length)return;
       // Prompt for the color way these mockups are for (or create a new one), then tag them.
@@ -1549,9 +1605,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Upload a new production file and attach it to this artwork — on its source order and/or the program library.
     const addProdToArt=async(fileList)=>{
       if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
-      const{mocks,prods}=await _uploadArtBatch(fileList,'prod');
+      const files=Array.from(fileList||[]);
+      const{mocks,prods}=await _uploadArtBatch(files,'prod');
       if(!_attachArtBatch({mocks,prods}))return;
       nf&&nf(_addedMsg(mocks,prods));
+      _autoReadEmbPdf(files);
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
     // Attach a clean web-ready logo (transparent PNG/SVG) — a cutout used to place this art
@@ -1603,8 +1661,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     };
     // Persist color-way edits for this logo across every matching art record (orders + customer library).
     // Uses the lightweight art-files save so items/POs are never re-persisted.
+    // Live order list — these writers can run from a prompt opened before an upload finished,
+    // and saving the render's custSOs snapshot then would drop the file that upload attached.
+    const _liveSOs=()=>(sosRef.current||[]).filter(o=>ids.includes(o.customer_id));
     const persistColorWays=(newCws)=>{
-      if(saveArt)custSOs.forEach(so=>{
+      if(saveArt)_liveSOs().forEach(so=>{
         let changed=false;
         const updArt=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;changed=true;return{...a,color_ways:newCws}});
         if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
@@ -1630,13 +1691,27 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // resolution survives CW renames; blank entries become the is_default "all garments" logo.
       const clean=normalizeWebLogos(list,cwList||art.color_ways||[]);
       const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
+      // A cwList that differs from the art's color ways (new CWs created for this logo) rides the
+      // same write — a separate persistColorWays pass would save each order twice from the same
+      // stale snapshot, and the second save would drop the first one's edit.
+      const cwPatch=(cwList&&cwList!==art.color_ways)?{color_ways:cwList}:{};
       // Apply only this edit to each copy (library + every order): wholesale replacement wiped
       // color-way logos another order had (e.g. a job's logo detail). Order writes carry the
       // removal markers so a conflict merge can't bring a removed logo back.
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return mergeWebLogoEdit(a,webLogos,clean)}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      const hadLib=updateLibArt(a=>mergeWebLogoEdit(a,webLogos,clean,{mark:false}));
-      if(!hadLib)addLibArt(_libSeed({web_logos:clean,web_logo_url:def}));
-      setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);
+      if(saveArt)_liveSOs().forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...mergeWebLogoEdit(a,webLogos,clean),...cwPatch}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      const hadLib=updateLibArt(a=>({...mergeWebLogoEdit(a,webLogos,clean,{mark:false}),...cwPatch}));
+      if(!hadLib)addLibArt(_libSeed({web_logos:clean,web_logo_url:def,...cwPatch}));
+      setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def,...cwPatch}:d);
+    };
+    // Every garment color a web logo is tagged with should exist as a color way, so the artist
+    // can fill in its thread/ink colors. Returns the art's color ways plus a blank CW for each
+    // name that isn't one yet (same array back when nothing is new).
+    const _cwsWith=(names)=>{
+      const cur=art.color_ways||[];
+      const have=new Set(cur.map(c=>(c.garment_color||'').trim().toLowerCase()).filter(Boolean));
+      const add=[];
+      (names||[]).forEach((nm,i)=>{const n=(nm||'').trim(),k=n.toLowerCase();if(!n||have.has(k))return;have.add(k);add.push({id:'cw'+Date.now()+'_'+i,garment_color:n,inks:['']})});
+      return add.length?[...cur,...add]:cur;
     };
     // Tie one cutout URL to a set of color ways (reuse — no re-uploading the same file per
     // CW): replace this URL's web-logo entries with one per chosen color way (+ an
@@ -1651,7 +1726,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const entries=[];
       if(asDefault)entries.push(mk({color_way:'',is_default:true}));
       (names||[]).forEach(nm=>{const n=(nm||'').trim();if(n)entries.push(mk({color_way:n}))});
-      saveWebLogos([...others,...entries]);
+      saveWebLogos([...others,...entries],_cwsWith(names));
     };
     // Open the multi-CW picker for an existing cutout, pre-checked with what it already covers.
     const openAssign=(g)=>setCwPrompt({title:'Garment colors this logo covers',multi:true,initialNames:g.labels,initialDefault:g.isDefault,onPickMany:(names,asDefault)=>{setUrlCws(g.url,names,asDefault);setCwPrompt(null)}});
@@ -1696,6 +1771,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isOwnLib&&<div style={{display:'flex',gap:14,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap',alignItems:'flex-end'}}>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Type</div><Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>editLib({deco_type:v})}/></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Size</div><input className="form-input" value={art.art_size||''} onChange={e=>editLib({art_size:e.target.value})} placeholder='e.g. 12" x 4"' style={{fontSize:12,width:150}}/></div>
+          {art.deco_type==='embroidery'&&<div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Stitches</div><input className="form-input" type="number" min="0" value={art.stitches??''} onChange={e=>editLib({stitches:e.target.value===''?null:Number(e.target.value)})} placeholder="Auto from PDF" style={{fontSize:12,width:110}}/></div>}
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Default location</div><select className="form-select" value={art.location||''} onChange={e=>editLib({location:e.target.value})} style={{fontSize:12,width:150}} title="Where this art usually goes — decorations default here when it's added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Status</div><select value={art.status||'waiting_for_art'} onChange={e=>editLib({status:e.target.value})} style={{padding:'5px 8px',borderRadius:8,fontSize:12,fontWeight:600,border:'1px solid #e2e8f0',background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}}><option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select></div>
         </div>}
@@ -1732,10 +1808,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',padding:'4px 0 0',fontWeight:600}}>+ Add color</button>
                 </div>
               </div>)}
-              <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
+              <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:art.deco_type==='embroidery'&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
             </div>
           </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'3px 9px',background:'#f1f5f9',borderRadius:8,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}{(cw.inks||[]).filter(Boolean).length>0&&<span style={{display:'inline-flex',gap:2}}>{(cw.inks||[]).filter(Boolean).map((ink,ii)=><span key={ii} title={ink} style={{width:11,height:11,borderRadius:3,background:pantoneHex(ink)||'#cbd5e1',border:'1px solid #d1d5db'}}/>)}</span>}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
         </div>
+        {/* Stitch preview — the live DST drawn in each color way's threads */}
+        {art.deco_type==='embroidery'&&(()=>{const dst=prodFiles.map(m=>m.file||m.url).filter(f=>f&&isDstFile(f)&&!isStaleFile(f)).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
+          return<div style={{marginBottom:16}}><DstPreview dstUrl={dstUrl} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'thread_colors')} onUseAsLogo={saveArt?async(blob,cw)=>{
+            // Stitch render → this color way's web logo (stores + logo detail). Newest first replaces it.
+            const nm=(cw?.garment_color||'').trim();
+            const existing=webLogos.find(w=>nm?(w.color_way||'').trim().toLowerCase()===nm.toLowerCase():(w.is_default||!((w.color_way||'').trim())));
+            if(existing&&!window.confirm('Replace the current web logo for '+(nm||'all garments')+' with this stitch render?'))return;
+            nf&&nf('Saving web logo...');
+            let url;try{url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+(nm||'all').replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+            const entry=nm?{url,color_way:nm,source:'stitch'}:{url,color_way:'',is_default:true,source:'stitch'};
+            saveWebLogos([entry,...webLogos.filter(w=>w!==existing)],nm?_cwsWith([nm]):undefined);
+            nf&&nf('Web logo saved for '+(nm||'all garments'));
+          }:undefined}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
@@ -1862,7 +1951,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <div className="modal-footer">
         {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
-        {isOwnLib&&<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5',marginRight:isP&&!art._appliesToAll?0:'auto'}} onClick={delLib}><Icon name="trash" size={12}/> Delete</button>}
+        {isOwnLib&&<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5',marginRight:(isP&&!art._appliesToAll)||saveArt?0:'auto'}} onClick={delLib}><Icon name="trash" size={12}/> Delete</button>}
+        {saveArt&&<button className="btn btn-secondary" style={{marginRight:isP&&!art._appliesToAll?0:'auto'}} onClick={dupArt} title="Make a new art group with everything from this one, then adjust it"><Icon name="copy" size={12}/> Duplicate</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div>
     {cwPrompt&&cwPrompt.multi&&<CwMultiPrompt title={cwPrompt.title} cws={cws} initialNames={cwPrompt.initialNames} initialDefault={cwPrompt.initialDefault} onApply={(names,def)=>cwPrompt.onPickMany&&cwPrompt.onPickMany(names,def)} onClose={()=>setCwPrompt(null)}/>}
@@ -2373,7 +2463,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
         const rows=[];let subTotal=0;
         const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
-        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
         // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
         // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
         // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
@@ -2391,12 +2481,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
           let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
           if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
-          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          // Print the garment and each decoration on their own rows (as the SO does) when the
+          // line's amount splits cleanly — see splitInvoiceLine; otherwise decorations stay detail.
+          const _split=invPriced?splitInvoiceLine(lineAmt,qty,safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);return Math.round(eq*dp2.sell*depPct*100)/100})):null;const _det=invPriced&&!_split;
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(_split?_split.garmentRate:unitPrice),style:'text-align:right'},{value:_$(_split?_split.garmentAmt:lineAmt),style:'text-align:right;font-weight:600'}]});
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
             const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;if(!invPriced)subTotal+=decoAmt;
             const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-            rows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:invPriced?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$(decoAmt),style:'text-align:right'}]});
+            rows.push({_class:'deco-row',cells:[{value:_det?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_det?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(_det?';color:#64748b':'')},{value:_det?'':_$(decoAmt),style:'text-align:right'}]});
           });
         });
         // Lines with no SO match (hand-added, NetSuite import) still have to print, or the

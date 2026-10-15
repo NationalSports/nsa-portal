@@ -22,9 +22,9 @@ function validateManifest(manifest) {
 }
 
 function manifestCsv(manifests) {
-  const rows = [['Sales order','Job','Artwork','Artwork version','SHA256','Width (in)','Height (in)','Placement','Total print quantity (once per design)','SKU','Color','Garment size','Prints for garment row','Names','Numbers','Instructions','Font','Print color','Artwork role','Customer shipment target']];
+  const rows = [['Sales order','Job','Artwork','Artwork version','SHA256','Width (in)','Height (in)','Placement','Total print quantity (once per design)','SKU','Color','Garment size','Prints for garment row','Names','Numbers','Instructions','Font','Print color','Artwork role','Customer shipment target','DTF garment color','Knockout treatment','DTF variant']];
   for (const m of manifests) (m.garments && m.garments.length ? m.garments : [{}]).forEach((garment,index) => {
-    rows.push([m.so_id,m.job_id,m.art_name,m.artwork_version,m.artwork && m.artwork.sha256,m.width_in,m.height_in,m.placement,index===0 ? m.qty:'',garment.sku,garment.color,garment.size,garment.qty,(garment.names || []).join(' | '),(garment.numbers || []).join(' | '),m.instructions,m.font,m.print_color,m.artwork_role || 'production artwork',m.ship_target_at]);
+    rows.push([m.so_id,m.job_id,m.art_name,m.artwork_version,m.artwork && m.artwork.sha256,m.width_in,m.height_in,m.placement,index===0 ? m.qty:'',garment.sku,garment.color,garment.size,garment.qty,(garment.names || []).join(' | '),(garment.numbers || []).join(' | '),m.instructions,m.font,m.print_color,m.artwork_role || 'production artwork',m.ship_target_at,m.artwork?.at_once_variant?.garment_color,m.artwork?.at_once_variant?.knockout_color,m.artwork?.at_once_variant?.id]);
   });
   return rows.map(r => r.map(safeCsv).join(',')).join('\r\n');
 }

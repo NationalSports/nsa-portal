@@ -3,6 +3,11 @@ import { createDraftJournal, currentDraftOwner } from './draftJournal';
 
 const JOURNAL_TABLE = 'document_history_snapshot';
 const PAGE_SIZE = 100;
+// The summary is one small row per document, but every page re-runs the whole
+// document_history_summary() query on the server (~2 s for ~1,600 documents on 2026-10-14).
+// At 100 rows a page that was 16 full runs, past the 12-second deadline every time, so the
+// summary never loaded and every open staff tab retried it. PostgREST caps a page at 1000 rows.
+const SUMMARY_PAGE_SIZE = 1000;
 const REQUEST_TIMEOUT = 12000;
 const clone = value => JSON.parse(JSON.stringify(value));
 const uuid = () => (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -197,14 +202,14 @@ export function createHistoryStore({ client = supabase, journal = createDraftJou
       if (typeof call?.order === 'function') call = call.order('kind', { ascending: true }).order('document_id', { ascending: true });
       if (typeof call?.range === 'function') {
         const rows = [];
-        for (let offset = 0;; offset += PAGE_SIZE) {
-          let pageCall = call.range(offset, offset + PAGE_SIZE - 1);
+        for (let offset = 0;; offset += SUMMARY_PAGE_SIZE) {
+          let pageCall = call.range(offset, offset + SUMMARY_PAGE_SIZE - 1);
           if (typeof pageCall?.abortSignal === 'function') pageCall = pageCall.abortSignal(controller.signal);
           const page = await pageCall;
           if (page?.error) throw asError(page.error);
           if (!Array.isArray(page?.data)) throw new Error('Loading document history summary returned an invalid result');
           rows.push(...page.data);
-          if (page.data.length < PAGE_SIZE) { result = { data: rows }; break; }
+          if (page.data.length < SUMMARY_PAGE_SIZE) { result = { data: rows }; break; }
         }
       } else result = await call;
     }

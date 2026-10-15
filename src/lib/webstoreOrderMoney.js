@@ -11,6 +11,17 @@
 export const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
 export const orderNetCollected = (o) => Math.max(0, originalOrderTotal(o) - (Number(o && o.refunded_amt) || 0));
 
+// Money a card buyer is owed back right now: what their card was charged, less
+// what the order costs after edits (items cancelled/reduced), less what's already
+// been refunded. Cancelling items and refunding them are separate saves, so this is
+// the amount still hanging when the second step was skipped. Card orders only —
+// a team-tab balance is billed, not refunded, and an OMG import was paid elsewhere.
+export const refundOwed = (o) => {
+  if (!o || !o.stripe_pi_id) return 0;
+  const owed = originalOrderTotal(o) - (Number(o.total) || 0) - (Number(o.refunded_amt) || 0);
+  return owed > 0.005 ? Math.round(owed * 100) / 100 : 0;
+};
+
 // Fundraising the club is actually owed on an order: its fundraise_amt, less the
 // share of any coupon discount that came off the pot. Checkout applies the % to
 // subtotal + fundraise together, so a discounted order collected proportionally

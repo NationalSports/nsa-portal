@@ -8,6 +8,7 @@
 // "your order is being processed" link points here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import ItemShipEstimate from './ItemShipEstimate';
 import { readable, legibleOn } from '../lib/a11y';
 
 const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
@@ -58,6 +59,7 @@ export default function OrderTrack() {
   const [store, setStore] = useState(null);
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
+  const [itemEstimates, setItemEstimates] = useState(null);
   const [shipments, setShipments] = useState([]);
   const [status, setStatus] = useState('loading');
   const [msgs, setMsgs] = useState([]);
@@ -78,6 +80,7 @@ export default function OrderTrack() {
       setStore(d.store || { name: 'Your Order' });
       setItems(d.items || []);
       setShipments(d.shipments || []);
+      setItemEstimates(d.item_estimates || null);
       setMsgs(d.messages || []);
       setStatus('ok');
     })();
@@ -179,6 +182,7 @@ export default function OrderTrack() {
         {/* Items */}
         <div style={{ background: '#fff', borderRadius: 16, padding: '8px 22px 18px', marginTop: 16, border: '1px solid #eef1f5' }}>
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: '#64748b', padding: '16px 0 4px' }}>Your items</div>
+          {itemEstimates && <p style={{ fontSize: 12, color: '#64748b' }}>Estimates use Monday–Friday business days, with production added after stock is ready. Dates may change. Delivery transit is additional.</p>}
           {displayItems.map((i) => {
             const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
             const qty = i.qty || 1;
@@ -214,6 +218,7 @@ export default function OrderTrack() {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: cattrs.length ? 4 : 0 }}>{c.name || c.sku || 'Item'}</div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{cattrs.map(pill)}</div>
+                            <ItemShipEstimate estimate={itemEstimates?.[c.id]} />
                           </div>
                           <StatusChip stage={stageIndex(c.line_status)} accent={theme.accent} />
                         </div>
@@ -238,6 +243,7 @@ export default function OrderTrack() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 5 }}>{i.name || i.sku || 'Item'}</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{attrs.map(pill)}</div>
+                  <ItemShipEstimate estimate={itemEstimates?.[i.id]} />
                 </div>
                 <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
                   <StatusChip stage={idx} accent={theme.accent} />

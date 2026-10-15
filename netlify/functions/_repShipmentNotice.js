@@ -1,5 +1,20 @@
 const crypto = require('crypto');
 const { escapeHtml: e, trackingUrl } = require('./_webstoreNotifications');
+const { repBannerHtml, withRepBanner } = require('./_soShipmentEmail');
+
+// The coach's "on the way" email for these boxes, rendered in preview mode
+// (nothing sent, nothing recorded). Required lazily: so-shipment-notify requires
+// this file. Null on any failure, so the rep still gets the plain summary.
+async function coachEmailHtml(admin, soId, shipmentIds) {
+  try {
+    const { sendShipmentNotice } = require('./so-shipment-notify');
+    const { status, payload } = await sendShipmentNotice(admin, { soId, shipmentIds, preview: true });
+    return status === 200 && payload && payload.html ? payload.html : null;
+  } catch (err) {
+    console.error('[rep-shipment] coach layout unavailable', soId, err.message);
+    return null;
+  }
+}
 
 function noticeId(soId, shipmentIds, email, kind = 'warehouse') {
   const hex = crypto.createHash('sha256').update(JSON.stringify([kind, soId, [...shipmentIds].sort(), email.trim().toLowerCase()])).digest('hex');
@@ -76,13 +91,26 @@ async function notifyShipmentRep(admin, { soId, shipmentIds, preview = false }) 
     && !['deco_transfer','warehouse_transfer'].includes(s.shipment_scope) && (!requested || requested.has(String(s.id))));
   if (!shipments.length || (requested && shipments.length !== requested.size)) throw new Error('Choose saved customer shipments on this SO');
   const subject = `${so.id} shipment update — ${customer?.name || 'Customer'}`;
-  const htmlContent = `<div style="font-family:Arial,sans-serif;color:#192853"><h2>${e(subject)}</h2><p>${e(so.memo)}</p>
+  let htmlContent = `<div style="font-family:Arial,sans-serif;color:#192853"><h2>${e(subject)}</h2><p>${e(so.memo)}</p>
     <p>Warehouse shipment records. This rep-only update does not send a customer notice or confirm carrier delivery.</p>
     ${shipments.map(s => `<h3>${e(s.ship_date || 'Date not recorded')}</h3><p>${s.tracking_number
       ? `<a href="${e(trackingUrl(s.carrier, s.tracking_number))}">${e(s.carrier || 'Tracking')}: ${e(s.tracking_number)}</a>`
       : 'Tracking not recorded.'} ${e(s.clear_memo || s.notes || '')}</p><ul>${(s.items || []).map(i => `<li>${e(i.name || i.sku)} — ${e(i.color)}: ${e(Object.entries(i.sizes || {}).filter(([,q]) => Number(q)>0).map(([sz,q]) => `${sz}: ${q}`).join(', '))}</li>`).join('')}</ul>`).join('')}
     <p>${so._shipped ? 'Portal status: marked fully shipped.' : 'Portal status: not fully shipped; check remaining quantities.'}</p>
     <p><a href="https://connect.nationalsportsapparel.com/?pg=orders&amp;so=${encodeURIComponent(so.id)}">Open SO tracking</a></p></div>`;
+  // Same look as the coach email, with a rep-only banner carrying what the
+  // coach layout leaves out: the memo, per-box notes, and the portal status.
+  const coachHtml = await coachEmailHtml(admin, so.id, shipments.map(s => String(s.id)));
+  if (coachHtml) htmlContent = withRepBanner(coachHtml, repBannerHtml({
+    tone: 'info',
+    title: 'Rep-only shipment update — the coach was NOT emailed',
+    lines: [
+      so.memo ? `${so.id}: ${so.memo}` : so.id,
+      ...shipments.map((s, i) => `Box ${i + 1} (${s.ship_date || 'date not recorded'}): ${s.tracking_number ? `${s.carrier || 'Tracking'} ${s.tracking_number}` : 'tracking not recorded'}${s.clear_memo || s.notes ? ` — ${s.clear_memo || s.notes}` : ''}`),
+      so._shipped ? 'Portal status: marked fully shipped.' : 'Portal status: not fully shipped; check remaining quantities.',
+      'To send the coach this email, open the order\'s Tracking tab and press Email Coach Tracking.',
+    ],
+  }));
   const payload = { sender: { name: 'NSA Shipping Notices', email: 'noreply@nationalsportsapparel.com' }, to: [{ email: rep.email.trim(), name: rep.name || '' }], subject, htmlContent };
   if (preview) return { ok: true, to: rep.email.trim(), subject, html: htmlContent, shipments: shipments.length, shipmentIds: shipments.map(s => String(s.id)) };
   const result = await queueRepShipmentEmail(admin, { soId: so.id, shipmentIds: shipments.map(s => String(s.id)), payload, kind: 'warehouse' });

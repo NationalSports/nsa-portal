@@ -175,8 +175,11 @@ test('append deadline aborts the actual request and retains the queued snapshot'
 });
 
 test('summary reads past the first page instead of silently omitting documents',async()=>{
-  let offset=0;
-  const q={abortSignal:()=>q,order:()=>q,range:start=>{offset=start;return q;},then:resolve=>resolve({data:Array.from({length:offset===0?100:20},(_,i)=>({document_id:'SO-'+(offset+i)})),error:null})};
+  const total=1020,ranges=[];let from=0,to=0;
+  const q={abortSignal:()=>q,order:()=>q,range:(start,end)=>{from=start;to=end;ranges.push([start,end]);return q;},
+    then:resolve=>resolve({data:Array.from({length:Math.max(0,Math.min(to+1,total)-from)},(_,i)=>({document_id:'SO-'+(from+i)})),error:null})};
   const store=createHistoryStore({client:{rpc:()=>q},journal:makeJournal([])});
-  expect(await store.summary()).toHaveLength(120);
+  expect(await store.summary()).toHaveLength(1020);
+  // Each page re-runs the whole summary query server-side, so it is read in as few pages as PostgREST allows.
+  expect(ranges).toEqual([[0,999],[1000,1999]]);
 });

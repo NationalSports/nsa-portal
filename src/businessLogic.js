@@ -10,6 +10,7 @@ const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity')
 const { isAllSchoolRecipeOrder } = require('./lib/allSchoolJobs');
 const { productionJobs, isOutsideArtJob, buildOutsideArtJobs } = require('./lib/outsideArt');
 const { rosterCount } = require('./lib/decoPricing');
+const { normalizeFootwearSize, sizeQtyIn, sizeKeyIn } = require('./lib/sizeNames.shared');
 
 // ── Safe Accessors ──
 const safe = (v, def) => v != null ? v : def;
@@ -127,7 +128,8 @@ function dP(d, q, artFiles, cq) {
 // ── PO Committed ──
 // Per-line floor at 0: cancelling more than was ordered (data-entry slip) must not
 // produce a negative committed count — negative quantities are invalid, not credits.
-const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
+// Sizes match by size, not spelling: a footwear PO holding "10-" covers the line's "10.5" (sizeQtyIn).
+const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = sizeQtyIn(pk, sz); const cancelled = sizeQtyIn(pk.cancelled, sz); return a + Math.max(0, ordered - cancelled) }, 0);
 
 // Quantities that can safely move to a replacement SKU without touching anything already
 // pulled on an IF or committed to an active PO. Cancelled PO units are open again. The maps
@@ -190,7 +192,7 @@ const poOverCommit = (item, sizes) => {
     if (qty > open) {
       const pos = [];
       safePOs(item).forEach(pl => {
-        if (!pl || !(safeNum(pl[sz]) > 0)) return;
+        if (!pl || !(safeNum(sizeQtyIn(pl, sz)) > 0)) return;
         const pid = pl.po_id || 'PO';
         if (pos.indexOf(pid) === -1) pos.push(pid);
       });
@@ -255,8 +257,8 @@ const _pulledForSize = (it, sz) => safePicks(it).filter(pk => pk.status === 'pul
 // Per-line adjustability for one size: open (not received/billed) units on normal blanks lines.
 // Batch-queued and outside-deco lines stay locked — they're managed elsewhere.
 const _poLineSizeInfo = (pl, sz) => {
-  const ord = safeNum(pl[sz]) - safeNum((pl.cancelled || {})[sz]);
-  const locked = Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz]));
+  const ord = safeNum(sizeQtyIn(pl, sz)) - safeNum(sizeQtyIn(pl.cancelled, sz));
+  const locked = Math.max(safeNum(sizeQtyIn(pl.received, sz)), safeNum(sizeQtyIn(pl.billed, sz)));
   const frozen = pl.status === 'queued' || pl.po_type === 'outside_deco';
   return { ord, locked, adj: frozen ? 0 : Math.max(0, ord - locked), frozen };
 };
@@ -300,9 +302,13 @@ function planSizeCut(item, sz, n, opts) {
     const { adj } = _poLineSizeInfo(newPls[pi], sz); if (adj <= 0) continue;
     const take = Math.min(adj, remaining); remaining -= take;
     const pl = newPls[pi];
-    const newOrd = safeNum(pl[sz]) - take;
-    if (newOrd > 0) pl[sz] = newOrd;
-    else { delete pl[sz]; if (pl.cancelled && pl.cancelled[sz] != null) { const c = Object.assign({}, pl.cancelled); delete c[sz]; pl.cancelled = c } }
+    // Write to the bucket this PO line already uses for the size (a legacy footwear line holds
+    // "10-", not the editor's "10.5"), folding any second spelling into it.
+    const k = sizeKeyIn(pl, sz);
+    const newOrd = safeNum(sizeQtyIn(pl, sz)) - take;
+    Object.keys(pl).forEach(k2 => { if (k2 !== k && typeof pl[k2] === 'number' && !_PO_LINE_META.has(k2) && !k2.startsWith('_') && normalizeFootwearSize(k2) === normalizeFootwearSize(sz)) delete pl[k2] });
+    if (newOrd > 0) pl[k] = newOrd;
+    else { delete pl[k]; const ck = sizeKeyIn(pl.cancelled, sz); if (pl.cancelled && pl.cancelled[ck] != null) { const c = Object.assign({}, pl.cancelled); delete c[ck]; pl.cancelled = c } }
     _recalcPoLineStatus(pl);
   }
   // Stamp the write-off on the lines actually holding the stranded units, so months later the
@@ -331,12 +337,13 @@ function planSizeCut(item, sz, n, opts) {
 function absorbedSizes(item) {
   const lines = safePOs(item);
   const sizes = safeSizes(item);
+  // Keyed by size, not spelling — a footwear line's "10.5" and its PO's billed "10-" are one size.
   const keys = new Set();
-  lines.forEach(pl => { Object.keys(pl.received || {}).forEach(k => keys.add(k)); Object.keys(pl.billed || {}).forEach(k => keys.add(k)) });
+  lines.forEach(pl => { Object.keys(pl.received || {}).forEach(k => keys.add(normalizeFootwearSize(k))); Object.keys(pl.billed || {}).forEach(k => keys.add(normalizeFootwearSize(k))) });
   const out = {};
   keys.forEach(sz => {
-    const locked = lines.reduce((a, pl) => a + Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz])), 0);
-    const over = locked - safeNum(sizes[sz]);
+    const locked = lines.reduce((a, pl) => a + Math.max(safeNum(sizeQtyIn(pl.received, sz)), safeNum(sizeQtyIn(pl.billed, sz))), 0);
+    const over = locked - safeNum(sizeQtyIn(sizes, sz));
     if (over > 0) out[sz] = over;
   });
   return out;

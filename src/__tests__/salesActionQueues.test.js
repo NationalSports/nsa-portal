@@ -386,7 +386,7 @@ describe('need-by date is entered by the rep, never defaulted', () => {
     expect(appSource).not.toContain('getDate()+28');
   });
   test('creating or converting without a date opens the need-by prompt instead of creating the SO', () => {
-    const newSO = sectionBetween(appSource, 'const newSOFn=(c,needBy)=>{', 'const mk=');
+    const newSO = sectionBetween(appSource, 'const newSOFn=async(c,needBy)=>{', 'const mk=');
     expect(newSO).toContain("if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}");
     const convert = sectionBetween(appSource, 'const convertSO=async(est,needBy)=>{', '// Auto-heal');
     expect(convert).toContain("if(!needBy){setNeedByAsk({kind:'convert',est,date:''});return}");

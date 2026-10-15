@@ -149,3 +149,55 @@ describe('fillEmbroiderySpecs', () => {
     expect(fillEmbroiderySpecs(art, { artId: 'new', dimensions: { artSize: 'parsed' }, stitches: 7569 }, { allowStitches: false })).toEqual({ ...art, art_size: 'parsed' });
   });
 });
+
+// pdf.js text (App.js extractPdfText row-grouping) of the DG-472934 "San Mateo 1"
+// Wilcom EmbroideryStudio proof — the Design Information stop table plus the
+// Color Film page.
+const SAN_MATEO_PROOF = [
+  'Wilcom EmbroideryStudio – Level 3\tZ: 1.00\tSan Mateo 1\tH: 3.37 in W: 3.02 in',
+  '1\tStitches:\t13449', 'Colors:\t3', 'Color changes:\t3', 'Stops:\t4',
+  '*SAN MATEO 1*', 'Colorway:\tColorway 1', '#\tN#\tSt.\tDescr Code',
+  '1. 28\t4773 WHITE', '2. 17\t4869 NAVY BLUE 17', 'Brand: Default',
+  '3. 1\t2083 Dark Green 1', 'Brand: Default', '4. 28\t1722 WHITE',
+  'Total Bobbin:\t83.66ft', '', '#: 1.', 'Color: WHITE', 'Code:', 'Stitches: 4773',
+].join('\n');
+const { parseThreadColors, fillThreadColorWays, artNeedsThreadColors } = require('../lib/embStitchParser');
+
+describe('parseThreadColors', () => {
+  test('reads every stop in sew order, repeats included, with the thread code', () => {
+    expect(parseThreadColors(SAN_MATEO_PROOF)).toEqual(['White', 'Navy Blue (17)', 'Dark Green (1)', 'White']);
+  });
+  test('falls back to the Color Film page when there is no stop table', () => {
+    expect(parseThreadColors('#: 1.\t#: 2.\nColor: WHITE\tColor: NAVY BLUE\nCode:\tCode: 17\nStitches: 4773\tStitches: 4869')).toEqual(['White', 'Navy Blue']);
+  });
+  test('a mockup PDF with a garment "Color:" line is not read as threads', () => {
+    expect(parseThreadColors('Mockup for coach approval\nStyle: A230 Polo\nColor: Navy\nSizes: S-XL')).toBeNull();
+  });
+  test('does not read "Colors: 3" / "Color changes:" as threads', () => {
+    expect(parseThreadColors('Colors:\t3\nColor changes:\t3\nColorway:\tColorway 1')).toBeNull();
+  });
+  test('returns null for empty text', () => { expect(parseThreadColors('')).toBeNull(); });
+});
+
+describe('fillThreadColorWays', () => {
+  const T = ['White', 'Navy Blue (17)'];
+  test('creates one color way with a blank garment color when there are none', () => {
+    const cws = fillThreadColorWays({ id: 'a', color_ways: [] }, T).color_ways;
+    expect(cws).toHaveLength(1);
+    expect(cws[0]).toMatchObject({ garment_color: '', inks: T });
+  });
+  test('fills empty thread lists but keeps the garment color', () => {
+    const out = fillThreadColorWays({ color_ways: [{ id: 'c', garment_color: 'Navy', inks: [''] }] }, T);
+    expect(out.color_ways[0]).toEqual({ id: 'c', garment_color: 'Navy', inks: T });
+  });
+  test('never overwrites threads a rep already typed', () => {
+    const art = { color_ways: [{ id: 'c', garment_color: 'Navy', inks: ['Gold'] }] };
+    expect(fillThreadColorWays(art, T)).toBe(art);
+    expect(artNeedsThreadColors(art)).toBe(false);
+  });
+  test('leaves legacy free-text thread_colors folders alone', () => {
+    const art = { thread_colors: 'White, Navy', color_ways: [] };
+    expect(fillThreadColorWays(art, T)).toBe(art);
+    expect(artNeedsThreadColors(art)).toBe(false);
+  });
+});

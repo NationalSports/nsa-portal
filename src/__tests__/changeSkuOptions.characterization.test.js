@@ -30,6 +30,13 @@ describe.each(editors)('$name Change SKU options', ({ source }) => {
     expect(source).toContain("{isReplace?'Adjust sizes':'New sizes'}");
   });
 
+  test('locks store replacements and keeps partial moves separate from existing prices', () => {
+    expect(source.match(/copyPrice=substitutionPrice\(o,true,copyPrice\)/g)).toHaveLength(2);
+    expect(source.match(/copyPrice=substitutionPrice\(o,moveOpen,copyPrice\)/g)).toHaveLength(2);
+    expect(source).toContain("disabled={storeSubstitution} checked={priceMode==='product'}");
+    expect(source).toContain('items.findIndex((it,ix)=>!isStoreSalesOrder(e)&&ix!==i&&');
+  });
+
   test('retains invoice identity on an in-place change but strips it from all copy flows', () => {
     expect(source.match(/next\.invoice_line_keys=\[\.\.\.new Set/g)).toHaveLength(2);
     expect(source.match(/delete clone\.invoice_line_keys/g)).toHaveLength(3);

@@ -27,6 +27,29 @@ Harnesses:
   dedup, staff-only reads). Self-contained — builds its own fixture and applies the
   migration itself; run it on an empty scratch DB from the repo root. Ends with
   `ALL_SO_SHIPPING_LABEL_SCENARIOS_PASSED`.
+- `staff_only_reads_scenarios.sql` — migration
+  `20261013120000_staff_only_business_reads` (orders, customers, staff, vendors
+  and settings readable by staff only: anon gets permission denied, a signed-in
+  coach reads only their own team + parent, staff keep the QuickBooks / admin
+  carve-outs on app_state, deactivated staff read nothing, catalog search and the
+  login roster still work signed out, and a leftover public policy aborts the
+  migration). Self-contained like the label harness; ends with
+  `ALL_STAFF_ONLY_READ_SCENARIOS_PASSED`.
+- `rls_check_once_scenarios.sql` — migration
+  `20261013110000_rls_staff_check_once_per_query` (RLS staff checks wrapped as
+  `(SELECT is_team_member())` so they run once per query, not per row: every
+  caller — anon, coach, rep, admin, accounting, gm, deactivated — reads, inserts
+  and updates exactly what they did before across every production policy shape;
+  the plan uses an InitPlan; already-wrapped and helper-free policies are
+  untouched; re-running is a no-op; a 50k-row staff read gets faster).
+  Self-contained; ends with `ALL_RLS_CHECK_ONCE_SCENARIOS_PASSED`. Apply this
+  migration before `20261013120000` — that one refuses to run otherwise.
+- `txn_item_search_scenarios.sql` — migration
+  `20261014210000_txn_item_search_stats` (global search's archive-item search reads a
+  precomputed per-item summary instead of all ~230k invoice lines: identical results to
+  the previous search across 23 queries × 4 limits, charge and invoice-only codes still
+  excluded, staff-only, a refresh picks up new imports, one nightly refresh job).
+  Self-contained; ends with `ALL_TXN_ITEM_SEARCH_SCENARIOS_PASSED`.
 
 ## place_webstore_order (00171)
 
@@ -59,3 +82,31 @@ The concurrency property (second buyer blocks on the per-(product,size) advisory
 lock until the first commits, then correctly reads the committed holds) was
 verified with two racing sessions; it needs two live connections, so it isn't in
 the scripted scenarios — see the PR that introduced 00171 for the transcript.
+
+## At-Once / 24/7 fake-order proof
+
+`verify_at_once_flow.cjs` runs disposable Club and All School PGlite scenarios,
+checks atomic automatic pick-task assignment, then passes their hydrated orders into the actual React order-status, value,
+and dashboard calculations. Install `@electric-sql/pglite@0.3.14` in a scratch
+prefix and expose its `node_modules` through `NODE_PATH`; run this script from
+the repository root with the normal project dependencies installed.
+
+The scenarios cover paid conversion and replay, purchasing/receiving,
+garment picking, transfer inventory, production, partial/full dispatch, and
+completion without a second invoice. Club supplier purchasing remains a
+review queue by design; neither garment nor DTF supplier POs are automatically
+created for Club orders. The scheduled pick worker queues available stock without
+a manual Send to Warehouse step, while physical pull confirmation stays required.
+All School also covers shipment void/reopening and reversed event arrival.
+
+These tests use synthetic payment and physical-work confirmations. They do
+not contact Stripe, suppliers, ShipStation, or a hosted database. The All
+School scenario exercises dedicated garment procurement and inventory
+replenishment as distinct lanes. A physical pick/receipt/production/dispatch
+confirmation remains necessary; paying an order cannot manufacture stock or
+prove shipment. Deployment settings still control scheduled automation.
+
+Each database is created in memory. Fixture cleanup runs in `finally`; the
+Club transaction rolls back and the All School disposable schema is removed.
+The combined runner removes its exported snapshot directory on success and
+failure. No fake orders are inserted into production or the shared preview.

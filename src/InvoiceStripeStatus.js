@@ -1,7 +1,7 @@
 import React from 'react';
 import { authFetch } from './utils';
 
-export default function InvoiceStripeStatus({ invoiceId, onChange }) {
+export default function InvoiceStripeStatus({ invoiceId, onChange, extra }) {
   const [state, setState] = React.useState({ loading: true, payments: [], error: '' });
   const [refresh, setRefresh] = React.useState(0);
   React.useEffect(() => {
@@ -37,5 +37,6 @@ export default function InvoiceStripeStatus({ invoiceId, onChange }) {
       {p.review_reason && ' Accounting review required: ' + p.review_reason + '.'}
     </div>)}
     {!state.loading && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 8 }} onClick={() => setRefresh(n => n + 1)}>Refresh payment status</button>}
+    {extra}
   </div>;
 }

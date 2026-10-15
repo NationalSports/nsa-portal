@@ -357,8 +357,11 @@ async function runSweep(admin, client, options = {}) {
   if (scanError) throw new Error(`Stripe reconciliation scan failed: ${scanError.message}`);
   timings.scan_ms = now() - scanAt;
 
+  // Open incidents are reported in the daily reconciliation digest instead of a
+  // nightly email. Set STRIPE_RECONCILIATION_EMAIL_ALERTS=on to restore the email.
+  const emailAlerts = options.emailAlerts ?? process.env.STRIPE_RECONCILIATION_EMAIL_ALERTS === 'on';
   const alertAt = now();
-  const delivery = await claimAndSendAlert(admin);
+  const delivery = emailAlerts ? await claimAndSendAlert(admin) : { claimed: false, sent: false };
   timings.alert_ms = now() - alertAt;
   timings.total_ms = now() - startedAt;
 
