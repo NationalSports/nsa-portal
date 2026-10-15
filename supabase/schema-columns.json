@@ -341,6 +341,7 @@
    "prod_status",
    "rejections",
    "rep_notes",
+   "roster_change",
    "run1_done",
    "run2_done",
    "run_order",
