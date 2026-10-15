@@ -990,9 +990,9 @@ const _labelPageHtml=(label={})=>{
     +`</div>`;
 };
 // Print one or more 4×6 portrait labels in a single job — one page per label.
-export const printQrLabels=(labels)=>{
+export const printQrLabels=(labels,printWindow=null)=>{
   const list=(labels||[]).filter(Boolean);if(!list.length)return;
-  const w=window.open('','_blank','width=460,height=680');if(!w)return;
+  const w=printWindow||window.open('','_blank','width=460,height=680');if(!w)return;
   const title=(list[0].code||list[0].id||'Label')+(list.length>1?(' +'+(list.length-1)):'');
   const html=`<!doctype html><html><head><title>${title}</title><style>${_LABEL_CSS}</style></head><body>`
     +list.map(_labelPageHtml).join('')

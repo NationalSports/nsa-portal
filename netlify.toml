@@ -430,3 +430,8 @@
 [functions."so-rep-shipment-sweep"]
   schedule = "*/5 * * * *"
   timeout = 26
+
+# Paid Club / All School warehouse pick tasks. Stock allocation is atomic;
+# physical pulls remain actual warehouse confirmations. No supplier ordering.
+[functions."at-once-pick-sweep"]
+  schedule = "7,22,37,52 * * * *"

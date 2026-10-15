@@ -84,7 +84,7 @@ test('teamshop order calls create_teamshop_sales_order with p_webstore_order_id 
   jest.dontMock('../../netlify/functions/teamshop-auto-po');
 });
 
-test('club order calls create_club_sales_order with p_order_id and skips auto-PO', async () => {
+test('club conversion records its review-only needs ledger', async () => {
   jest.resetModules();
   jest.doMock('../../netlify/functions/teamshop-auto-po', () => ({ generateForSoSafe: jest.fn(() => Promise.resolve({ ok: true })) }));
   const { retryConvert: rc } = require('../../netlify/functions/teamshop-retry-convert');
@@ -98,7 +98,7 @@ test('club order calls create_club_sales_order with p_order_id and skips auto-PO
   expect(rpcCall.table).toBe('create_club_sales_order');
   expect(rpcCall.payload).toEqual({ p_order_id: 'o2' });
   const autoPo = require('../../netlify/functions/teamshop-auto-po');
-  expect(autoPo.generateForSoSafe).not.toHaveBeenCalled();
+  expect(autoPo.generateForSoSafe).toHaveBeenCalledWith(sb, 'SO-10', 'teamshop-retry-convert', 'teamshop-retry-convert');
   jest.dontMock('../../netlify/functions/teamshop-auto-po');
 });
 
@@ -110,4 +110,18 @@ test('RPC failure surfaces the REAL error message, not a generic one', async () 
   const res = await retryConvert(sb, { order_id: 'o1' });
   expect(res.statusCode).toBe(502);
   expect(JSON.parse(res.body).error).toBe('duplicate key value violates unique constraint "so_items_pkey"');
+});
+
+
+test.each(['batched','cancelled'])('Club replay %s heals only active order needs without reconverting', async (status) => {
+  jest.resetModules();
+  jest.doMock('../../netlify/functions/teamshop-auto-po', () => ({ generateForSoSafe: jest.fn().mockResolvedValue({ok:true}) }));
+  const {retryConvert: rc} = require('../../netlify/functions/teamshop-retry-convert');
+  const sb = fakeSb({'webstore_orders.select':[{data:[{id:'o-club',order_source:'club',status,so_id:'SO-CLUB'}],error:null}]});
+  expect(JSON.parse((await rc(sb,{order_id:'o-club'})).body)).toMatchObject({so_id:'SO-CLUB',replayed:true});
+  expect(sb.calls.some(c=>c.op==='rpc')).toBe(false);
+  const generate = require('../../netlify/functions/teamshop-auto-po').generateForSoSafe;
+  if (status==='batched') expect(generate).toHaveBeenCalledWith(sb,'SO-CLUB','teamshop-retry-convert','teamshop-retry-convert');
+  else expect(generate).not.toHaveBeenCalled();
+  jest.dontMock('../../netlify/functions/teamshop-auto-po');
 });

@@ -118,3 +118,20 @@ export function artFamilyIdsIn(jobs, jobId) {
   const k = artFamilyKey(self, byId);
   return list.filter((j) => artFamilyKey(j, byId) === k).map((j) => j.id).filter(Boolean);
 }
+
+/**
+ * What a split slice must keep when the release wizard re-releases it over its own job id.
+ * The wizard rebuilds the job from scratch; without this it wrote `split_from: null` and a bare
+ * `released_<deco>_<id>` key, orphaning the slice from its parent. The parent's next quantity
+ * refresh then no longer saw the slice and grew back to the full line, double-counting units the
+ * slice already ran (SO-1801: JOB-1801-01 re-listed the 5 IS1116 shirts done on JOB-1801-01-C1).
+ * The `__split__X` key suffix is kept too — isOpenSplitSlice and the by-SKU parent cleanup read it.
+ */
+export function releasedSplitLink(existingJob) {
+  if (!existingJob || !existingJob.split_from) return { keySuffix: '', fields: { split_from: null } };
+  const m = String(existingJob.key || '').match(/(?:__split__[A-Z]\d*)+$/);
+  return {
+    keySuffix: m ? m[0] : '',
+    fields: { split_from: existingJob.split_from, ...(existingJob.split_open ? { split_open: true } : {}) },
+  };
+}

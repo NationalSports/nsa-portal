@@ -1,8 +1,16 @@
-import SalesOrderEditGate from './SalesOrderEditGate';
+import SalesOrderEditGate from './SalesOrderEditGate';import StockReceiptDialog from './StockReceiptDialog';
+import {buildStockReceiptLabel, saveStockReceiptState} from './lib/stockReceiptLabels';
+import StoreCloseoutReview from './StoreCloseoutReview';
+import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
+import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
+import { fetchDataVersions, allUnchanged, changedGroups, markLoaded } from './lib/dataVersions';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
+import { batchEntryLinkState, orphanedBatchEntries, unloadedBatchOrders, resolveBatchItemIndex, dbRowsLinkEntry } from './lib/batchQueueIntegrity';
+import { planOrderSave } from './lib/artJobsSaveRouting';
+import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
@@ -18,6 +26,7 @@ import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
 import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
+import { detectFloorRosterChanges, stampRosterChanges, describeRosterChange } from './lib/rosterChangeAlert';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
@@ -38,6 +47,9 @@ import {stageDocumentBaseline,reconcileOutboxNotices} from './lib/documentSaveBa
 import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
+import AtOnceDashboard from './AtOnceDashboard';
+import { mainSalesOrders } from './lib/orderChannels';
+import useOrderStoreMetadata from './lib/useOrderStoreMetadata';
 import BarcodeScanner from './BarcodeScanner';
 import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta, findOverPromised, ifStockCoverage } from './itemFulfillment';
 import BotStatus from './BotStatus';
@@ -45,13 +57,14 @@ import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { normalizeOmgSize } from './lib/omgReport';
+import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
 import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
-import { startDeployReloadWatcher } from './deployReload';
+import { startDeployReloadWatcher, startStaleTabReload } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as fabric from 'fabric';
@@ -61,11 +74,12 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG, PORTAL_SETTINGS_DEFAULTS } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates } from './lib/logoDetail';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates, logoReferenceFor } from './lib/logoDetail';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, soLineQty, splitInvoiceLine, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { stitchPreviewsFor, stitchSourceFor } from './DstPreview';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
 import { nextSalesOrderId, salesOrderSequenceNumber } from './lib/salesOrderIds';
@@ -102,6 +116,7 @@ import { canReceivePayments } from './lib/receivePaymentsAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
+import { shouldAutoCloseInvoicedSO } from './lib/prepaidStoreFulfillment';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
@@ -283,7 +298,7 @@ const computeOmgSoSync=(so)=>{
 // job (all costs applied). This is the SAFETY-NET window: if no SO has been created
 // this long after the store was brought into the portal, remind accounting anyway so
 // the store is never forgotten. Shared by the reminder effect and the store card.
-const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
+// Closeout tasks are persisted by the database, due SO creation + 35 days.
 // ── Completed-job grace window for production surfaces ──
 // Invoicing / closing an SO sets sticky status='complete' — a FINANCIAL close that routinely
 // lands minutes after the decorator's Done click (SO-1512, 8/18: final invoice 5 minutes after
@@ -380,6 +395,8 @@ const _syncDbMaxIds=async()=>{if(!supabase)return;try{
 }catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
 const nextSOId=sos=>nextSalesOrderId(sos,_dbMaxIds.so);
+// Every new SO takes its number from here (DB counter; local max+1 only if the RPC is unreachable).
+const mintSOId=sos=>_dbMintSalesOrderId(nextSOId(sos));
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 // Deep-clone art_files with FRESH ids for a copied estimate/SO. Copies must never share art_file
 // ids with their source: shared ids let one order's art bleed into another and break art-id-keyed
@@ -497,6 +514,7 @@ const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
+const StoreRequestPage = lazyRetry(() => import('./Webstores').then(m => ({ default: m.StoreRequestPage })));
 const WebstoreReports = lazyRetry(() => import('./WebstoreReports'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const OmgMonthlyProfitImport = lazyRetry(() => import('./OmgMonthlyProfitImport'));
@@ -551,6 +569,7 @@ import {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadSalesOrdersByIds,
   _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
@@ -567,9 +586,11 @@ import {
   _isDocumentConflictCooling,
   _hasActiveDocumentSave,
   _dbSaveEstimate,
-  _dbSaveSO,
+  _dbSaveSO as _dbSaveSOFull,
   _dbSaveMemoCommand,
   _dbSaveArtFiles,
+  _dbSaveArtJobs,
+  _soTouchAvailable,
   _dbSaveInvoice,
   _dbNotify,
   _dataLossAlert,
@@ -655,6 +676,7 @@ import {
   _bgSyncInc,
   _bgSyncDec,
   _truncatedTables,
+  _dbMintSalesOrderId,
 } from './lib/dbEngine';
 
 // The proxy already explains an OMG outage in words ("their report service did not
@@ -1296,7 +1318,8 @@ const dashArtShots=(job,so)=>{
 // the job (j) and its sales order (so), pulling customer/rep/sibling context from ctx
 // ({customers, allOrders, products, reps}). Returns the opts object that printDoc/downloadDoc
 // (utils.buildDocHtml) consume.
-const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={})=>{
+// stitchPreviews: DstPreview.stitchPreviewsFor(...) output, rendered by the async caller at print time.
+const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[],stitchPreviews={}}={})=>{
   const c=customers.find(x=>x.id===so.customer_id);
   const allArtFiles=_prodJobArtFiles(j,so);
   const itemDetails=(j.items||[]).map(gi=>{
@@ -1368,9 +1391,10 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   };
   const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
   // Color names → swatch chip HTML, mirroring the modal's PMS chips
-  const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
-    return a.map(cl=>{const sw=_swatchFor(cl);
-      return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
+  // numbered: embroidery thread stops in sew order ("1. White  2. Navy  …  4. White").
+  const _chipsHtml=(arr,numbered)=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
+    return a.map((cl,ci)=>{const sw=_swatchFor(cl);
+      return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+(numbered?'<b>'+(ci+1)+'.</b> ':'')+cl+'</span>'}).join('')};
   // Collect each garment's sheet parts, then print garments that share a decoration (same
   // design, color way, placement, numbers/names setup — lib/productionGroups) together: one
   // section per group with its mockups and logo detail kept on the same page as the size
@@ -1400,10 +1424,12 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
         const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
         const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
         const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
-        const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
+        // A folder with a single color way IS the deco's color way — keep its sew order and repeats.
+        const _soleCw=!cwObj&&_direct.length===0&&artF?.color_ways?.length===1?artF.color_ways[0]:null;
+        const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_soleCw?(_soleCw.inks||[]).filter(c2=>c2&&c2.trim()):_cwAll;
         const sz2=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
         const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
-        specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls)]});
+        specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls,dt==='embroidery'&&!!(cwObj||_soleCw))]});
       });
       // Back numbers/names usually run in the same inks as the garment's front design.
       // When the rep didn't pin a print color, hand the decorator the front's selected
@@ -1413,7 +1439,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
         const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
       const _nnColors=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
         if(own.length)return _chipsHtml(own);
-        if(_frontInks.length)return '<span style="font-size:9px;color:#92400e;font-weight:700">Not set — front inks:</span> '+_chipsHtml(_frontInks);
+        // Embroidered numbers/names run in thread, not ink — say so.
+        if(_frontInks.length)return '<span style="font-size:9px;color:#92400e;font-weight:700">Not set — front '+((nd.num_method||nd.name_method)==='embroidery'?'threads':'inks')+':</span> '+_chipsHtml(_frontInks);
         return '<span style="color:#dc2626;font-weight:700">⚠ Not specified</span>'};
       itemNumDecos.forEach(nd=>{
         const szTxt=(nd.num_size||'—')+(nd.front_and_back?' / Back: '+(nd.num_size_back||nd.num_size||'—'):'');
@@ -1467,6 +1494,15 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // color so the floor can read inks and small type.
     p.logos=garmentLogoDetails(gi,so,allArtFiles).map(l=>({url:l.url,bg:logoDetailBg(gi.color,l.cwLabel,l.side),
       label:'Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')}));
+    // Stitch preview: the embroidery DST drawn in this garment's color-way threads.
+    // Same color-way resolution as the logo detail (garment-color match, reversible side B).
+    itemArtDecos.forEach(d=>{const art=allArtFiles.find(a=>a&&a.id===d.art_file_id);if(!art||art.deco_type!=='embroidery')return;
+      [[d.color_way_id,d.reversible?'A':''],...(d.reversible?[[d.color_way_id_b,'B']]:[])].forEach(([cwRaw,side])=>{
+        const cwId=resolveLogoColorWay(art,cwRaw||null,gi.color,side);if(cwId===undefined)return;
+        const sp=stitchPreviews[art.id+'|'+(cwId||'')];if(!sp||p.logos.some(l=>l.url===sp.url))return;
+        // Painted on the color way's garment color (the color its threads were picked for — e.g. the
+        // black panel of a red/black backpack), falling back to the line's garment color.
+        p.logos.push({url:sp.url,bg:logoDetailBg(sp.garment||gi.color,sp.garment,side),label:'Stitch preview — '+_upEsc(art.name||'Design')+(sp.garment?' · CW: '+_upEsc(sp.garment):'')+(side?' · Side '+side:'')})})});
   });
   const _decoGroups=groupByDecoration(itemParts,p=>p.key);
   const _imgBox=(src,h,bg)=>'<div style="border:1px solid #e2e8f0;border-radius:6px;background:'+(bg||'#fff')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:'+h+'px;display:flex;align-items:center;justify-content:center;padding:6px"><img src="'+src+'" style="max-height:'+(h-12)+'px;max-width:100%;object-fit:contain"/></div>';
@@ -1616,7 +1652,10 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const specs=[{k:'Method',v:methodName}];
   if(frontLoc)specs.push({k:'Placement',v:frontLoc});
   const flags=[];itemDetails.forEach(d=>jobItemDecosOfKind(d.gi,d.it,'art').forEach(dd=>{if(dd.underbase)flags.push('Underbase');if(dd.reversible)flags.push('Reversible')}));
-  const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean));if(d2.length)return[...new Set(d2)];return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(x=>x&&x.trim()))))]})();
+  const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean));if(d2.length)return[...new Set(d2)];
+    // Embroidery with one color way: every thread stop in sew order — a repeated thread is its own stop.
+    const _cwsAll=allArtFiles.flatMap(a=>a.color_ways||[]);if(isEmb&&_cwsAll.length===1)return(_cwsAll[0].inks||[]).filter(x=>x&&x.trim());
+    return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(x=>x&&x.trim()))))]})();
   const colors=colorList.map(name=>({name,code:'',hex:swatch(name)}));
 
   // DST machine-design barcodes (embroidery) — scan-to-load on the floor
@@ -1899,13 +1938,6 @@ const _omgLineVal=(text,labelRe)=>{
   return 0;
 };
 // ① Dollar Report → revenue pieces collected from parents.
-const parseOmgDollar=(text)=>({
-  shipping:  _omgLineVal(text,/^\s*\t*Shipping\b/i)||_omgLineVal(text,/\bShipping\b/i),
-  processing:_omgLineVal(text,/Processing/i),
-  tax:       _omgLineVal(text,/Sales\s*Tax/i),
-  fundraise: _omgLineVal(text,/Fundrais/i),
-  grand:     _omgLineVal(text,/Grand\s*Total/i),
-});
 // ② Accounting Report → the fees NSA pays. The top summary box sometimes has
 // labels with no adjacent value (PDF printouts), so we fall back to the
 // "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
@@ -2098,7 +2130,12 @@ const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.a
 function buildInvoicePdfRows(inv, so, fmt){
   const soArt=so?safeArt(so):[];
   const soItems=so?safeItems(so):[];
-  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
+  // Split-art designs (one of 2-3 logos sharing a line's sizes) count only their own pieces
+  // toward the design's price tier, and reversibles count twice — same as the order editor.
+  // Counting the whole line here priced split prints at a bigger break than the SO billed
+  // (SO-1131's FRIARS print showed +$3.80/ea on INV-64435; the order billed $4.10).
+  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){const sp=decoSplitQty(d);aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+(sp!=null?sp:q)*(d.reversible?2:1)}})});
+  const depPct=inv&&inv.inv_type==='deposit'?(safeNum(inv.deposit_pct)||50)/100:1;
   let lineItems=(inv&&inv.line_items)||[];
   if(!lineItems.length&&so){
     lineItems=soItems.map((it,idx)=>{
@@ -2118,14 +2155,25 @@ function buildInvoicePdfRows(inv, so, fmt){
     const szStr=soIt?sizeBreakdownStr(safeSizes(soIt),soIt.is_footwear):'';
     if(szStr)itemName+='<br/><span>'+szStr+'</span>';
     if(soIt?.notes&&String(soIt.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(soIt.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(safeNum(li.rate)),style:'text-align:right'},{value:fmt(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
-    const decos=soIt?safeDecos(soIt):[];
-    decos.forEach(d=>{
-      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+    // Decorations price at the SO line's own qty (pq) so a partial line never drops into a
+    // different tier; the billed count (eq) scales to what this invoice line bills.
+    const pq=soIt?soLineQty(soIt):qty;
+    const decos=(soIt?safeDecos(soIt):[]).map(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+      const sp=decoSplitQty(d);const nq=dp2._nq!=null?dp2._nq:(sp!=null&&d.kind==='art'?sp*(d.reversible?2:1):null);
+      const eq=nq!=null?(pq>0&&qty!==pq?Math.round(nq*qty/pq):nq):(d.reversible?qty*2:qty);
+      const sell=safeNum(dp2.sell);
+      return{d,eq,sell,amt:Math.round(eq*sell*depPct*100)/100};
+    });
+    // Print the garment and each decoration on their own rows (as the SO does) when the line's
+    // amount splits cleanly; otherwise keep the combined rate with decorations as detail.
+    const split=splitInvoiceLine(li.amount,qty,decos.map(x=>x.amt));
+    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(split?split.garmentRate:safeNum(li.rate)),style:'text-align:right'},{value:fmt(split?split.garmentAmt:safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
+    decos.forEach(({d,eq,sell,amt})=>{
       const artF=soArt.find(a2=>a2.id===d.art_file_id);
       const decoLabel=pdfDecoLabel(d,artF);
       const posLabel=d.position?' — '+d.position:'';
-      rows.push({_class:'deco-row',cells:[{value:'',style:''},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:'+'+fmt(safeNum(dp2.sell))+'/ea',style:'text-align:right;color:#64748b'},{value:'',style:''}]});
+      rows.push({_class:'deco-row',cells:[{value:split?eq:'',style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:split?fmt(sell):'+'+fmt(sell)+'/ea',style:'text-align:right'+(split?'':';color:#64748b')},{value:split?fmt(amt):'',style:'text-align:right'}]});
     });
   });
   return{rows,subtotal};
@@ -2451,7 +2499,7 @@ const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(p
 // 'dashboard' is the default and is represented by a clean URL (no ?pg=). Query-param based
 // (not a path) so it never touches Netlify's routing/redirects. Page-level only — opening a
 // specific record is not a separate history entry.
-const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','methodic','art','production','warehouse','item_fulfillment','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','receive_payments','commissions','omg','webstores','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
+const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','methodic','art','production','warehouse','item_fulfillment','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','receive_payments','commissions','omg','webstores','store_request','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
 const _pgFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('pg');return v&&_PG_IDS.has(v)?v:null}catch{return null}};
 // RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
 // right-click "Open in New Tab" all work natively in the browser. Plain
@@ -2558,10 +2606,10 @@ export default function App(){
     [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
-    const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
+    const badSOs=soList.filter(s=>!(/^(?:(?:SO|247)-\d+|\d+)$/).test(s.id));
     if(badSOs.length>0){
       needsMigrate=true;
-      const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));
+      const validNums=soList.map(s=>salesOrderSequenceNumber(s.id));
       let nextNum=Math.max(_soSeq,...validNums,0)+1;
       badSOs.forEach(s=>{const oldId=s.id;s.id='SO-'+nextNum;idMap[oldId]='SO-'+nextNum;nextNum++});
       _soSeq=nextNum;
@@ -2671,6 +2719,30 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // ─── Order save routing (SO-2444, 2026-10-12) ───
+  // Every order save in this component goes through here: the [sos] diff save, savSONow, and the Art
+  // Dashboard's direct calls. A save that changes ONLY art files and/or jobs relative to the last
+  // database-synced copy (`opts.before`; default: this order's _dbSnap entry) takes the light path —
+  // just those rows are written and the order is touched without a version bump (migration
+  // so_touch_without_version_bump), so an artist's upload no longer re-saves every line item or
+  // moves the version under a rep's open edit, while every other screen still refreshes. Stale
+  // job/art rows are three-way merged at save time (lib/staleRowMerge). Anything else, any special
+  // save option, or a database without the touch RPC is the unchanged full save; a failed light save
+  // falls back to it (the full save carries the retry/outbox machinery).
+  const _dbSaveSO=(so,opts)=>{
+    const before=opts&&('before' in opts)?opts.before:(_dbSnap.current?.sos||[]).find(x=>x&&so&&x.id===so.id);
+    const plan=planOrderSave(before,so,{opts,touchAvailable:_soTouchAvailable()});
+    if(plan.kind==='full')return _dbSaveSOFull(so,plan.fullOpts);
+    // Record this as synced so the [sos] diff save doesn't ALSO send it as a full save.
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===so.id))_dbSnap.current.sos=snap.map(x=>x.id===so.id?so:x);
+    const light=plan.kind==='artJobs'?_dbSaveArtJobs(so,{quiet:true}):_dbSaveArtFiles(so,{quiet:true});
+    return Promise.resolve(light).then(ok=>{
+      if(ok===false)return _dbSaveSOFull(so);// the full save carries the retry/outbox machinery
+      _markRecentlyPulled(so.id);// a poll read from before this commit must not revert it
+      return ok;
+    });
+  };
   // Inventory merge-save baseline (00239): DIRECT _dbSaveProduct callers (editor
   // Save, Auto Inventory upload) read their pre-edit baseline from the prod
   // snapshot at call time — the diff-save effect hasn't advanced it yet at that
@@ -2711,6 +2783,10 @@ export default function App(){
     }));
     return[...migrated,...inv];
   });// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const stockReceiptPending=useRef([]);
+  const stockReceiptSaving=useRef(new Map());
+  const stockReceiptWindow=useRef(null);
+  const[stockReceiptLabels,setStockReceiptLabels]=useState([]);
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
     return Math.max(ipo,spo,1001);
@@ -3218,9 +3294,72 @@ export default function App(){
       // table) forces a full reload. Pending groups are consumed only once a load actually
       // starts, so deferred reloads (save in flight) keep accumulating events.
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
-      const reloadAll=async(pendingGroups)=>{
+      // Merge rules shared by the full group reload and the per-order refresh below — one copy.
+      // Protected ids (a save failed or in flight, or an order just pulled) keep the local copy.
+      // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): a read that landed
+      // BEFORE this client's save would clobber just-saved scalars. _version is DB-trigger-owned and read
+      // back into the local copy on every confirmed save, so a strictly-newer local _version means the
+      // incoming row is stale — keep the local copy wholesale. No-ops for entities without _version.
+      const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+      const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
+      // A stale ~10s-after-save reload (triggered by the art save's own updated_at bump) must not drop a
+      // just-uploaded file: layer the art_files superset for records this client saved recently.
+      const _keepRecentArt=(e,lp)=>{if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e};
+      // Replace rows by id in place; rows not present yet are appended (the full load is id-ordered).
+      const _upsertById=(arr,byId)=>{const seen=new Set();const out=(arr||[]).map(x=>{if(x&&byId.has(x.id)){seen.add(x.id);return byId.get(x.id)}return x});const added=[...byId.keys()].filter(id=>!seen.has(id)).map(id=>byId.get(id));return added.length?[...out,...added]:out};
+      // Per-order live refresh (2026-10-14). A sales-order change used to make every open tab re-download
+      // all orders with all their lines, POs, picks, jobs and art; on slow connections that crowded out
+      // the rep's own saves. Fetch only the changed orders (same assembly as the full load) and merge them
+      // with the same rules as the full reload. Returns false when the full reload must run instead: too
+      // many orders at once, a failed read, or an order that is gone (deletion keeps today's semantics).
+      // A failed read (flaky connection) is retried once as another light refresh (the re-queued keys run
+      // on the queue's next pass, about a second later) rather than going straight to the heavy full
+      // reload on the same bad connection; a second failure for the same keys falls back to the full
+      // reload exactly as before. A key superseded by a queued full reload simply drops its retry mark.
+      const _SO_DELTA_MAX=25;
+      const _deltaRetried=new Set();
+      const reloadSalesOrderDelta=async(soIds,itemIds)=>{
+        if(soIds.length>_SO_DELTA_MAX)return false;
+        const res=await _dbLoadSalesOrdersByIds(soIds,itemIds,{maxOrders:_SO_DELTA_MAX});
+        if(cancelled)return true;
+        const keys=[...soIds.map(id=>'so:'+id),...itemIds.map(id=>'soitem:'+id)];
+        if(!res){
+          const fresh=keys.filter(k=>!_deltaRetried.has(k));
+          if(fresh.length===keys.length){keys.forEach(k=>_deltaRetried.add(k));debouncedReloadGroups(keys);return true}
+          keys.forEach(k=>_deltaRetried.delete(k));return false;
+        }
+        keys.forEach(k=>_deltaRetried.delete(k));
+        if(res.tooMany||res.missing.length)return false;
+        if(!res.sales_orders.length)return true;
+        setSOs(prev=>{
+          const localById=indexFirstById(prev);
+          const merged=new Map();
+          res.sales_orders.forEach(e=>{const lp=localById.get(e.id);const base=_shouldProtect(e.id)?(lp||e):_newerLocalWins(e,localById);merged.set(e.id,_keepRecentArt(base,lp))});
+          // Same rule as the full reload: these rows' diff baseline equals what goes into state.
+          _dbSnap.current={..._dbSnap.current,sos:_upsertById(_dbSnap.current.sos,merged)};
+          const next=_upsertById(prev,merged);
+          return _jsonEq(prev,next)?prev:next;
+        });
+        return true;
+      };
+      const reloadAll=async(pendingAll)=>{
         if(cancelled)return;
-        const groups=pendingGroups.has('__all__')?null:pendingGroups;
+        // 'so:<id>' / 'soitem:<so_items.id>' keys come from sales-order and pick-line events; everything
+        // else is an entity group. A queued full sales_orders (or __all__) reload already covers the ids.
+        const soIds=[],itemIds=[],pendingGroups=new Set();
+        pendingAll.forEach(g=>{if(g.startsWith('so:'))soIds.push(g.slice(3));else if(g.startsWith('soitem:'))itemIds.push(g.slice(7));else pendingGroups.add(g)});
+        if(soIds.length||itemIds.length){
+          if(pendingGroups.has('__all__')||pendingGroups.has('sales_orders')){[...soIds.map(id=>'so:'+id),...itemIds.map(id=>'soitem:'+id)].forEach(k=>_deltaRetried.delete(k))}
+          else if(!(await reloadSalesOrderDelta(soIds,itemIds)))pendingGroups.add('sales_orders');
+          if(cancelled)return;
+        }
+        if(!pendingGroups.size)return;
+        let groups=pendingGroups.has('__all__')?null:pendingGroups;
+        // Drop groups nothing has written to since this tab last loaded them (src/lib/dataVersions.js);
+        // the counters are read BEFORE the load, so a write landing mid-load still triggers the next one.
+        const _versions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(groups){const todo=changedGroups(_versions,[...groups]);if(!todo.length)return;groups=new Set(todo)}
         const _has=g=>!groups||groups.has(g);
         const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
@@ -3233,14 +3372,8 @@ export default function App(){
         // (_parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.)
         if(d._parentTimedOut){console.warn('[DB] Realtime reload skipped — a parent-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
-        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
-        // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): the realtime reload is
-        // a wholesale replace, so a read that landed BEFORE this client's save would clobber just-saved scalars.
-        // _version is DB-trigger-owned and read back into the local copy in place on every confirmed save, so a
-        // strictly-newer local _version means the incoming row is stale — keep the local copy wholesale.
-        // No-ops for entities without _version (messages, products).
-        const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
+        // Scalar-clobber guard: _newerLocalWins (above, shared with the per-order refresh).
         const _mergeProtected=(dbArr,snapKey)=>{
           const merge=localArr=>{
             const localById=indexFirstById(localArr);
@@ -3252,12 +3385,16 @@ export default function App(){
         // layer the art_files superset against current state so a stale ~10s-after-save reload (triggered by the
         // art save's own updated_at bump) can't drop a just-uploaded file. Snap is refreshed inside apply
         // (prev-dependent), mirroring the poll-merge path so the _diffSave baseline matches what we put in state.
-        const _mergeProtectedArt=(dbArr,snapKey)=>{const base=_mergeProtected(dbArr,snapKey);return{snap:base.snap,apply:prev=>{const localById=indexFirstById(prev);const merged0=base.apply(prev);const merged=(merged0===prev)?prev:merged0.map(e=>{const lp=localById.get(e.id);if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e});_dbSnap.current[snapKey]=merged;return _jsonEq(prev,merged)?prev:merged}};};
+        const _mergeProtectedArt=(dbArr,snapKey)=>{const base=_mergeProtected(dbArr,snapKey);return{snap:base.snap,apply:prev=>{const localById=indexFirstById(prev);const merged0=base.apply(prev);const merged=(merged0===prev)?prev:merged0.map(e=>_keepRecentArt(e,localById.get(e.id)));_dbSnap.current[snapKey]=merged;return _jsonEq(prev,merged)?prev:merged}};};
         // Only build merges for groups that were actually loaded — skipped groups keep prior snap/state
         const estMerge=_has('estimates')?_mergeProtectedArt(d.estimates,'ests'):null;
         const soMerge=_has('sales_orders')?_mergeProtectedArt(d.sales_orders,'sos'):null;
         const invMerge=_has('invoices')?_mergeProtected(d.invoices,'invs'):null;
-        const custMerge=_has('customers')?_mergeProtectedArt(d.customers,'cust'):null;
+        // Never wholesale-replace the customer list with an EMPTY one (same rule as the poll's
+        // `if(d.customers.length)` guard): the timeout flags are module-global and cleared at the start of
+        // EVERY _dbLoad, so a poll/retry overlapping this reload can erase the "customers timed out" mark
+        // and an empty result slips past _parentTimedOut — blanking every order/art card to "Unknown".
+        const custMerge=_has('customers')&&d.customers.length?_mergeProtectedArt(d.customers,'cust'):null;
         const msgMerge=_has('messages')?_mergeProtected(d.messages,'msgs'):null;
         const prodMerge=_has('products')?_mergeProtected(d.products,'prod'):null;
         // Update snapshot before state — auto-save effects will diff against this.
@@ -3293,6 +3430,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next reload).
+        markLoaded(_versions,(groups?[...groups]:['estimates','sales_orders','invoices','messages','assigned_todos','app_state']).filter(g=>!(d._badGroups||[]).includes(g)));
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single selective reload.
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
@@ -3316,7 +3456,21 @@ export default function App(){
       let _rtLastDropAt=0;// last time any channel left SUBSCRIBED — events in that gap may be lost
       const _syncRtHealth=()=>{_realtimeHealthy=_rtSubbed.size===_RT_TABLES.length};
       _RT_TABLES.forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},payload=>{
+          // Sales-order and pick-line changes refresh just the affected order (see reloadSalesOrderDelta).
+          // A deleted order, or an event without an id, keeps the full group reload.
+          const isDelete=payload?.eventType==='DELETE',row=isDelete?null:payload?.new;
+          if(table==='sales_orders'&&row?.id){debouncedReloadGroups(['so:'+row.id]);return}
+          if(table==='so_item_pick_lines'){
+            if(row?.so_item_id!=null){debouncedReloadGroups(['soitem:'+row.so_item_id]);return}
+            // A pick-line DELETE carries only its own id (default replica identity). The only writer that
+            // deletes pick lines is save_sales_order_atomic, which rewrites the order row in the same
+            // transaction, so that order's own sales_orders event already refreshes it — a full reload of
+            // every order here would undo the point of the per-order refresh on every save.
+            if(isDelete)return;
+          }
+          debouncedReload(table);
+        }).subscribe((status,err)=>{
           if(status==='SUBSCRIBED'){_rtSubbed.add(table);_syncRtHealth();return}
           // Any non-subscribed status means this table is no longer receiving live pushes — drop it from the
           // healthy set so _getPollInterval tightens back to the 120s backstop until the channel recovers.
@@ -3406,6 +3560,14 @@ export default function App(){
       onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
       onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
     });
+    // A tab returned to after hours away (or after the computer slept) reloads before the user acts,
+    // so it never edits on an overnight copy of an order (SO-2444). Same safety hooks as above.
+    startStaleTabReload({
+      isBlocked:()=>qbSyncBusyRef.current,
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasUnsavedWork:_autoReloadHasUnsavedWork,
+      onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
+    });
     return()=>{['pointerdown','keydown','scroll'].forEach(ev=>window.removeEventListener(ev,_mark))};
   },[]);
 
@@ -3459,7 +3621,31 @@ export default function App(){
         // Tiered polling: load only core tables most of the time; do a full sync (cold tables) at most once
         // per _FULL_SYNC_MS of wall time so the realtime-aware poll interval can't change how often the heavy
         // catalog/app_state pulls happen.
+        // Customers self-heal — the backstop for the initial-load retry. `customers` is skipped on core
+        // polls, so a load that once returned it empty leaves EVERY order, job and art-dashboard card
+        // rendering "Unknown" (and customer-name search matching nothing) until a full sync up to 30 min
+        // later. Refetch the one group whenever state has none. Runs BEFORE the core load on purpose: it
+        // used to sit after the poll's _decoTimedOut/_parentTimedOut skip guards, so during busy hours
+        // (when those trip most) the heal never ran and the artist's board stayed "Unknown" for half an
+        // hour. Self-limiting: one success ends it. Snapshot first, so the [cust] diff-save effect doesn't
+        // read the refill as a local edit and push 2.5k customers back at the DB.
+        if(_custCount.current===0){
+          const _cr=await _dbLoad({only:new Set(['customers'])});
+          if(cancelled)return;
+          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
+            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
+            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
+          }
+        }
         const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
+        // A core poll re-downloads every order, estimate, invoice and message. Skip it when nothing has
+        // written to any of them since this tab last loaded them (src/lib/dataVersions.js); full syncs
+        // always run. The app_state counter tracks only the six keys applied below — keep that list in
+        // step with migration 20261014220000_data_versions.
+        const _POLL_GROUPS=['estimates','sales_orders','invoices','messages','app_state'];
+        const _pollVersions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(coreOnly&&allUnchanged(_pollVersions,_POLL_GROUPS)){_pollConsecutiveFailures=0;schedulePoll();return}
         const d=await _dbLoad({coreOnly});
         if(!d||!d.hasData){
           _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
@@ -3580,21 +3766,6 @@ export default function App(){
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
         if(d.customers.length)setCust(prev=>{const localById=indexFirstById(prev);const _mcArt=c=>{const lp=localById.get(c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(localById.get(c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
-        // Customers self-heal — the cold-table twin of the NetSuite history recovery above, and the
-        // backstop for the initial-load retry. `customers` is skipped on core polls, so a load that
-        // once returned it empty leaves EVERY order, job and art-dashboard card rendering "Unknown"
-        // (and customer-name search matching nothing) until a full sync up to 30 min later. Refetch
-        // the one group the moment we notice state has none — on core polls too, which is exactly
-        // when the normal path can't. Self-limiting: the condition only holds while the list is
-        // really empty, and one success ends it. Snapshot first, so the [cust] diff-save effect
-        // doesn't read the refill as a local edit and push 2.5k customers back at the DB.
-        if(_custCount.current===0){
-          const _cr=await _dbLoad({only:new Set(['customers'])});
-          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
-            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
-            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
-          }
-        }
         if(d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         // Advancing _dbSnap.current.omg WITHOUT advancing this state is a data-loss bug: the
@@ -3616,6 +3787,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>{const incStr=JSON.stringify(as.batch_pos);if(JSON.stringify(prev)===incStr){_batchPosApplied.current=incStr;return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=incStr;return as.batch_pos});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next poll).
+        markLoaded(_pollVersions,(d._coreOnly?_POLL_GROUPS:[..._POLL_GROUPS,'assigned_todos']).filter(g=>!(d._badGroups||[]).includes(g)));
       }catch(e){
         _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
         if(_pollConsecutiveFailures<=2)console.warn('[DB] Poll failed:',e.message);
@@ -3917,7 +4091,7 @@ export default function App(){
   };
 
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
-  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
+  React.useEffect(()=>{_diffSave(sos,'sos',(s,old)=>_dbSaveSO(s,{before:old}),_soDiffCmp)},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i),_invDiffCmp)},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
@@ -4540,54 +4714,6 @@ export default function App(){
       setWebTaxAgg(Object.values(byKey));
     }catch(e){console.warn('[web tax] error:',e.message)}})();
   },[pg]);
-  // OMG stores are settled from store deposit funds (not a coach payment). Remind
-  // accounting (Andrea Jung) to apply those funds to the store's invoice when the
-  // linked SO's FINAL JOB finishes (production done / shipped) — that's the moment
-  // every job cost is on the SO, so the invoice+commission come out right. If no SO
-  // exists yet, fall back to 6 weeks after the store was brought in (safety net so
-  // an unprocessed store is never forgotten). Stores already present when this
-  // shipped are baselined (no retroactive backlog); tasks are deduped by the
-  // [store-id] tag in the title.
-  React.useEffect(()=>{
-    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-    if(!(omgStores&&omgStores.length))return;
-    const now=Date.now();
-    const seen={...omgFirstSeen};
-    const firstAdoption=Object.keys(seen).length===0;
-    let seenChanged=false;
-    omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
-    if(seenChanged)setOmgFirstSeen(seen);
-    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
-    const toAdd=[];
-    omgStores.forEach(s=>{
-      if(!s||!s.id)return;
-      const rec=seen[s.id];
-      if(!rec||rec.baseline)return;
-      const tag='['+s.id+']';
-      if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
-      const so=sos.find(x=>x.omg_store_id===s.id&&!x.deleted_at);
-      // Fire when the SO's production is finished (all job costs applied). The 6-week
-      // safety net applies REGARDLESS of whether an SO exists — a stuck, cancelled, or
-      // fully-outsourced SO (no jobs → never 'ready_to_invoice') must not hide the
-      // store's deposit funds from accounting forever.
-      let done=false;
-      if(so){
-        done=so.status==='complete';
-        if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
-      }
-      if(!done&&now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
-      // Settlement-aware: if the store's SO is invoiced and every invoice is
-      // already paid, the funds have been applied — no reminder needed.
-      if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
-      const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
-      const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
-      const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
-        +`Collected per OMG — Grand total: ${$(grand)} · Fundraise: ${$(fund)} · Fees (ship/proc/tax): ${$(fees)}.`
-        +(so?`\nSales order: ${so.id}`:'\n(No sales order created from this store yet.)');
-      toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
-    });
-    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen,invs]);
   // Webstore settlement funds — per batched sales order, sum the PREPAID
   // (Stripe, payment_mode='paid') order totals net of refunds vs the TEAM-TAB
   // (payment_mode='unpaid') totals still owed. The Invoices settlement queue
@@ -4758,6 +4884,8 @@ export default function App(){
   const[historySummary,setHistorySummary]=useState(null);
   const[historyCheckError,setHistoryCheckError]=useState('');
   const _historySummaryLoaded=useRef(false);
+  const _historySummaryFails=useRef(0);
+  const _historySummaryNextTry=useRef(0);
   const _refreshHistorySummary=async()=>{
     try{const rows=await _historyStore.summary();setHistorySummary(rows);_historySummaryLoaded.current=true;setHistoryCheckError('');}
     catch(e){setHistoryCheckError('History checks unavailable: '+e.message);throw e;}
@@ -5185,7 +5313,22 @@ export default function App(){
   },[dbLoading]); // eslint-disable-line
   // The URL router (section ?pg= + the open record) is defined together further down, once the
   // invoice view-state it depends on has been declared — search "Record-level URL router".
-  React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
+  React.useEffect(()=>{
+    const pending=stockReceiptPending.current.splice(0);
+    if(!pending.length){_saveAppState('inv_pos',invPOs);return}
+    _lsSet('nsa_inv_pos',JSON.stringify(invPOs));
+    const printWindow=stockReceiptWindow.current;stockReceiptWindow.current=null;
+    const save=_initialLoadDone.current&&_dbLoadSuccess.current
+      ?_dbSavingGuard(()=>saveStockReceiptState(supabase,invPOs)):Promise.resolve(false);
+    Promise.resolve(save).then(ok=>{
+      pending.forEach(p=>{stockReceiptSaving.current.delete(p.poId);p.resolve(ok)});
+      if(!ok){if(printWindow&&!printWindow.closed)printWindow.close();nf('Stock PO save could not be confirmed. No label issued — review the saved quantities before receiving again.','error');return}
+      const labels=pending.map(p=>p.label);
+      setStockReceiptLabels(prev=>[...prev,...labels]);
+      if(printWindow&&!printWindow.closed)try{printQrLabels(labels,printWindow)}catch(_){/* Print button remains available. */}
+      nf('Stock PO check-in saved — labels ready');
+    });
+  },[invPOs]);
   React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
@@ -5258,11 +5401,54 @@ export default function App(){
   const _eSOSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eSO){
     const fresh=sos.find(s=>s.id===eSO.id);if(!fresh)return;
-    const snapKey=fresh.id+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    const snapKey=fresh.id+':'+(fresh._version??'')+':'+childVersionSig(fresh)+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
     if(snapKey===_eSOSnapRef.current)return;
     _eSOSnapRef.current=snapKey;
-    if(fresh!==eSO&&(JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
+    // A newer server _version alone must reach the editor too (SO-2444): another session's item-only
+    // save changed none of the fields below, so the open editor never learned the order had moved and
+    // its next edit was rejected as stale. The editor decides what to do with it (adopt when clean).
+    // Same for a newer job/artwork row: Art Dashboard saves write only those rows and touch the order
+    // without a version bump, so the order's own _version can't tell the editor about them.
+    if(fresh!==eSO&&(Number(fresh._version)>Number(eSO._version)||childVersionSig(fresh)!==childVersionSig(eSO)||JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
   }},[sos]);
+  // Open-time item hydration (SO-1518, 2026-10-14). When so_items/estimate_items time out at boot the
+  // loader hands every document an EMPTY item list flagged _itemsHydrated:false. The editor then opened
+  // the order showing "0 items" — the save guards refused to wipe the DB, but the rep saw their order
+  // emptied and a stuck "saving needs review" banner. Before mounting the editor on such a document,
+  // read this one document in full and graft its item lines in. Only child collections are taken; the
+  // header (and its _version) stays what the list loaded. A failed read falls back to the old behavior
+  // (editor opens, save guards still protect the DB) and is tried once per document per session.
+  const _hydrateFailedRef=React.useRef(new Set()),_hydratingRef=React.useRef(new Set());
+  const [,setHydratingDocId]=useState(null);// re-render trigger only
+  const _docNeedsItems=(doc,table)=>!!doc&&!doc._draftRecovery&&!_hydrateFailedRef.current.has(table+':'+doc.id)&&(table==='sales_orders'?[doc._itemsHydrated,doc._decosHydrated,doc._posHydrated,doc._picksHydrated]:[doc._itemsHydrated,doc._decosHydrated]).includes(false);
+  // Gate only the FIRST mount of an editor for a document. Once it is open it holds the rep's working
+  // copy; a later poll that marks the list row unhydrated again must never swap it out for the loading
+  // screen (that would unmount the editor and drop unsaved edits).
+  const _editorOpenRef=React.useRef({});
+  const _awaitingItems=(doc,table)=>{if(_editorOpenRef.current[table]===doc.id)return false;if(supabase&&_docNeedsItems(doc,table))return true;_editorOpenRef.current[table]=doc.id;return false};
+  const _hydrateOpenDoc=(doc,table)=>{
+    if(!supabase||!_docNeedsItems(doc,table)||_editorOpenRef.current[table]===doc.id||_hydratingRef.current.has(table+':'+doc.id))return;
+    const id=doc.id,isSO=table==='sales_orders';
+    _hydratingRef.current.add(table+':'+id);
+    setHydratingDocId(id);
+    _loadRecoveryDocument(table,id).then(({row})=>{
+      const graft=prev=>{if(!prev||prev.id!==id)return prev;const next={...prev,items:row.items,_itemsHydrated:true,_decosHydrated:true};
+        if(isSO)Object.assign(next,{_posHydrated:true,_picksHydrated:true,_hydratedPoIds:[...new Set([...(prev._hydratedPoIds||[]),...row._hydratedPoIds])],_hydratedPickIds:[...new Set([...(prev._hydratedPickIds||[]),...row._hydratedPickIds])]});
+        return next};
+      // Stage the diff-save baseline first so adopting the real items is not mistaken for an edit.
+      const key=isSO?'sos':'ests';
+      const base=(_dbSnap.current?.[key]||[]).find(x=>x.id===id);if(base)stageDocumentBaseline(_dbSnap,key,graft(base));
+      if(isSO){setSOs(prev=>prev.map(graft));setESO(graft)}else{setEsts(prev=>prev.map(graft));setEEst(graft)}
+    }).catch(e=>{
+      console.error('[Open hydrate]',table,id,e);
+      _hydrateFailedRef.current.add(table+':'+id);
+      nf("Couldn't load "+id+"'s item lines. Don't save it — reload the page to see the items.",'error');
+    }).finally(()=>{_hydratingRef.current.delete(table+':'+id);setHydratingDocId(cur=>cur===id?null:cur)});
+  };
+  React.useEffect(()=>{if(!eSO)_editorOpenRef.current['sales_orders']=null},[eSO]);
+  React.useEffect(()=>{_hydrateOpenDoc(eSO,'sales_orders')},[eSO?.id,eSO?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(()=>{if(!eEst)_editorOpenRef.current['estimates']=null},[eEst]);
+  React.useEffect(()=>{_hydrateOpenDoc(eEst,'estimates')},[eEst?.id,eEst?._itemsHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
   const _eEstSnapRef=React.useRef(null);
   React.useEffect(()=>{if(eEst){
     const fresh=ests.find(e=>e.id===eEst.id);if(!fresh)return;
@@ -5669,8 +5855,6 @@ export default function App(){
   // React state does not update until the next render. These synchronous guards
   // close the double-click window that duplicated SO-2277 and both invoices.
   const omgSoCreating=useRef(new Set());
-  const omgInvoiceCreating=useRef(new Set());
-  const webstoreInvoiceCreating=useRef(new Set());
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -6323,6 +6507,8 @@ export default function App(){
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
+  const[soView,setSOView]=useState('list');
+  const soStoreMetadata=useOrderStoreMetadata(sos,supabase,true);
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const recoveryEditorRef=React.useRef(null);
@@ -6451,7 +6637,14 @@ export default function App(){
     const retry=async()=>{
       try{await _historyStore.flush();if(cancelled)return;setHistoryError('');}
       catch(e){if(!cancelled)setHistoryError(e.message);return;}
-      if(!_historySummaryLoaded.current)await _refreshHistorySummary().catch(()=>{});
+      // A failed summary backs off (1, 2, 4… up to 30 min) instead of re-running a whole-table query
+      // every 30 s: on 2026-10-14 every open staff tab did that and it became the database's top load.
+      if(!_historySummaryLoaded.current&&Date.now()>=_historySummaryNextTry.current){
+        await _refreshHistorySummary().then(()=>{_historySummaryFails.current=0;},()=>{
+          _historySummaryFails.current++;
+          _historySummaryNextTry.current=Date.now()+Math.min(60000*2**(_historySummaryFails.current-1),1800000);
+        });
+      }
     };
     retry();
     const timer=setInterval(retry,30000);
@@ -6605,7 +6798,11 @@ export default function App(){
     const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
     setDashView(map[cu.role]||'warehouse');
   },[cu?.id,cu?.role]);
-  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user));
+    // A tab whose sign-in had expired boots with every table denied (business data is staff-only since
+    // 20261013120000), so the initial load fails and the "load did not complete" banner stays up until
+    // the next poll, up to 5 minutes later. Signing in again is the fix, so load right now.
+    if(!_dbLoadSuccess.current&&_runPollRef.current)_runPollRef.current();};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
   // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
@@ -6754,6 +6951,7 @@ export default function App(){
   const canAccess=useCallback((pageId)=>{
     if(!accessUser)return false;
     if(pageId==='ai_inbox')return canViewAiInbox(accessUser);
+    if(pageId==='store_request')return accessUser.role==='admin'||accessUser.role==='super_admin';
     // Keep Custom Ops private during the rollout. This also protects direct
     // ?pg=methodic links, not just the sidebar entry.
     if(pageId==='methodic')return String(accessUser.email||'').toLowerCase()==='steve@nationalsportsapparel.com';
@@ -7062,7 +7260,7 @@ export default function App(){
     return credit;
   };
   const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,expected_date,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
-    const id=nextSOId(sos);
+    const id=await mintSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:expected_date||'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
@@ -7105,9 +7303,9 @@ export default function App(){
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
       if(_bn&&_bn.webstore_batch_no!=null)newSO.webstore_batch_no=_bn.webstore_batch_no;
     }catch{}
-    // Claim the selected customer orders and record invoice/payment + fundraising
-    // credit in ONE database transaction. A closed browser can no longer interrupt
-    // the accounting half after production has been created. The RPC is idempotent,
+    // Claim customer orders, derive checkout money and record fundraising credit
+    // in one transaction. Invoice/payment creation is deferred to Close Store.
+    // The RPC is idempotent,
     // so retry once; after an ambiguous error, verify the committed records directly.
     let finalized=null;let finalizeErr=null;
     for(let attempt=0;attempt<2&&!finalized?.ok;attempt++){
@@ -7125,7 +7323,7 @@ export default function App(){
           supabase.from('invoices').select('id').eq('so_id',id).limit(1).maybeSingle(),
           Number(fundraise_cost)>0?supabase.from('customer_credits').select('id').eq('id','cr_fund_so_'+id).maybeSingle():Promise.resolve({data:{id:'none'}})
         ]);
-        if(_linked===(order_ids||[]).length&&_inv&&_credit)finalized={ok:true,invoice_id:_inv.id,linked_count:_linked};
+        if(_linked===(order_ids||[]).length&&_credit)finalized={ok:true,invoice_id:_inv?.id||null,linked_count:_linked};
       }catch{}
     }
     if(!finalized?.ok){
@@ -7154,7 +7352,7 @@ export default function App(){
       if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);
       Object.assign(newSO,_patch);
       const _gap=Number(_sm.rounding_gap)||0;
-      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — the batch invoice bills the lines as they are.','error');
+      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — reconcile this before Close Store.','error');
     }
     // Accounting changed the server revision. Publish the confirmed baseline
     // before state; its fee/version echo must not launch another full save.
@@ -7162,7 +7360,7 @@ export default function App(){
     setSOs(prev=>prev.map(s=>s.id===id?newSO:s));
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
-    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));
+    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s). Close Store after fulfillment and cost review.');
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
@@ -7349,6 +7547,9 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,pending_shipping:updatedRows,pending_shipping_usage:[...(cc.pending_shipping_usage||[]),...newUsages]}:cc));
     setSelC(s=>s&&s.id===c.id?{...s,pending_shipping:updatedRows,pending_shipping_usage:[...(s.pending_shipping_usage||[]),...newUsages]}:s);
   };
+  // Back-to-back saves of one edit (onSave + savSONow) can both see the old roster before state
+  // settles — remember what was already announced so production gets one message, not two.
+  const _rosterAlertSeen=useRef(new Map());
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
@@ -7372,6 +7573,33 @@ export default function App(){
       if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
     if(prev)_recordHistory('so_history',sl.id,prev);
+    // Numbers/names edited after a job was lined up: the printed sheet is now wrong (SO-2506).
+    // Keep an unacknowledged flag across saves from editors that never loaded it, flag newly
+    // changed jobs, and tell production. Only the production board's "Reprinted" clears it.
+    if(prev&&Array.isArray(sl.jobs)){
+      const _prevJobs=new Map(safeJobs(prev).map(j=>[j.id,j]));
+      sl.jobs=sl.jobs.map(j=>{
+        if(!j)return j;
+        if(j._rosterAck){const{_rosterAck,...rest}=j;return{...rest,roster_change:null}}
+        const pr=_prevJobs.get(j.id)?.roster_change;
+        return pr&&!j.roster_change?{...j,roster_change:pr}:j;
+      });
+      const _rc=detectFloorRosterChanges(prev,sl);
+      if(_rc.length){
+        sl.jobs=stampRosterChanges(sl,_rc,{by:cu?.name||''}).jobs;
+        const _sig=sl.id+'|'+JSON.stringify(_rc);const _now=Date.now();
+        const _dup=_now-(_rosterAlertSeen.current.get(_sig)||0)<60000;_rosterAlertSeen.current.set(_sig,_now);
+        if(!_dup){
+        const _stLabel=st=>st==='in_process'?'In Process':'In Line';
+        const _jobIds=_rc.map(r=>r.jobId);
+        const _assigned=new Set(sl.jobs.filter(j=>_jobIds.includes(j.id)).map(j=>j.assigned_to).filter(Boolean));
+        const _tag=REPS.filter(r=>r.is_active!==false&&(r.role==='prod_manager'||_assigned.has(r.name))).map(r=>r.id);
+        const _txt='⚠️ Numbers/names changed after the sheet was printed — reprint before pressing.\n'+_rc.map(r=>r.jobId+' ('+_stLabel(r.status)+'): '+r.changes.slice(0,8).map(describeRosterChange).join('; ')+(r.changes.length>8?' (+'+(r.changes.length-8)+' more)':'')).join('\n')+(cu?.name?'\nChanged by '+cu.name+'.':'');
+        setMsgs(p=>[...p,{id:'m'+Date.now()+'-rc',so_id:sl.id,author_id:cu?.id,text:_txt,ts:new Date().toLocaleString(),read_by:cu?.id?[cu.id]:[],dept:'production',tagged_members:_tag,entity_type:'so',entity_id:sl.id}]);
+        nf('Heads up: '+_jobIds.join(', ')+' '+(_rc.length>1?'are':'is')+' already on the floor. Production was told to reprint the sheet.','warn');
+        }
+      }
+    }
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
     if(!skipMerge&&prev&&sl.items&&prev.items){
@@ -7481,11 +7709,16 @@ export default function App(){
     }catch(e){nf('Could not finish the logo update: '+(e.message||'upload failed'),'error');return false}
     finally{logoSaveLocks.current.delete(so.id)}
   };
+  // Embroidery with a DST: the stitch render placed on this garment's photo, offered as the first mock suggestion.
+  const stitchAutoMock=(so,slot,garment)=>{if(slot.kind!=='art'||slot.missingDeco||!garment?.image_url)return null;
+    const stitch=stitchSourceFor(slot.artFile,resolveLogoColorWay(slot.artFile,slot.cwId,garment.color,slot.side));if(!stitch)return null;
+    const d=safeDecos(safeItems(so)[garment.item_idx]).find(x=>x&&x.art_file_id===slot.artId);
+    return{garmentUrl:garment.image_url,stitch,position:d?.position||slot.artFile?.location,artSize:slot.artFile?.art_size}};
   // Props for a mock card's logo detail pane (art slots only).
   const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;
     // No decoration on the SO line: nothing to assign or attach a logo to until the rep adds it.
     if(slot.missingDeco){const b=logoDetailBackground(garment?.color,'',slot.side);return{url:'',needsColorWay:true,colorWays:[],bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
-      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),productionPngs:productionLogoCandidates(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+      blockedReason:'The '+[garment?.sku,garment?.color].filter(Boolean).join(' ')+' line on '+so.id+' has no '+(slot.artFile?.name||'artwork')+' decoration, so there\'s nothing to attach a logo to. Open '+so.id+', add '+(slot.artFile?.name||'the artwork')+' to that line and pick its artwork version, then reopen this job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),productionPngs:productionLogoCandidates(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,stitch:stitchSourceFor(slot.artFile,slot.cwId),
     onAssign:async choice=>{
       if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
       logoSaveLocks.current.add(so.id);
@@ -7531,10 +7764,12 @@ export default function App(){
     const sl=savSO(s,opts);
     if(!sl||!sl.id)return Promise.resolve(false);
     setESO(prev=>prev&&prev.id===sl.id?sl:prev);
+    const _syncedBefore=(_dbSnap.current?.sos||[]).find(x=>x.id===sl.id);// routing base, captured before staging
     stageDocumentBaseline(_dbSnap,'sos',sl);
     if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
-    const _p=_dbSaveSO(sl);
+    // Unload / forced re-auth saves stay full saves (they are staged in the outbox above).
+    const _p=opts?.stageOutbox?_dbSaveSOFull(sl):_dbSaveSO(sl,{before:_syncedBefore});
     Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{(!_hasActiveDocumentSave(sl.id)&&_dbSavePendingIds.delete(sl.id))});
     return _p;
   };
@@ -7543,10 +7778,11 @@ export default function App(){
   // billing. When the order is ALREADY fully billed (every line's qty covered by non-void
   // invoices — the same buildInvoicedQtyMap test that gates OrderEditor's "Close Sales
   // Order" button), leaving it there is a stale prompt that invites double-invoicing
-  // (SO-1149 / SO-1288, Aug 2026). So the moment production finishes or the last job
-  // ships on a fully-invoiced order, persist status='complete'. Deliberately never fires
-  // on under-invoiced orders — those must stay visible in the invoicing funnel, and
-  // orders whose invoices are later deleted are reverted by the delete handler, not here.
+  // (SO-1149 / SO-1288, Aug 2026). Native webstore invoices are paid at checkout, so
+  // invoice coverage cannot close those orders: they stay in the fulfillment workflow
+  // until calcSOStatus observes shipment/delivery. Deliberately never fires on
+  // under-invoiced orders — those must stay visible in the invoicing funnel, and orders
+  // whose invoices are later deleted are reverted by the delete handler, not here.
   const _autoClosedSOs=React.useRef(new Set());
   React.useEffect(()=>{
     if(dbLoading)return;
@@ -7562,50 +7798,13 @@ export default function App(){
         const qty=_szTot>0?_szTot:safeNum(it.est_qty);
         return qty-(invMap.get(soLineKey(it,idx))||0)>0;
       });
-      if(hasRemaining)return;
+      if(!shouldAutoCloseInvoicedSO(so,{status:st,hasInvoices:soInvs.length>0,hasRemainingQty:hasRemaining}))return;
       _autoClosedSOs.current.add(so.id);
       savSO({...so,status:'complete',updated_at:new Date().toLocaleString()});
       logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');
       nf(so.id+' closed — fully invoiced and production complete');
     });
   },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
-  // ── Webstore settle-on-finish ──
-  // When a webstore-batched SO's FINAL JOB finishes (calcSOStatus hits ready_to_invoice),
-  // every job cost is on the SO — that's the moment to invoice and apply the store's
-  // collected funds so commissions carry all costs. Creates an accounting to-do (Andrea
-  // Jung) deduped by the [settle-SOID] tag. OMG stores get the equivalent via the
-  // "Apply OMG funds" effect above; this covers source='webstore' SOs (webstore_id set,
-  // no omg_store_id). Fully-outsourced SOs (decos, no jobs) never reach
-  // ready_to_invoice, so a 6-week-age safety net fires the reminder regardless —
-  // including for SOs manually closed to 'complete' — unless every invoice is already
-  // paid. (Verified against prod at ship time: only 3 legacy SOs qualified, all
-  // genuinely unsettled.)
-  React.useEffect(()=>{
-    if(dbLoading||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
-    const toAdd=[];
-    sos.forEach(so=>{
-      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at)return;
-      // "Done" = final job finished (ready_to_invoice) or the SO was closed (complete —
-      // how fully-outsourced SOs end, since with no jobs they never hit
-      // ready_to_invoice). Safety net: an SO stuck un-done for 6+ weeks fires anyway so
-      // its store funds are never hidden from accounting indefinitely.
-      let done=so.status==='complete';
-      if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
-      if(!done&&!(Date.now()-new Date(so.created_at).getTime()>=OMG_FUNDS_WINDOW_MS))return;
-      const tag='[settle-'+so.id+']';
-      if(assignedTodos.some(t=>t.title&&t.title.includes(tag)))return;
-      // Already fully settled (invoiced and every invoice paid) → nothing to do.
-      const soInvs=(invs||[]).filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
-      if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;
-      const nowIso=new Date().toISOString();
-      toAdd.push({id:'todo-settle-'+so.id+'-'+Date.now(),title:`Apply store funds & invoice — ${so.id} ${tag}`,
-        description:`The final job on webstore sales order ${so.id} has finished, so all job costs are applied. Invoice the order and apply the store's collected funds (see the Invoices settlement queue) so commissions reflect full costs.${so.memo?'\n'+so.memo:''}`,
-        created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so.id,customer_id:so.customer_id||null,
-        priority:2,status:'open',created_at:nowIso,updated_at:nowIso,comments:[]});
-    });
-    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[sos,invs,assignedTodos,REPS,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes,opts)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -7662,9 +7861,9 @@ export default function App(){
   // customer from inside the editor — same default shape as a freshly converted SO.
   // Need-by date: no default. The rep enters the customer's real in-hands date before the order
   // exists — a made-up "today + 28 days" filled the dashboard with fake deadlines and fake "overdue"s.
-  const newSOFn=(c,needBy)=>{if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}const mk=c?.catalog_markup||1.65;
+  const newSOFn=async(c,needBy)=>{if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}const mk=c?.catalog_markup||1.65;
     const defExp=needBy;
-    const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
+    const so={id:await mintSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
     setESO(so);setESOC(c||null);setPg('orders');return so};
   // Re-fetch an estimate's items + decorations from the DB and rebuild the items
   // array exactly as the main loader does (the estimates map above), so converting
@@ -7810,7 +8009,7 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const so={id:await mintSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Pending shipping is offered to the rep in the editor, never auto-attached (see savSO).
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     // Do not publish the new SO to the editor or diff-save effect until its
@@ -7930,7 +8129,7 @@ export default function App(){
       const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
       if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
       return clone}),_artIdMap);
-    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
+    const ns={id:await mintSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
   // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
@@ -8910,8 +9109,9 @@ export default function App(){
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
             const openFrom=pk.created_at||so.created_at;
-            const openDays=openFrom?Math.max(0,Math.floor((new Date()-new Date(openFrom))/(1000*60*60*24))):null;
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,
+            const openAgeDays=openFrom?Math.max(0,(Date.now()-new Date(openFrom).getTime())/864e5):null;
+            const openDays=Number.isFinite(openAgeDays)?Math.floor(openAgeDays):null;
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,openAgeDays,quickPull:isQuickPull(so,soStoreMetadata.stores),
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
@@ -8966,8 +9166,10 @@ export default function App(){
       allJobs.forEach(j=>{
         if(j.prod_status==='completed'||j.prod_status==='shipped'){
           // Calculate remaining unshipped units for this job (split-slice aware)
-          const jobTotalShipped=jobShippedUnits(j,allJobs,soShippedSizes);
-          const remainingUnits=j.total_units-jobTotalShipped;
+          // Garments still to pack for this job — the same per-size math the card's rows use.
+          // (j.total_units drifts from the real garments, so total_units - shipped left cards in
+          // the queue with a unit count but nothing to pack or clear — SO-1271.)
+          const remainingUnits=jobUnshippedUnits(j,so,soShippedSizes);
           if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
           else {
             // Check if all sibling jobs (a different decoration sharing any garments) are also done.
@@ -8989,8 +9191,10 @@ export default function App(){
                 deliverDate,deliverDaysOut,holdUntil,_dkey:dkey,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))],
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+              // A 'completed' job whose garments are all already in shipments still shows (0 units)
+              // so the warehouse can close it out with Mark Shipped — its status just never flipped.
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,readyAt:j.completed_at||j.updated_at||so.updated_at,
-                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
+                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:Math.max(0,remainingUnits),
                 shipMethod:j.ship_method||'pending',shipPref,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))]});
             }
           }
@@ -9019,8 +9223,12 @@ export default function App(){
         const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);if(tot===0)return true;
         const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);return pulled>=tot});
       const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
-      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length>0)){
-        const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+      // Units no shipment covers yet. A wait-complete order that already went out (e.g. cleared as
+      // "Shipped via ShipStation") but whose auto-status can't reach 'complete' — a decorated line
+      // with no job, SO-1321 — used to sit here forever at its full order quantity.
+      const wcRemaining=unshippedOrderItems(so).reduce((a,r)=>a+safeNum(r.qty),0);
+      if(wcRemaining>0&&allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length>0)){
+        const totalUnits=wcRemaining;
         // A wait-complete order becomes shippable only once its last piece finishes — newest job completion or pull across the order.
         let wcReadyAt=null;const _bumpWc=(d)=>{if(d&&(!wcReadyAt||new Date(d).getTime()>new Date(wcReadyAt).getTime()))wcReadyAt=d};
         safeJobs(so).forEach(j=>{if(j.prod_status==='completed'||j.prod_status==='shipped')_bumpWc(j.completed_at||j.updated_at)});
@@ -9047,6 +9255,7 @@ export default function App(){
         m._subTasks.push(sub);
         if(!m._skus.includes(t.sku))m._skus.push(t.sku);
         if(t.urgent)m.urgent=true;
+        m.openAgeDays=Math.max(m.openAgeDays||0,t.openAgeDays||0);m.openDays=Math.floor(m.openAgeDays);
         if(t.noDeco===false)m.noDeco=false;// any deco item makes the whole IF non-no-deco
       } else {
         const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
@@ -9055,7 +9264,7 @@ export default function App(){
       }
     });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    dedupPull.sort(compareWarehousePulls);shipTasks.sort(sortU);decoTasks.sort(sortU);
     return{pullTasks:dedupPull,shipTasks,decoTasks,deliverTasks};
   };
 
@@ -11725,6 +11934,9 @@ export default function App(){
     await supabase.rpc('finish_all_school_regular_batch',{p_token:claim.token,p_po_number:claim.poNumber,p_state:'unknown',p_api_order_id:null,p_vendor_lines:[]});
     nf('The vendor result is uncertain. All School quantities are held for reconciliation; do not re-order this batch. '+(error?.message||''),'error');
   };
+  // Refuse to order/clear a batch while any of its orders loaded without item lines: the order save that
+  // records the PO would be refused, but the vendor order and queue change would still go through.
+  const _blockUnloadedBatch=entries=>{const ids=unloadedBatchOrders(entries,sos);if(!ids.length)return false;nf('Not done — '+ids.join(', ')+(ids.length===1?" hasn't":" haven't")+' finished loading. Reload the page, then try again.','error');return true};
   const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
@@ -11762,6 +11974,10 @@ export default function App(){
       }
       return null;
     }
+    // Orphan guard (SO-2444): an entry whose garment line never reached its order would buy goods
+    // for nothing. Refuse before anything is ordered. A vendor-ACCEPTED order (apiResult) can't be
+    // undone, so it still records — the line-id backstop below reports anything it can't place.
+    if(!apiResult){const _orph=orphanedBatchEntries(pos,_sosNow);if(_orph.length){nf('Not ordered — '+_orph.length+' batch entr'+(_orph.length===1?'y is':'ies are')+' not on '+(_orph.length===1?'its sales order':'their sales orders')+' ('+_orph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+'). Remove '+(_orph.length===1?'it':'them')+' from the queue first.','error');return null}}
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
@@ -11806,7 +12022,7 @@ export default function App(){
     // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
     // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
     // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
-    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||''}))}:null;
+    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||'',estimated_arrival:l.estimated_arrival||null}))}:null;
     const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
     // GRANULARITY (owner 2026-07-23): stamp each PO line with only ITS item's vendor keys —
     // stamping the whole batch's list on every line let a vendor number alias to the wrong
@@ -11832,6 +12048,7 @@ export default function App(){
       if(skipSoId&&soId===skipSoId)continue;
       const so=_sosNow.find(x=>x.id===soId);if(!so)throw new Error('Sales order was not found in the live order list');
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+      const _unplaced=[];
       bps.forEach(bp=>{
         let promoted=false;
         updatedItems.forEach(it=>{it.po_lines=it.po_lines.map(pl=>{
@@ -11844,7 +12061,9 @@ export default function App(){
         // the batch number by users or the billing matcher.
         if(!promoted){
           bp.items.forEach(bpIt=>{
-            const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+            // By line_id, never by position alone: a line that moved or never reached the order
+            // must not pin this PO onto a different garment (SO-2444). Legacy entries keep item_idx.
+            const idx=resolveBatchItemIndex(updatedItems,bpIt);if(idx<0){_unplaced.push(bpIt.sku+(bpIt.color?' '+bpIt.color:''));return}
             const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
             Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
@@ -11854,6 +12073,7 @@ export default function App(){
       });
       const saved=await savSONow({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
       if(!saved)throw new Error('database save returned false');
+      if(_unplaced.length)throw new Error('line(s) no longer on the order: '+_unplaced.join(', '));
     }catch(_promoErr){
       promotionFailed=true;
       // The vendor already accepted this order (or the rep already placed it) — never mask that
@@ -11900,6 +12120,7 @@ export default function App(){
   // ESTIMATES LIST
   function rEst(){
     if(convertingEstimateId&&!eEst)return<div role="status" style={{padding:24}}>Creating sales order…</div>;
+    if(eEst&&_awaitingItems(eEst,'estimates'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eEst.id} item lines…</div>;
     if(eEst)return<>
       {convertingEstimateId&&<div className="modal-overlay" role="status" style={{zIndex:10000}}><div className="modal" style={{padding:24}}>Creating sales order…</div></div>}
       <div inert={convertingEstimateId?'':undefined}><ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor onArtRequestResult={adoptStandaloneArtResult} recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{if(conversionInFlight.current===e.id)return false;const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e)} onEmergencySave={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
@@ -11960,13 +12181,19 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><SalesOrderEditGate recoveryEditorRef={recoveryEditorRef} onLeaseLoaded={row=>{stageDocumentBaseline(_dbSnap,'sos',row);setSOs(prev=>prev.map(s=>s.id===row.id?row:s));setESO(row);setESOC(cust.find(c=>c.id===row.customer_id)||null)}} editor={ActiveOrderEditor} ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO&&_awaitingItems(eSO,'sales_orders'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eSO.id} item lines…</div>;
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><SalesOrderEditGate recoveryEditorRef={recoveryEditorRef} onLeaseLoaded={row=>{stageDocumentBaseline(_dbSnap,'sos',row);setSOs(prev=>prev.map(s=>s.id===row.id?row:s));setESO(row);setESOC(cust.find(c=>c.id===row.customer_id)||null)}} editor={ActiveOrderEditor} ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
-    // Filter SOs
-    let fSOs=[...sos];
+    const orderViewSwitch=<div className="ao-view-switch" aria-label="Sales order view"><button type="button" aria-pressed={soView==='list'} onClick={()=>setSOView('list')}>Sales orders</button><button type="button" aria-pressed={soView==='at_once'} onClick={()=>setSOView('at_once')}>At-Once / 24/7 dashboard</button><button type="button" aria-pressed={soView==='stores'} onClick={()=>setSOView('stores')}>Stores dashboard</button></div>;
+    if(['at_once','stores'].includes(soView))return<>{orderViewSwitch}<AtOnceDashboard key={soView} dashboard={soView} orders={sos} customers={cust} supabase={supabase} calcStatus={calcSOStatus} calcValue={so=>calcOrderMargin(so,sos).rev} onOpenOrder={so=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null)}}/></>;
+    if(soStoreMetadata.loading)return<>{orderViewSwitch}<p role="status">Loading sales orders…</p></>;
+    if(soStoreMetadata.error)return<>{orderViewSwitch}<p role="alert">Unable to separate store orders. <button className="btn btn-secondary" onClick={soStoreMetadata.retry}>Retry</button></p></>;
+    // List-only separation; all shared operational pages retain the full sos array.
+    const mainSOs=mainSalesOrders(sos,soStoreMetadata.stores);
+    let fSOs=[...mainSOs];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
     else if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
     const soRepId=soF.rep==='_me_'?cu?.id:soF.rep;
@@ -11978,14 +12205,15 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={booking:sos.filter(s=>calcSOStatus(s)==='booking').length,need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
+    const stCounts={booking:mainSOs.filter(s=>calcSOStatus(s)==='booking').length,need_order:mainSOs.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:mainSOs.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:mainSOs.filter(s=>calcSOStatus(s)==='items_received').length,in_production:mainSOs.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:mainSOs.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:mainSOs.filter(s=>calcSOStatus(s)==='complete').length};
     const activeFilters=(soF.status!=='all'&&soF.status!=='active')||soF.rep!=='all'||soF.search;
 
     return(<>
+      {orderViewSwitch}
       {/* Clickable status stat cards */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='active'||soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'active'}))}>
-          <div className="stat-label">Active</div><div className="stat-value">{sos.length-stCounts.complete}</div></div>
+          <div className="stat-label">Active</div><div className="stat-value">{mainSOs.length-stCounts.complete}</div></div>
         {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'active':'booking'}))}>
           <div className="stat-label">Booking</div><div className="stat-value" style={{color:'#4338ca'}}>{stCounts.booking}</div></div>}
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'active':'need_order'}))}>
@@ -12043,7 +12271,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail supabase={supabase} customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail supabase={supabase} extractPdfText={extractPdfText} customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -13051,6 +13279,20 @@ export default function App(){
 
   const receiveInvPO=(poId,receivedMap)=>{
     // receivedMap: {itemIdx: {size: qty, ...}, ...}
+    if(stockReceiptSaving.current.has(poId))return stockReceiptSaving.current.get(poId);
+    const po=invPOs.find(p=>p.id===poId);
+    if(!po)return Promise.resolve(false);
+    // Use the same positive quantities for inventory, receipt state, and the printed label.
+    receivedMap=Object.fromEntries(Object.entries(receivedMap||{}).filter(([idx])=>po.items[idx]).map(([idx,sizes])=>[idx,Object.fromEntries(Object.entries(sizes||{}).filter(([,q])=>Number.isFinite(q)&&q>0))]));
+    const label=buildStockReceiptLabel(po,receivedMap,window.location.origin+window.location.pathname);
+    if(!label)return Promise.resolve(false);
+    const saved=new Promise(resolve=>stockReceiptPending.current.push({poId,label,resolve}));
+    stockReceiptSaving.current.set(poId,saved);
+    // Reserve one desktop print window during the click; async window.open is blocked on tablets.
+    if(!mobileMode&&!stockReceiptWindow.current){
+      stockReceiptWindow.current=window.open('','_blank','width=460,height=680');
+      if(stockReceiptWindow.current)stockReceiptWindow.current.document.body.textContent='Saving stock check-in…';
+    }
     setInvPOs(prev=>prev.map(po=>{
       if(po.id!==poId)return po;
       const updatedItems=po.items.map((it,idx)=>{
@@ -13066,8 +13308,6 @@ export default function App(){
       return{...po,items:updatedItems,status:newStatus,received_at:allReceived?new Date().toLocaleString():po.received_at,received_by:allReceived?cu?.name:po.received_by};
     }));
     // Update product inventory
-    const po=invPOs.find(p=>p.id===poId);
-    if(!po)return;
     const adjLogs=[];
     Object.entries(receivedMap).forEach(([idx,szMap])=>{
       const poItem=po.items[parseInt(idx)];if(!poItem)return;
@@ -13084,7 +13324,7 @@ export default function App(){
       setInvAdjLog(prev=>[...adjLogs.map(l=>({...l,id:_newInventoryAdjustmentId()})),...prev].slice(0,2000));
       logChange('po_received','Inventory PO',po.po_number,adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
     }
-    nf('PO '+po.po_number+' items received — inventory updated');
+    return saved;
   };
 
   const printInvPOPackingList=(po)=>{
@@ -13838,7 +14078,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('active_art_timers',activeArtTimers)},[activeArtTimers]);
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
-  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.',ccFeePct:0.029,paymentNote:''}));
+  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',PORTAL_SETTINGS_DEFAULTS));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
 
   // ─── COMPUTED TODOS (shared between desktop dashboard and mobile portal) ───
@@ -14155,6 +14395,21 @@ export default function App(){
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
     savSO({...so,jobs:updatedJobs});
   };
+  // Numbers/names changed on the SO after this job was lined up (see lib/rosterChangeAlert).
+  // "Reprinted" is the only thing that clears it — savSO carries it across every other save.
+  const ackRosterChange=(j)=>{updateJobField(j,{_rosterAck:true,roster_change:null});setProdJobModal(pm=>pm&&pm.id===j.id?{...pm,roster_change:null}:pm);nf('Marked reprinted — '+j.id)};
+  const rosterChangeBanner=(j,big)=>{
+    const rc=j?.roster_change;if(!rc||!Array.isArray(rc.changes)||!rc.changes.length)return null;
+    const when=rc.at?new Date(rc.at).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    const shown=rc.changes.slice(-(big?20:3));
+    return<div role="alert" style={{background:'#fef2f2',border:'2px solid #dc2626',borderRadius:big?8:6,padding:big?'12px 16px':'6px 8px',margin:big?'12px 20px':'0 0 6px'}} onClick={e=>e.stopPropagation()}>
+      <div style={{fontSize:big?14:10,fontWeight:800,color:'#b91c1c'}}>⚠️ Numbers/names changed — reprint the sheet</div>
+      <div style={{fontSize:big?11:9,color:'#7f1d1d',marginTop:2}}>{[rc.by,when].filter(Boolean).join(' · ')}</div>
+      {shown.map((c,i)=><div key={i} style={{fontSize:big?13:10,fontWeight:700,color:'#991b1b',marginTop:2}}>{describeRosterChange(c)}</div>)}
+      {rc.changes.length>shown.length&&<div style={{fontSize:big?11:9,color:'#7f1d1d'}}>+{rc.changes.length-shown.length} more</div>}
+      <button className="btn btn-sm" style={{marginTop:6,fontSize:big?12:9,padding:big?'6px 12px':'3px 8px',background:'#dc2626',color:'white',border:'none',width:big?'auto':'100%'}} onClick={e=>{e.stopPropagation();ackRosterChange(j)}}>Sheet reprinted ✓</button>
+    </div>;
+  };
   // Set the manual link group on a job living on another sales order (used by OrderEditor when
   // a rep links jobs across sub-customers). Persists via savSO so state + DB stay in sync.
   const setJobLinkGroup=(soId,jobId,groupId)=>{
@@ -14288,6 +14543,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      <FulfillmentPlanning onOpenJob={p=>{const so=sos.find(s=>s.id===p.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOTab('jobs');setPg('orders')}}} />
       {/* Linked/shared-screen jobs no longer surface as banners here — they travel together in the
           list and board (clusterLinked keeps siblings adjacent) and carry a 🔗 badge + colored
           left border on each row, so the run-together signal lives inline with the jobs. */}
@@ -14357,6 +14613,7 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
+                  {rosterChangeBanner(j,false)}
                   {/* Dual-run: art + numbers run order */}
                   {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
                     {!j.run_order?<div>
@@ -14611,9 +14868,9 @@ export default function App(){
         const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         // Print Production PDF — delegates to the shared buildProdSheetOpts (top of file) so
         // this modal and the SO editor's Jobs-tab download button always emit the same sheet.
-        const _buildProdPdfOpts=()=>buildProdSheetOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS});
+        const _buildProdPdfOpts=async()=>buildProdSheetOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(j,so))});
         const printProdPDF=async()=>{
-          const opts=_buildProdPdfOpts();
+          const opts=await _buildProdPdfOpts();
           // Async appendix: probe Cloudinary PDF pages for the digitizer's run sheet.
           let appendixHtml='';
           if(j.deco_type==='embroidery'){
@@ -14643,7 +14900,7 @@ export default function App(){
           }
           printDoc({...opts,appendixHtml});
         };
-        const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(_buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
+        const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(await _buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
         // New National Team Shop Work Order sheet — separate renderer; leaves the
         // legacy Production Job Sheet (above) fully intact.
         const _buildWO=()=>buildWorkOrderDoc(buildWorkOrderOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS}));
@@ -14748,7 +15005,7 @@ export default function App(){
                           const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
                         const _nnColorEl=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
                           if(own.length)return<span style={{fontSize:11,color:'#1e293b'}}> — {own.join(' / ')}</span>;
-                          if(_frontInks.length)return<span style={{fontSize:10,color:'#92400e',fontWeight:600}}> — Not set, front inks: {_frontInks.join(', ')}</span>;
+                          if(_frontInks.length)return<span style={{fontSize:10,color:'#92400e',fontWeight:600}}> — Not set, front {(nd.num_method||nd.name_method)==='embroidery'?'threads':'inks'}: {_frontInks.join(', ')}</span>;
                           return<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}> — ⚠ Color not specified</span>};
                         return<>
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
@@ -14827,6 +15084,7 @@ export default function App(){
               </div>})()}
             </div>}
 
+            {rosterChangeBanner(j,true)}
             {/* Compact job-level info: machine + assigned */}
             {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
               {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>
@@ -15074,6 +15332,29 @@ export default function App(){
     const removeFromQueue=(bp,itemIndex=null)=>{
       if(!window.confirm(itemIndex==null?'Remove this PO from the queue? Its sales-order items will remain.':'Remove '+bp.items[itemIndex].sku+' from this batch? Its sales-order item will remain.'))return;
       return saveQueueChange(bp,(current,so)=>planQueuedBatchRemoval(current,so,itemIndex),itemIndex==null?'PO removed from queue':'Item removed from batch');
+    };
+    // Orphan removal (SO-2444). The order never received this entry's garment line, so there is no
+    // queued PO line to undo and the normal planner refuses ("linked queued PO could not be found").
+    // Confirm in the database that nothing links to this entry — this tab's order list could be stale —
+    // then drop only the queue entry.
+    const removeOrphanFromQueue=async(bp)=>{
+      if(bp.all_school_allocation_id)return;
+      if(!bp.po_id){nf('This entry has no PO number to verify against. Reload and try again.','error');return}
+      if(!window.confirm('Remove '+bp.po_id+' from the queue?\n\nIts garment line is not on '+bp.so_id+', so nothing on the order changes.'))return;
+      const groupKey=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');
+      if(_batchOrderingRef.current.has(groupKey)){nf('This batch is being saved or ordered. Please wait.','warn');return}
+      _batchOrderingRef.current.add(groupKey);setRemovingBatchId(bp.id);
+      try{
+        if(!supabase)throw new Error('A live database connection is required.');
+        const{data,error}=await supabase.from('so_item_po_lines').select('sizes').eq('po_id',bp.po_id);
+        if(error)throw new Error('Could not check the order: '+error.message+'.');
+        if(dbRowsLinkEntry(data,bp.id))throw new Error(bp.so_id+' does hold this PO line now — reload the page.');
+        const next=(_visFlushRefs.current.batchPOs||batchPOs).filter(b=>b.id!==bp.id);
+        _visFlushRefs.current={..._visFlushRefs.current,batchPOs:next};
+        setBatchPOs(next);setEditingBatchId(null);
+        nf(bp.po_id+' removed from the queue');
+      }catch(err){console.error('[removeOrphanFromQueue]',err);nf(err.message+' The queue entry was kept.','error')}
+      finally{_batchOrderingRef.current.delete(groupKey);setRemovingBatchId(null)}
     };
     // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
     // (write-in address > decorator > drop-ship program address > NSA warehouse).
@@ -15440,17 +15721,19 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header" onClick={()=>setExpandedVendors(p=>({[gk]:!p[gk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
-              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+              <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div>{_grpOrph.length>0&&<div style={{fontSize:11,fontWeight:700,color:'#b91c1c',marginTop:3}}>⚠ {_grpOrph.length} not on {_grpOrph.length===1?'its order':'their orders'} — open to fix</div>}</div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
-                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
+                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();if(_blockOrph())return;
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
@@ -15477,6 +15760,8 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        // Orphan guard (SO-2444): entries whose garment line never reached the order block ordering.
+        const _grpOrph=orphanedBatchEntries(vg.pos,sos);const _blockOrph=()=>{if(_blockUnloadedBatch(vg.pos))return true;if(!_grpOrph.length)return false;nf('Not ordered — '+_grpOrph.map(bp=>(bp.po_id||bp.id)+' / '+bp.so_id).join(', ')+(_grpOrph.length===1?' is':' are')+' not on '+(_grpOrph.length===1?'its sales order':'their sales orders')+'. Remove '+(_grpOrph.length===1?'it':'them')+' from the queue first.','error');return true};
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -15485,7 +15770,8 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[gk]:false}))}>Collapse ▲</button>
           </div>
           <div className="card-body" style={{padding:0}}>
-            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
+            {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;const _orphan=batchEntryLinkState(bp,sos.find(s=>s.id===bp.so_id))==='missing_line';return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':_orphan?'#fef2f2':'transparent'}}>
+              {_orphan&&<div role="alert" style={{marginBottom:8,padding:'7px 10px',borderRadius:6,border:'1px solid #fecaca',background:'white',fontSize:12,color:'#991b1b',fontWeight:600}}>⚠ Not on {bp.so_id}. This garment line never saved to the order, so ordering it would buy goods for nothing. Remove it from the queue (nothing on the order changes), then add it again from the order if it's still needed.</div>}
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
                 <div style={{minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -15497,13 +15783,13 @@ export default function App(){
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id||!!removingBatchId||_orphan} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove this PO from the open queue" disabled={!!bp.all_school_allocation_id||!!removingBatchId} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>_orphan?removeOrphanFromQueue(bp):removeFromQueue(bp)}>{removingBatchId===bp.id?'Saving…':'Remove from queue'}</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  {!_orphan&&<button disabled={!!bp.all_school_allocation_id||!!removingBatchId} title={'Remove '+it.sku+' from batch'} onClick={()=>removeFromQueue(bp,i)} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>}
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -15557,7 +15843,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(_blockUnloadedBatch(vg.pos))return;if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
                   setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>
@@ -15566,6 +15852,7 @@ export default function App(){
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={async()=>{
+                if(_blockOrph())return;
                 if(!window.confirm('Create '+nextPO+' as a MANUAL order for '+vg.name+'?\n\nThis only records the PO in NSA. It does NOT send anything to the vendor. You must place the order manually with the company.'))return;
                 const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
@@ -15574,11 +15861,12 @@ export default function App(){
                 setPg('batch_pos');
               }}>Manual Order · {nextPO}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>{
+                if(_blockOrph())return;
                 // Decorator-bound group (vendor:decoId): the S&S order must ship to the
                 // DECORATOR with the DPO on the attention line — not the NSA warehouse. Resolve
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
@@ -15589,7 +15877,7 @@ export default function App(){
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
+              onClick={()=>{if(_blockOrph())return;const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -15863,27 +16151,8 @@ export default function App(){
     setViewInvoice(null);
   };
 
-  // ── OMG invoice + settlement in one step ─────────────────────────────
-  // OMG money is collected by the platform before the store is even ported,
-  // so the invoice is an internal accounting document against funds already
-  // in hand — there's nothing to wait for. Builds the same full invoice a
-  // manual create would (blended per-size sells + deco sells + flat shipping,
-  // tax-exempt) and stamps the gross store-funds payment at birth: paid in
-  // full when customer collections cover the total, else paid to exactly
-  // what was collected so a shortfall stays visible as a
-  // partial balance. If the Accounting Report isn't entered yet the invoice
-  // is created open and the settlement queue keeps flagging the store.
-  // Idempotent: skips SOs that already carry any invoice, and the
-  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert. The
-  // customer payment is GROSS. OMG/card fees are separate deposit deductions
-  // (57000/71400); netting them against the invoice would leave a false A/R
-  // balance equal to the fees.
-  // Called at store port (createOmgSO) and from the settlement queue.
-  const createAndSettleOmgInvoice=(so)=>{
-    if(!so||!so.omg_store_id)return null;
-    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
-    if(!acquireOmgCreationGuard(omgInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
-    const store=(omgStores||[]).find(x=>x.id===so.omg_store_id);
+  // Reuse the existing OMG pricing engine; the server owns invoice/payment identity.
+  const buildOmgCloseoutInvoice=so=>{
     const c=cust.find(x=>x.id===so.customer_id);
     const af=safeArt(so);
     const artQty={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
@@ -15898,90 +16167,43 @@ export default function App(){
     const sub=lineItems.reduce((a,l)=>a+l.amount,0);
     const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
     const total=Math.round((sub+ship)*100)/100;
-    const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
-    const applied=calculateOmgInvoicePayment(acct,total);
-    const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
-    const dateStr=new Date().toLocaleDateString('en-CA');
-    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
-    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
-    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:omgInvoiceIdempotencyKey(so),
-      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
-      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
-      memo:'Invoice — '+(so.memo||so.id),_rep:so.created_by||cu?.id||null,
-      tax:0,tax_rate:0,tax_exempt:true,shipping:ship,
-      ...(so.po_number?{_po_number:so.po_number}:{}),
-      line_items:lineItems,
-      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
-      payments:applied>0?[{amount:applied,method:'store',ref:'OMG '+saleCode,date:payDate,cc_fee:0}]:[],
-      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
-    setInvs(prev=>[inv,...prev]);
-    logChange('create','Invoice',inv.id,'Auto-created from OMG store '+saleCode+(applied>0?' — $'+applied.toFixed(2)+' store funds applied':''));
-    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from store funds 🏫':applied>0?' — $'+applied.toFixed(2)+' store funds applied, shortfall left open':' — open (Accounting Report not entered yet)'));
-    return inv;
+    return {line_items:lineItems,total,shipping:ship};
   };
-
-  // ── Webstore invoice + settlement in one step ────────────────────────
-  // Webstore card orders are pre-paid via NSA's own Stripe at checkout, so by
-  // batch time the money is in hand. The batcher prices SO items so their sum
-  // reconciles to the PRODUCT (+fundraise) collected; tax/shipping/processing
-  // ride on top of each Stripe charge but aren't SO lines. This builds one
-  // invoice for the whole SO — product lines plus the TEAM-TAB orders' extras
-  // (their tax/ship/processing, carried in the shipping field) — and stamps
-  // the Stripe-collected share as a 'store' payment at birth. Net effect: the
-  // invoice's open balance is EXACTLY the team-tab gross the club still owes
-  // (the production note's "invoice the club for the team-tab total only"),
-  // while the card revenue still flows through the invoice for commissions,
-  // AR and reports. No team-tab → invoice is born fully paid.
-  // settle: {cardTotal, tabTotal, tabExtras} — from the batch flow, or rebuilt
-  // from webstore_orders sums for queue-driven backlog settles. All amounts
-  // are clamped so a data surprise can only under-apply (visible partial),
-  // never overpay. Idempotent: any-invoice guard + the 'WEB <so id>' ref.
-  const createAndSettleWebstoreInvoice=async(so,settle)=>{
-    if(!so||so.omg_store_id)return null;
-    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
-    if(!acquireOmgCreationGuard(webstoreInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
-    const r2=n=>Math.round((+n||0)*100)/100;
-    const c=cust.find(x=>x.id===so.customer_id);
-    const lineItems=safeItems(so).map(it=>{
-      const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
-      if(!qty)return null;
-      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell),amount:r2(qty*safeNum(it.unit_sell)),_sku:it.sku,_name:it.name,_color:it.color};
-    }).filter(Boolean);
-    const itemsTotal=r2(lineItems.reduce((a,l)=>a+l.amount,0));
-    const tabGross=Math.max(0,r2(settle?.tabTotal||0));
-    const tabExtras=Math.min(Math.max(0,r2(settle?.tabExtras||0)),tabGross);
-    const total=r2(itemsTotal+tabExtras);
-    // Card share = whatever of the invoice the team-tab doesn't owe, capped at
-    // what Stripe actually collected.
-    const applied=r2(Math.min(Math.max(0,total-tabGross),Math.max(0,r2(settle?.cardTotal||0))));
-    const dateStr=new Date().toLocaleDateString('en-CA');
-    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
-    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
-    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-    const ref='WEB '+so.id;
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:webstoreInvoiceIdempotencyKey(so),
-      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
-      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
-      memo:'Invoice — '+(so.memo||so.id)+(tabExtras>0?' (shipping line = team-tab tax/ship/processing)':''),
-      _rep:so.created_by||cu?.id||null,
-      tax:0,tax_rate:0,tax_exempt:true,shipping:tabExtras,
-      line_items:lineItems,
-      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
-      payments:applied>0?[{amount:applied,method:'store',ref,date:payDate,cc_fee:0}]:[],
-      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
+  const [storeCloseoutReview,setStoreCloseoutReview]=useState(null);
+  const closeStoreLocks=useRef(new Set());
+  const closeStore=async (so,reviewSubmission=null)=>{
+    if(!so||!supabase||(!so.omg_store_id&&!so.webstore_id))return null;
+    if(!acquireOmgCreationGuard(closeStoreLocks.current,so.id))return null;
     try{
-      const ok=await _dbSaveInvoice(inv);
-      if(!ok){nf('Invoice for '+so.id+' did not finish saving — it remains in the retry queue.','error');return null}
-      setInvs(prev=>prev.some(i=>i.id===inv.id||i.so_id===so.id)?prev:[inv,...prev]);
-      logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
-      nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
-      return inv;
-    }catch(e){console.error('[Webstore] invoice save failed:',e);nf('Invoice for '+so.id+' failed to save: '+(e.message||e),'error');return null}
-    finally{webstoreInvoiceCreating.current.delete(so.id)}
+      const savePending=dirtyRef.current||_dbSavePendingIds.has(so.id)||_dbSaveFailedIds.has(so.id)||[so._itemsHydrated,so._posHydrated,so._decosHydrated,so._jobsHydrated].includes(false);
+      if(reviewSubmission?.action==='close'&&savePending)throw new Error('Save the sales order and wait for saving to finish before Close Store.');
+      const{data:session}=await supabase.auth.getSession();
+      const response=await fetch('/.netlify/functions/close-store',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session?.session?.access_token||'')},body:JSON.stringify({soId:so.id,version:Number(reviewSubmission?.action==='follow_up'?reviewSubmission.version:so._version),action:reviewSubmission?.action||'inspect',review:reviewSubmission,invoice:reviewSubmission?.action==='close'&&so.omg_store_id?buildOmgCloseoutInvoice(so):null})});
+      const result=await response.json();
+      if(result.todo){stageDocumentBaseline(_dbSnap,'assignedTodos',result.todo);setAssignedTodos(prev=>prev.some(t=>t.id===result.todo.id)?prev.map(t=>t.id===result.todo.id?result.todo:t):[result.todo,...prev])}
+      if(!response.ok||!result.ok)throw new Error(result.error||'Closeout was not confirmed. Reload before retrying.');
+      if(!reviewSubmission)return new Promise(resolve=>{setStoreCloseoutReview(previous=>{previous?.resolve(null);return {so,status:{...result.review_status,save_pending:savePending},resolve}})});
+      if(result.follow_up_saved){storeCloseoutReview?.resolve(null);setStoreCloseoutReview(null);nf('Review saved. Rep follow-up assigned; store remains open.');return null}
+      setStoreCloseoutReview(null);
+      const updated={...so,...result.sales_order};
+      storeCloseoutReview?.resolve(updated);
+      const inv={...result.invoice,payments:result.payments,_paymentsHydrated:true};
+      stageDocumentBaseline(_dbSnap,'sos',updated);
+      stageDocumentBaseline(_dbSnap,'invs',inv);
+      setSOs(prev=>prev.map(x=>x.id===so.id?updated:x));
+      setESO(prev=>prev?.id===so.id?updated:prev);
+      setInvs(prev=>prev.some(x=>x.id===inv.id)?prev.map(x=>x.id===inv.id?inv:x):[inv,...prev]);
+      if(result.todo){
+        stageDocumentBaseline(_dbSnap,'assignedTodos',result.todo);
+        setAssignedTodos(prev=>prev.some(t=>t.id===result.todo.id)?prev.map(t=>t.id===result.todo.id?result.todo:t):[result.todo,...prev]);
+      }
+      nf('Store closed — costs confirmed and existing payments reconciled'+(Number(inv.total)>Number(inv.paid)?'. Remaining balance: $'+(Number(inv.total)-Number(inv.paid)).toFixed(2):'.'));
+      return updated;
+    }catch(e){if(reviewSubmission)throw e;nf(e.message||'Close Store failed; reload before retrying.','error');return null}
+    finally{closeStoreLocks.current.delete(so.id)}
   };
-
-;
+  const createAndSettleOmgInvoice=so=>closeStore(so);
+  const createAndSettleWebstoreInvoice=so=>closeStore(so);
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
@@ -18813,7 +19035,6 @@ export default function App(){
               if(!force&&sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               if(!s.rep_id){nf('Assign a sales rep to this store first — use the rep dropdown next to the customer at the top.','error');return}
-              const generatedId=nextSOId(sos);
               // Every product must be assigned an art group or explicitly marked
               // "No Deco" (shoes, socks, equipment) before it can become an SO.
               const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
@@ -18897,6 +19118,7 @@ export default function App(){
                 const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
                 _shadowWs=ws||null;
               }catch(e){console.warn('[OMG] shadow store lookup failed:',e.message)}}
+              const generatedId=await mintSOId(sos);
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
@@ -18923,9 +19145,7 @@ export default function App(){
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              // OMG funds are already collected, so invoice + settle at port —
-              // paid in full when the net remit covers it, partial otherwise.
-              createAndSettleOmgInvoice(newSO);
+              // Accounting waits for Close Store after fulfillment and cost review.
               // Link the OMG parent orders (shadow webstore) to this SO via their
               // so_id. webstore_id itself now rides the SO object through the
               // normal save path (set at construction above), so no direct
@@ -19037,14 +19257,7 @@ export default function App(){
                 onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
                 📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
             </div>}
-            {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
-              if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
-              if(rec&&!rec.baseline){
-                // With a linked SO the reminder fires when its final job finishes; without
-                // one, the 6-week safety-net countdown applies.
-                if(sos.some(so=>so.omg_store_id===s.id&&!so.deleted_at))return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds when the SO's final job finishes</div>;
-                const days=Math.ceil((OMG_FUNDS_WINDOW_MS-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'} (no SO yet)</div>}
-              return null})()}
+            <div style={{marginTop:6,fontSize:11,color:'#64748b'}}>Close Store from its sales order after shipment and cost review. Outside fulfillment gets a rep closeout check 35 days after SO creation.</div>
           </div>
         </div></div>
 
@@ -20468,8 +20681,8 @@ export default function App(){
           seen[key]=g;out.push(g);
         }
       });
-      // Sort: urgent (due-soon) pinned on top, then oldest-first by days open.
-      out.sort((a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(b.openDays||0)-(a.openDays||0)});
+      // Aging protection first, then 24/7 Quick Pulls in the same queue.
+      out.sort(compareWarehousePulls);
       return out;
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
@@ -20501,14 +20714,13 @@ export default function App(){
       const shippedSizes=shippedSizesByLine(so._shipments);
       const rows=[];
       if(t.type==='deco_done'&&t.job){
-        const shippedByGi=jobShippedSizes(t.job,safeJobs(so),shippedSizes);
+        // Same helper the queue uses to decide the job shows and its unit count — one rule, so a
+        // card can never claim units it has no rows for.
+        const remByGi=jobUnshippedSizes(t.job,so,shippedSizes);
         (t.job.items||[]).forEach((gi,gidx)=>{
           if(!gi)return;
           const it=items[gi.item_idx]||{};
-          // A split slice carries its own per-size allocation; a whole-line job item takes the line.
-          const base=(gi.sizes&&Object.keys(gi.sizes).length)?gi.sizes:safeSizes(it);
-          const shipped=shippedByGi[gidx]||{};
-          const sizes={};Object.entries(base).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)sizes[sz]=rem});
+          const sizes=remByGi[gidx]||{};
           const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
           // unitKey identifies the physical garments this row covers: slices of one split family
           // partition a line (they add up), while separate jobs on the same line are decoration
@@ -21479,6 +21691,7 @@ export default function App(){
                   <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
                   <input type="date" id="wh-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
                 </div>
+                {soPOLines.length>0&&<DockArrivalButton key={poId} buildLines={()=>soPOLines.flatMap((pl,idx)=>poItems[idx].szKeys.map(size=>({so_id:pl.soId,item_index:pl.itemIdx,po_id:pl.poLine.po_id,size,qty:Number(document.getElementById('wh-rcv-'+idx+'-'+size)?.value)||0})).filter(line=>line.qty>0))} />}
                 <button className="btn btn-primary" disabled={whReceiving} style={{background:whReceiving?'#86efac':'#22c55e',borderColor:'#22c55e',padding:'8px 20px',marginLeft:'auto',fontSize:13,fontWeight:800,opacity:whReceiving?0.6:1}} onClick={()=>{
                   if(whReceiving)return;
                   // Batch-read all receive input values upfront to avoid repeated DOM queries
@@ -21637,6 +21850,7 @@ export default function App(){
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
+        <div style={{fontSize:12,color:'#475569',marginBottom:10}}>Pulls waiting more than 5 days come first, then 24/7 Quick Pulls. Confirm each physical pull before production.</div>
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         (()=>{
         // Bulk reject. Selection is intersected with the VISIBLE rows, so changing the search
@@ -21673,7 +21887,7 @@ export default function App(){
             onClick={t.pickId?_rowNav({pg:'item_fulfillment',if:t.pickId},()=>openIF(t.pickId)):()=>setWhViewIF(t)}>
             <td style={{textAlign:'center'}} onClick={e=>e.stopPropagation()}>{t.pickId?<input type="checkbox" checked={whSelIFs.has(t.pickId)} onChange={e=>toggle(t.pickId,e.target.checked)}/>:null}</td>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
-            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}{t.quickPull&&<div style={{fontSize:10,color:'#0f766e',fontWeight:800}}>24/7 · Quick Pull</div>}{t.openAgeDays>5&&<div style={{fontSize:10,color:'#b45309'}}>Waiting over 5 days</div>}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
@@ -21837,6 +22051,13 @@ export default function App(){
                         onClick={()=>whOpenPackSlip(grp,[sec])}>🖨️ Pack Slip</button>
                     </div>}
                   </div>})}
+                {/* Finished jobs whose garments are all already in shipments — the job's status just never
+                    flipped to shipped (e.g. a later save from another screen reverted it). Say so, so
+                    Mark Shipped reads as "close it out", not "ship something I can't see". */}
+                {(()=>{const done=grpRows.filter(s=>!s.rows.length&&s.task.type==='deco_done');if(!done.length)return null;
+                  return<div style={{marginBottom:8,padding:'6px 8px',background:'#f0fdf4',borderRadius:6,border:'1px dashed #86efac',fontSize:11,color:'#166534'}}>
+                    ✅ Already shipped — nothing left to pack for {done.map(s=>s.task.job.id).join(', ')}. Click <strong>Mark Shipped</strong> to close {done.length===1?'it':'them'} out.
+                  </div>})()}
                 {shownSecs.length>1&&<div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginTop:8}}>All {shownSecs.length} jobs together</div>}
                 <div style={{display:'flex',gap:6,marginTop:shownSecs.length>1?4:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -21852,6 +22073,13 @@ export default function App(){
                     onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>whOpenPackSlip(grp,grpRows)}>🖨️ Pack Slip</button>
+                  {/* Push-through for when this card's data is wrong: the full Ship / Override tool,
+                      already opened on this card's order (or its customer when the card spans orders). */}
+                  <button title="Something wrong with this card? Ship any line on the order, buy a label, and mark jobs shipped by hand"
+                    className="btn btn-sm" style={{fontSize:10,background:'white',color:'#b45309',border:'1px solid #f59e0b',padding:'4px 10px',fontWeight:700,marginLeft:'auto'}}
+                    onClick={()=>{const sids=[...grp.soIds];const so1=grp.soMap[sids[0]];
+                      if(sids.length===1)openManualShipForSO(so1);
+                      else{const c2=cust.find(cc=>cc.id===so1?.customer_id);setManualShipModal({custSearch:'',custFilter:c2||null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}}}>⚡ Override</button>
                 </div>
                 </>}
               </div>
@@ -22064,6 +22292,35 @@ export default function App(){
           <div className="modal-body" style={{padding:16}}>
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
             {(()=>{const soShipCosts=[...shipModal.grp.soIds].map(sid=>{const so2=shipModal.soMap[sid];if(!so2)return null;const c2=cust.find(cc=>cc.id===so2.customer_id);let rev=0;safeItems(so2).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;rev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const dp2=dP(d,q2,safeArt(so2),q2);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);rev+=eq*dp2.sell})});const ship=so2.shipping_type==='pct'?rev*(so2.shipping_value||0)/100:(so2.shipping_value||0);return{id:sid,ship,type:so2.shipping_type,value:so2.shipping_value}}).filter(Boolean);const totalShip=soShipCosts.reduce((a,s)=>a+s.ship,0);return totalShip>0?<div style={{fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:12,padding:'4px 8px',background:'#eff6ff',borderRadius:4}}>Shipping on order: ${totalShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}{soShipCosts.length===1&&soShipCosts[0].type==='pct'?' ('+soShipCosts[0].value+'% of order)':''}</div>:null})()}
+
+            {/* Escape hatch: the card's list comes from job/shipment records. When those are off (a box
+                recorded but voided, a job snapshot that drifted, a line with no job) the warehouse must
+                still be able to pack what is physically on the table — so let them pull in any line on
+                the order. Unshipped lines first; already-recorded lines only on a second, explicit click. */}
+            {(()=>{
+              const have=new Set((shipModal.availableItems||[]).map(ai=>ai.soId+'|'+ai.itemIdx));
+              const soEntries=Object.entries(shipModal.soMap||{});
+              const extraUnshipped=[];const extraAll=[];
+              soEntries.forEach(([sid,so2])=>{
+                const un=unshippedOrderItems(so2);const unIdx=new Set(un.map(r=>r.itemIdx));
+                un.forEach(r=>{if(!have.has(sid+'|'+r.itemIdx))extraUnshipped.push({sku:r.sku,name:r.name,color:r.color||'',sizes:{...r.sizes},soId:sid,itemIdx:r.itemIdx})});
+                safeItems(so2).forEach((it2,ix)=>{
+                  if(have.has(sid+'|'+ix)||unIdx.has(ix))return;
+                  const sz={};Object.entries(safeSizes(it2)).forEach(([k,v])=>{if(safeNum(v)>0)sz[k]=safeNum(v)});
+                  if(Object.keys(sz).length)extraAll.push({sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:sz,soId:sid,itemIdx:ix,_recordedShipped:true});
+                });
+              });
+              if(!extraUnshipped.length&&!extraAll.length)return null;
+              const add=(rows,msg)=>{setShipModal(m=>({...m,availableItems:[...(m.availableItems||[]),...rows],_overrideUsed:true}));nf(msg)};
+              const empty=(shipModal.availableItems||[]).length===0;
+              return<div style={{marginBottom:12,padding:'8px 10px',background:empty?'#fffbeb':'#f8fafc',border:'1px dashed '+(empty?'#f59e0b':'#cbd5e1'),borderRadius:6,fontSize:11,color:'#475569',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span>{empty?'⚠️ Nothing is listed for this card, but you can still ship what you have.':'Packing something that isn\'t listed below?'}</span>
+                {extraUnshipped.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>add(extraUnshipped,'Added '+extraUnshipped.length+' unshipped line'+(extraUnshipped.length!==1?'s':'')+' from the order')}>+ Add other unshipped lines from the order ({extraUnshipped.length})</button>}
+                {extraAll.length>0&&<button className="btn btn-sm" style={{fontSize:10,background:'white',color:'#92400e',border:'1px solid #f59e0b',padding:'3px 10px',fontWeight:700}}
+                  onClick={()=>{if(window.confirm('These lines are already recorded as shipped on the order. Only add them if the garments are physically here and going out in this box — the rep will see a second shipment for them.\n\nAdd them?'))add(extraAll,'Added '+extraAll.length+' line'+(extraAll.length!==1?'s':'')+' already recorded as shipped')}}>+ Lines already recorded shipped ({extraAll.length})</button>}
+              </div>;
+            })()}
 
             {/* Boxes */}
             {shipModal.boxes.map((box,bi)=>{
@@ -22379,7 +22636,9 @@ export default function App(){
                     shipping_cost:box.shipping_cost||0,
                     weight:box.weight||5,
                     items:(box.items||[]).map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
-                    notes:box.notes||'',
+                    // Flag boxes packed with lines the card didn't list, so the office can see the data was off.
+                    notes:(box.notes||'')+(shipModal._overrideUsed?((box.notes?' · ':'')+'Warehouse override: lines added from the order'):''),
+                    ...(shipModal._overrideUsed?{warehouse_override:true}:{}),
                     created_by:cu?.id||'',
                     created_at:new Date().toLocaleString()
                   }));
@@ -22458,7 +22717,8 @@ export default function App(){
             </div>
             <div className="modal-body" style={{padding:16}}>
               <div style={{fontSize:12,color:'#475569',marginBottom:12,lineHeight:1.5}}>
-                This marks everything left on <strong>{soIds.join(', ')}</strong> as <strong>shipped</strong> and clears it from Ready to Ship — no label or tracking is created. Use it when the order already went out another way.
+                {totUnits>0?<>This marks everything left on <strong>{soIds.join(', ')}</strong> as <strong>shipped</strong> and clears it from Ready to Ship — no label or tracking is created. Use it when the order already went out another way.</>
+                  :<>Everything on <strong>{soIds.join(', ')}</strong> is already covered by shipments — this just closes the job{clearShipModal.grp.items.length!==1?'s':''} out as shipped. No new package is created.</>}
               </div>
               <div style={{display:'flex',gap:10,flexWrap:'wrap',padding:'8px 12px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8,marginBottom:14,fontSize:12}}>
                 <span><strong style={{color:'#0f766e'}}>{soIds.length}</strong> order{soIds.length!==1?'s':''}</span>
@@ -24457,8 +24717,8 @@ export default function App(){
             <summary style={{padding:'10px 14px',cursor:'pointer',fontSize:13,fontWeight:800,color:'#92400e'}}>🖼️ Web logos needed — reused art ({_need.length})
               <span style={{fontWeight:500,fontSize:11,color:'#a16207',marginLeft:8}}>Add a transparent PNG of the logo by itself, with the ink colors used for the selected artwork color way. It is saved on this order; you can also update reusable Art Library artwork for stores and future orders.</span></summary>
             <div style={{padding:'0 10px 10px'}}>
-              <div style={{fontSize:11,color:'#78350f',padding:'0 4px 8px'}}>Choose the artwork color way before uploading when it is missing. Use a PNG with transparency (no garment, mockup, or solid background); each color way may need its own version.</div>
-              <LogoDetailTiles title="Logo PNG needed — one per artwork color way" tiles={_need.map(n=>({key:n.key,url:'',bg:logoDetailBg(n.garmentColor,cwGarmentColor(n.art,n.colorWayId),n.side),needsColorWay:n.colorWayId===undefined,colorWays:logoColorWayOptions(n.art),
+              <div style={{fontSize:11,color:'#78350f',padding:'0 4px 8px'}}>Choose the artwork color way before uploading when it is missing. Use a PNG with transparency (no garment, mockup, or solid background); each color way may need its own version. The small picture under each box shows which design it is — click it to enlarge, or open the art files to export the PNG.</div>
+              <LogoDetailTiles title="Logo PNG needed — one per artwork color way" tiles={_need.map(n=>({key:n.key,url:'',bg:logoDetailBg(n.garmentColor,cwGarmentColor(n.art,n.colorWayId),n.side),needsColorWay:n.colorWayId===undefined,colorWays:logoColorWayOptions(n.art),ref:logoReferenceFor(n.art,n.item),soId:n.so.id,
               label:n.label+' — '+(n.job.customer||n.so.customer_id||'')+' · '+n.so.id,
               onChooseColorWay:async colorWayId=>{
                 const gi=(n.job.items||[]).find(item=>{const orderItem=(n.so.items||[])[item.item_idx];return orderItem?.color===n.garmentColor&&jobItemArtSlots(item,orderItem).some(({d})=>d.art_file_id===n.art.id&&(n.side==='B'?d.reversible&&resolveLogoColorWay(n.art,d.color_way_id_b,orderItem.color,'B')===undefined:resolveLogoColorWay(n.art,d.color_way_id,orderItem.color,'A')===undefined));});
@@ -24914,7 +25174,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} autoMock={stitchAutoMock(so,slot,gi)} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
                       {_linkChips(gi)}
                     </div>}
                     {/* Decoration spec */}
@@ -25572,7 +25832,7 @@ export default function App(){
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} autoMock={stitchAutoMock(so,slot,gi)} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
                   {/* Shared mock over several garment colors: the logo detail on each covered color way /
@@ -26709,12 +26969,21 @@ export default function App(){
       // PostgREST caps a single request at 1,000 rows whatever .limit() asks
       // for, and the ledger is past that: page through it so dedup and the
       // QuickBooks backfill see every applied bill, not the newest 1,000.
-      const data=[];
-      for(let from=0;from<20000;from+=1000){
-        const{data:page,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+999);
+      // Pages of 200: each row carries ~11KB of raw_meta, and a 1,000-row page took
+      // ~8s to serialize, so the second page hit the 8s statement_timeout (57014)
+      // and the whole ledger silently failed to load — Bill History and the QBO
+      // backfill then showed only this browser's local bills (2026-10-15: 2 vs 105).
+      const data=[];const PAGE=200;
+      for(let from=0;from<20000;from+=PAGE){
+        let page=null,error=null;
+        for(let attempt=0;attempt<3;attempt++){
+          ({data:page,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+PAGE-1));
+          if(!error)break;
+          await new Promise(r=>setTimeout(r,1000*(attempt+1)));
+        }
         if(error)throw error;
         data.push(...(page||[]));
-        if(!page||page.length<1000)break;
+        if(!page||page.length<PAGE)break;
       }
       (data||[]).forEach(r=>{
         if(r.status&&r.status!=='pushed')return;// only applied rows may dedup (future holds-merge rows must not)
@@ -26722,7 +26991,7 @@ export default function App(){
         if(r.si_doc_number)_appliedLedger.current.add(_appliedLedgerKey('s',r.si_doc_number,r.is_credit));
       });
       setServerBills((data||[]).filter(r=>!r.status||r.status==='pushed'));
-    }catch(e){_appliedLedgerLoaded.current=false;/* retry on next import visit; SO-scan dedup still guards meanwhile */}
+    }catch(e){_appliedLedgerLoaded.current=false;console.warn('applied bills ledger load failed',e);nf('Bill history could not load from the server — counts on this page only show this computer\'s bills. Reload the page to try again.','error');/* retry on next import visit; SO-scan dedup still guards meanwhile */}
   };
   // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
   // before any manual pull, so the dedup sees server holds; a teammate's mid-session hold is picked
@@ -32083,7 +32352,7 @@ export default function App(){
                 // fails to load (stale deploy → 404 → lazyRetry reload), the import data is already
                 // safe in the database and the user can find it on the list view after re-login.
                 if(imp.docType==='so'){
-                  const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
+                  const newSO={id:await mintSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
                     created_by:cu.id,created_at:now,updated_at:now,
                     expected_date:'',production_notes:nsRef+(imp.linkedSoId?' | Linked: '+imp.linkedSoId:''),
                     shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
@@ -32127,7 +32396,7 @@ export default function App(){
                       nf('✅ PO imported and linked to '+imp.linkedSoId);
                     }
                   } else {
-                    const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:poMemo,status:'need_order',
+                    const newSO={id:await mintSOId(sos),customer_id:imp.custId,memo:poMemo,status:'need_order',
                       created_by:cu.id,created_at:now,updated_at:now,
                       expected_date:'',production_notes:nsRef+' — Purchase Order import',
                       shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
@@ -38812,9 +39081,9 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'receive_payments',label:'Receive Payments',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'methodic',label:'Custom Ops',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'receive_payments',label:'Receive Payments',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'store_request',label:'Start a Store',icon:'store',roles:['admin','super_admin']},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'methodic',label:'Custom Ops',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',receive_payments:'Receive Payments',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',methodic:'Custom Ops',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',item_fulfillment:'Item Fulfillment',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',receive_payments:'Receive Payments',omg:'OMG Team Stores',webstores:'Club Webstores',store_request:'Start a Store',jobs:'Jobs',uniforms:'Uniform Jobs',methodic:'Custom Ops',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',item_fulfillment:'Item Fulfillment',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -38912,7 +39181,8 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  const stockReceiptDialog=<StockReceiptDialog labels={stockReceiptLabels} onPrint={()=>printQrLabels(stockReceiptLabels)} onClose={()=>setStockReceiptLabels([])}/>;
+  if(mobileMode)return<>{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -38937,7 +39207,7 @@ export default function App(){
     splitModal,setSplitModal,splitInvoice,viewInvoice,setViewInvoice,webstoreSettle,
   };
 
-  return(<AppDataProvider value={appData}><div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
+  return(<AppDataProvider value={appData}><div className="app">{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -39131,7 +39401,11 @@ export default function App(){
         </div>}
       </div>}
       {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog inlineTarget={memoCommand.id===eSO?.id?memoInlineTarget:null} key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
-      <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};if(table==='estimates'||table==='sales_orders'){setRecoveryReview({...entry,owner:cu?.id});return;}setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
+      {/* A memo being typed right now is backed up on every keystroke (OrderMemoDialog). Listing that copy
+          here while its editor is open read as an error ("Draft recovery (1)" the moment the rep typed),
+          and the editor already shows "Not saved · draft kept here". It is listed again once the editor
+          closes without saving, which is when there is something to recover. */}
+      <DraftRecoveryPanel owner={cu?.id} isVisible={d=>isMySaveNotice(d)&&!(d.table===MEMO_DRAFT_TABLE&&memoCommand&&memoCommand.id===d.id&&memoCommand.ownerId===String(cu?.id))} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};if(table==='estimates'||table==='sales_orders'){setRecoveryReview({...entry,owner:cu?.id});return;}setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
       {recoveryReview&&recoveryReview.owner===cu?.id&&<DocumentRecoveryReview
         key={String(cu?.id)+':'+recoveryReview.table+':'+recoveryReview.id+':'+(recoveryReview.revision||'')}
         entry={recoveryReview} owner={cu?.id} load={_loadRecoveryDocument} save={_saveReviewedDocument}
@@ -39212,6 +39486,7 @@ export default function App(){
           })}
         </div>
       </div>}
+      {pg==='store_request'&&canAccess('store_request')&&<div className="content"><ComponentErrorBoundary name="StoreRequest"><React.Suspense fallback={<LazyFallback/>}><StoreRequestPage customers={cust} orders={sos} estimates={ests} teamMembers={REPS} cu={cu} onBack={()=>setPg('webstores')} onOpenStore={(storeId)=>{try{const u=new URL(window.location);u.searchParams.set('store',storeId);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}}/></React.Suspense></ComponentErrorBoundary></div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{(pg==='warehouse'||pg==='item_fulfillment')&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='receive_payments'&&<ComponentErrorBoundary name="ReceivePayments"><React.Suspense fallback={<LazyFallback/>}><ReceivePaymentsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
@@ -39228,6 +39503,7 @@ export default function App(){
       <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setNeedByAsk(null)}>Cancel</button><button className="btn btn-primary" disabled={!_ok} onClick={_go}>{needByAsk.kind==='convert'?'Convert to sales order':'Create sales order'}</button></div>
     </div></div>})()}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
+    {storeCloseoutReview&&<StoreCloseoutReview key={storeCloseoutReview.status.token} status={storeCloseoutReview.status} onCancel={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null)}} onJobs={()=>{storeCloseoutReview.resolve(null);setStoreCloseoutReview(null);setESOTab('jobs')}} onSubmit={review=>closeStore(storeCloseoutReview.so,review)}/>}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
       <div className="modal-body">

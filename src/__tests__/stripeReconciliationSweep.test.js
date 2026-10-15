@@ -341,7 +341,7 @@ describe('sweep composition', () => {
 
     const invoiceFinding = {incident_key:'stripe:invoice:pi_test',category:'stripe_invoice_payment',severity:'warning'};
     require('../../netlify/functions/_stripeInvoiceMonitor').monitorInvoicePayments.mockResolvedValueOnce({findings:[invoiceFinding],checked:1,complete:true});
-    const result = await runSweep(admin, client);
+    const result = await runSweep(admin, client, { emailAlerts: true });
 
     expect(result).toMatchObject({ ok: false, open_incident_count: 1, alert_sent: true, checks_recorded: 1 });
     const recorded = admin.calls.rpc.find((call) => call.name === 'record_stripe_reconciliation_order_checks');
@@ -351,6 +351,28 @@ describe('sweep composition', () => {
     // Exactly one claim per invocation: a retry cannot fan out into extra sends.
     expect(admin.calls.claims).toBe(1);
     expect(result.timings.total_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test('by default records open incidents but sends no email (the daily digest reports them)', async () => {
+    const admin = fakeAdmin({
+      orders: [],
+      rpc: {
+        sync_stripe_reconciliation_incidents: { data: { finding_count: 1, open_incident_count: 1, resolved_count: 0, alert_created: true }, error: null },
+        claim_stripe_reconciliation_alert: { data: [{ id: 'outbox-10', incident_keys: ['x'] }], error: null },
+      },
+    });
+    const client = {
+      payouts: { list: jest.fn().mockResolvedValue({ data: [], has_more: false }) },
+      webhookEndpoints: { list: jest.fn().mockResolvedValue({ data: [{ id: 'we_1', url: 'https://nsa-portal.netlify.app/.netlify/functions/stripe-webhook', status: 'enabled', enabled_events: ['*'] }], has_more: false }) },
+    };
+    const previous = process.env.STRIPE_RECONCILIATION_EMAIL_ALERTS;
+    delete process.env.STRIPE_RECONCILIATION_EMAIL_ALERTS;
+    try {
+      const result = await runSweep(admin, client);
+      expect(result).toMatchObject({ ok: false, open_incident_count: 1, alert_claimed: false, alert_sent: false });
+      expect(admin.calls.claims).toBe(0);
+      expect(sendBrevoEmail).not.toHaveBeenCalled();
+    } finally { if (previous !== undefined) process.env.STRIPE_RECONCILIATION_EMAIL_ALERTS = previous; }
   });
 
   test('reports a healthy sweep with no open incidents and no alert', async () => {

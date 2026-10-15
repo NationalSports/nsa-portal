@@ -34,7 +34,7 @@ test('workflow fields and id carry over; human-advanced art status is kept', () 
 });
 
 test('reused approved art waits for the rep to confirm, except on store pulls', () => {
-  const approved = so({}, { art_files: [{ id: 'a1', name: 'Crest', status: 'approved', deco_type: 'embroidery', prod_files_attached: true }] });
+  const approved = so({}, { art_files: [{ id: 'a1', name: 'Crest', status: 'approved', reused_from_so: 'SO-previous', deco_type: 'embroidery', prod_files_attached: true }] });
   expect(build(approved)[0].art_status).toBe('needs_art_review');
   expect(build(approved, [], { isStoreOrder: true })[0].art_status).toBe('art_complete');
 });
@@ -98,4 +98,16 @@ test('replacement matching follows stable line IDs across garment reordering', (
   const previous = requested(original);
   const items = [...original.items].reverse().map(it => ({ ...it, decorations: [{ ...it.decorations[0], art_file_id: 'new' }] }));
   expect(build({ ...original, items, art_files: [{ id: 'new', status: 'approved' }] }, previous)[0]).toMatchObject({ id: previous[0].id, art_status: 'art_requested' });
+});
+
+
+test('adding garments to current-order art keeps normal approval without previous-art review', () => {
+  const order = so({}, { art_files: [{ id: 'a1', status: 'approved', prod_files_attached: true }] });
+  const previous = build(order);
+  expect(previous[0].art_status).toBe('waiting_approval');
+  const extra = { ...order.items[0], sku: 'TEE' };
+  const next = build({ ...order, items: [...order.items, extra] }, previous);
+  expect(next[0].art_status).toBe('waiting_approval');
+  expect(next[0].items).toHaveLength(3);
+  expect(next[0].id).toBe(previous[0].id);
 });

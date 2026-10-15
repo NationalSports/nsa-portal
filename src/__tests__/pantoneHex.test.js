@@ -45,10 +45,10 @@ describe('pantoneHex — named color resolution (case-insensitive)', () => {
   });
 
   test('resolves bare / unnumbered family names via threadHex', () => {
-    expect(pantoneHex('Maroon')).toBe('#800000');
+    expect(pantoneHex('Maroon')).toBe('#6B1F2E');
     expect(pantoneHex('Vegas Gold')).toBe('#C5B358');
     // number not in the Pantone map, but the trailing name still resolves
-    expect(pantoneHex('2171 Light Blue')).toBe('#ADD8E6');
+    expect(pantoneHex('2171 Light Blue')).toBe('#9BCBEB');
   });
 
   test('returns null for empty / unknown input', () => {

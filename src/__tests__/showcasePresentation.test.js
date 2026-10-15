@@ -469,8 +469,9 @@ describe('Showcase completion email', () => {
         return { data: { id: 'rep-1', name: 'Steve Peterson', email: 'steve@nationalsportsapparel.com', is_active: true }, error: null };
       }
       if (op.table === 'webstore_showcase_assets') {
-        return { data: [{ status: 'review', approval_status: 'pending' }], error: null };
+        return { data: [{webstore_product_id:'item-1',generation_request_id:'request-1',status:'review',approval_status:'pending'}],error:null };
       }
+      if (op.table === 'webstore_showcase_families') return {data:[{request_id:'request-1',inputs:{notification_batch_id:'batch-1',members:[{webstore_product_id:'item-1',name:'Adidas W Game&Go Full Zip Hood',color:'Navy'}]}}],error:null};
       return { data: null, error: null };
     });
     global.fetch.mockResolvedValue({ ok: true, status: 201, text: async () => '' });
@@ -483,6 +484,8 @@ describe('Showcase completion email', () => {
     expect(request.to).toEqual([{ email: 'steve@nationalsportsapparel.com', name: 'Steve Peterson' }]);
     expect(request.subject).toContain('Showcase images ready for review');
     expect(request.htmlContent).toContain('store=store-1&amp;tab=appearance');
+    expect(request.htmlContent).toContain('Adidas W Game&amp;Go Full Zip Hood');
+    expect(request.htmlContent).toContain('Navy');
     expect(global.fetch.mock.calls[0][1].body).not.toContain('server-brevo-secret');
     expect(admin.calls).toEqual(expect.arrayContaining([
       expect.objectContaining({

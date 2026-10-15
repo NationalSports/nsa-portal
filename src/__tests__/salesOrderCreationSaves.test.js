@@ -20,7 +20,7 @@ function harness(){
   };
   return {_dbSnap,state,backgroundWrites,setSOs:publish('sos'),setEsts:publish('ests'),
     stageDocumentBaseline,setESO:jest.fn(),setESOC:jest.fn(),setEEst:jest.fn(),setPg:jest.fn(),nf:jest.fn(),
-    cust:[],sos:[],cu:{id:'rep'},nextSOId:()=> 'SO-NEW'};
+    cust:[],sos:[],cu:{id:'rep'},mintSOId:async()=> 'SO-NEW'};
 }
 
 test('webstore creation and accounting version echo dispatch only one full save',async()=>{

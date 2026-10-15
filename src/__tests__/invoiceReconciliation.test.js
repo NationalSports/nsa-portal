@@ -9,7 +9,7 @@
 // deliberately left unchanged, the test PINS it with a comment explaining
 // the concern, so any future change is a visible, deliberate diff.
 // ═══════════════════════════════════════════════
-const { buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, rekeyGarmentMocks, soLineKey } = require('../safeHelpers');
+const { buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, rekeyGarmentMocks, soLineKey, linkMovedLineInvoiceKeys } = require('../safeHelpers');
 
 const makeSO = (overrides = {}) => ({
   id: 'SO-1',
@@ -119,6 +119,57 @@ describe('SKU changes preserve already-invoiced quantity', () => {
     ];
 
     expect(buildInvoicedQtyMap(so, invoices).get(soLineKey(changedTwice, 0))).toBe(2);
+  });
+});
+
+describe('Sub unfilled items keeps already-invoiced units invoiced (SO-2640)', () => {
+  // SO-2640: INV-64187 billed 31 JM1033 + 44 JW6602. Adidas shorted, so "Sub unfilled items"
+  // moved 2 JM1033 → AT208 and 4 JW6602 → AT203 at the same price. Before the fix the subs
+  // read as unbilled and the originals as over-billed, prompting a needless re-invoice.
+  const inv = [{ id: 'INV-64187', inv_type: 'final', line_items: [
+    { _so_line_key: 'JM1033|Black|0', _sku: 'JM1033', _color: 'Black', qty: 31 },
+    { _so_line_key: 'JW6602|Black|1', _sku: 'JW6602', _color: 'Black', qty: 44 },
+  ] }];
+  const subbed = () => {
+    const jm = { sku: 'JM1033', color: 'Black', sizes: { L: 28, '3XL': 1 } };
+    const jw = { sku: 'JW6602', color: 'Black', sizes: { L: 40 } };
+    const a = linkMovedLineInvoiceKeys(jm, 0, { sku: 'AT208', color: 'Black', sizes: { '3XL': 2 } });
+    const b = linkMovedLineInvoiceKeys(jw, 1, { sku: 'AT203', color: 'Black/ White', sizes: { XL: 2, '3XL': 2 } });
+    return { items: [a.src, b.src, a.moved, b.moved] };
+  };
+
+  test('every line reads fully invoiced after a same-price sub — nothing left to bill', () => {
+    const so = subbed();
+    const m = buildInvoicedQtyMap(so, inv);
+    expect(so.items.map((it, i) => m.get(soLineKey(it, i)))).toEqual([29, 40, 2, 4]);
+    expect(invoicedLineOrphans(so, inv)).toEqual([]);
+  });
+
+  test('without the link the old behavior is unchanged (source over-invoiced, sub unbilled)', () => {
+    const so = { items: subbed().items.map(({ invoice_line_keys, ...it }) => it) };
+    const m = buildInvoicedQtyMap(so, inv);
+    expect(so.items.map((it, i) => m.get(soLineKey(it, i)))).toEqual([31, 44, 0, 0]);
+  });
+
+  test('a genuine over-bill beyond the moved units stays on the source line', () => {
+    const so = subbed();
+    const big = [{ id: 'X', inv_type: 'final', line_items: [{ _so_line_key: 'JM1033|Black|0', _sku: 'JM1033', qty: 35 }] }];
+    const m = buildInvoicedQtyMap(so, big);
+    expect(m.get(soLineKey(so.items[0], 0))).toBe(33); // 29 fit + 4 unexplained overflow
+    expect(m.get(soLineKey(so.items[2], 2))).toBe(2);
+  });
+
+  test('after the source shifts position, it still fills before its replacement', () => {
+    const { items } = subbed();
+    const so = { items: [{ sku: 'NEW', color: 'Red', sizes: { M: 1 } }, ...items] }; // every index +1
+    const m = buildInvoicedQtyMap(so, inv);
+    expect(so.items.map((it, i) => m.get(soLineKey(it, i)))).toEqual([0, 29, 40, 2, 4]);
+  });
+
+  test('the replacement inherits the source line\'s earlier SKU-change aliases', () => {
+    const src = { sku: 'B', color: 'Blue', sizes: { M: 3 }, invoice_line_keys: ['A|Blue|0'] };
+    const { moved } = linkMovedLineInvoiceKeys(src, 0, { sku: 'C', color: 'Blue', sizes: { M: 1 } });
+    expect(moved.invoice_line_keys).toEqual(['A|Blue|0', 'B|Blue|0']);
   });
 });
 

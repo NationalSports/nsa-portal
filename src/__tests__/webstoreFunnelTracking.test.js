@@ -346,3 +346,56 @@ describe('the reminder only emails when Stripe says the payment never happened',
     expect(src).toMatch(/WEBSTORE_PAYMENT_REMINDERS/);
   });
 });
+
+describe('reminder: a family that ordered under another parent is not reminded', () => {
+  const now = new Date('2026-09-30T12:00:00Z').getTime();
+  const store = { id: 's1', status: 'open', close_at: '2026-10-05T00:00:00Z' };
+  const order = { id: 'o1200', store_id: 's1', status: 'pending_payment', payment_mode: 'paid', buyer_email: 'dad@x.com', stripe_pi_id: 'pi_1', created_at: '2026-09-30T07:05:00Z', payment_reminder_sent_at: null };
+
+  test('skips when another live order for the same player came in since', () => {
+    expect(reminder.skipReason(order, store, [order], now, [{ id: 'o1202', status: 'batched', created_at: '2026-09-30T07:22:00Z' }])).toBe('same-player-ordered-since');
+  });
+  test('an unpaid retry for the same player does not count', () => {
+    expect(reminder.skipReason(order, store, [order], now, [{ id: 'o1201', status: 'pending_payment', created_at: '2026-09-30T07:19:00Z' }])).toBeNull();
+  });
+
+  test('samePlayerOrders matches on player name, not on price', async () => {
+    const tables = {
+      webstore_order_items: [
+        { order_id: 'o1200', player_name: 'Dylan Sosa' },
+        { order_id: 'o1202', player_name: ' dylan  sosa ' },
+        { order_id: 'o1156', player_name: 'Wesley Tsuneishi' },
+      ],
+      webstore_orders: [
+        { id: 'o1202', store_id: 's1', status: 'batched', created_at: '2026-09-30T07:22:00Z' },
+        { id: 'o1156', store_id: 's1', status: 'batched', created_at: '2026-09-30T07:10:00Z' },
+      ],
+    };
+    const sb = { from: (t) => {
+      let rows = tables[t].slice();
+      const q = {
+        select: () => q,
+        eq: (k, v) => { rows = rows.filter((r) => r[k] === v || k === 'store_id'); return q; },
+        neq: (k, v) => { rows = rows.filter((r) => r[k] !== v); return q; },
+        gte: () => q,
+        in: (k, vs) => { rows = rows.filter((r) => vs.includes(r[k])); return Promise.resolve({ data: rows }); },
+        then: (res) => res({ data: rows }),
+      };
+      return q;
+    } };
+    const out = await reminder.samePlayerOrders(sb, order);
+    expect(out.map((o) => o.id)).toEqual(['o1202']);
+  });
+});
+
+describe('refund owed after cancelled items', () => {
+  const { refundOwed } = require('../lib/webstoreOrderMoney');
+  test('card order with items cancelled but not refunded', () => {
+    expect(refundOwed({ stripe_pi_id: 'pi', original_total: 288.64, total: 218.74, refunded_amt: 0 })).toBe(69.9);
+  });
+  test('nothing owed once refunded, or on team-tab / OMG orders', () => {
+    expect(refundOwed({ stripe_pi_id: 'pi', original_total: 215.35, total: 116.13, refunded_amt: 99.22 })).toBe(0);
+    expect(refundOwed({ stripe_pi_id: null, original_total: 100, total: 50, refunded_amt: 0 })).toBe(0);
+    expect(refundOwed({ stripe_pi_id: 'pi', original_total: null, total: 80, refunded_amt: 0 })).toBe(0);
+  });
+});

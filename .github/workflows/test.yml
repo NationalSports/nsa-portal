@@ -30,6 +30,11 @@ jobs:
         env:
           CI: true
 
+      - name: At-Once / 24-7 fake-order lifecycle and dashboard reconciliation
+        run: |
+          npm install --prefix "$RUNNER_TEMP/at-once-db" --no-audit --no-fund @electric-sql/pglite@0.3.14
+          NODE_PATH="$RUNNER_TEMP/at-once-db/node_modules" node scripts/pgtest/verify_at_once_flow.cjs
+
       - name: Payable snapshot reliability tests
         run: node --test tests/qbo-payable-snapshot.test.cjs tests/qbo-payable-canary.test.cjs tests/qbo-payable-po-canary.test.cjs tests/qbo-payable-po-canary-handler.test.cjs
 
@@ -41,6 +46,9 @@ jobs:
           node --test tests/showcase-family-render.test.cjs tests/showcase-mapping.test.cjs
           npm install --prefix "$RUNNER_TEMP/showcase-db" --no-audit --no-fund @electric-sql/pglite@0.3.14
           SHOWCASE_PGLITE_PATH="$RUNNER_TEMP/showcase-db/node_modules/@electric-sql/pglite" node --test tests/showcase-family-db.test.cjs
+
+      - name: Vendor price-list database lifecycle and access controls
+        run: VENDOR_PRICE_LIST_PGLITE_PATH="$RUNNER_TEMP/showcase-db/node_modules/@electric-sql/pglite" node --test tests/vendor-price-list-db.test.cjs
 
       - name: Showcase deployment bundle smoke test
         run: |

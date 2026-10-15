@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading } from './DstPreview';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -600,7 +601,10 @@ function calcSOStatus(ord,opts){
   if(allJobsShipped){
     const totalJobUnits=boardJobs.reduce((a,j)=>a+safeNum(j.total_units),0);
     const shippedUnits=(ord._shipments||[]).reduce((a,shp)=>a+(shp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
-    if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
+    const prepaidStore=!!ord.webstore_id&&!ord.omg_store_id;
+    // Store job flags alone cannot replace source-line shipment reconciliation.
+    // The server closes prepaid orders after their confirmed source quantities ship.
+    if((totalJobUnits>0&&shippedUnits>=totalJobUnits)||(!prepaidStore&&!ord._shipments))return'complete';
     // Partial shipment — jobs marked shipped but units remain
     return isPromo?'complete':'ready_to_invoice';
   }
@@ -724,26 +728,43 @@ function ThreadQuickPicks({colors,onPick}){
 // sync. `onChange` receives the full updated color_ways array. Garment/ink swatches are a
 // best-effort lookup (threadHex covers common apparel + thread names, pantoneHex for inks).
 
-function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false}){
+// `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
+// preview beside its card (one color way) or under it (several, so previews line up with their cards).
+function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null}){
   const isEmb=decoType==='embroidery';
   const isDtf=decoType==='dtf';
   const cws=colorWays||[];
   const inkLabel=isEmb?'thread':'ink';
   const updCw=(ci,patch)=>onChange(cws.map((cw,x)=>x===ci?{...cw,...patch}:cw));
-  const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];const e=inks.findIndex(x=>!x);if(e>=0)inks[e]=v;else inks.push(v);updCw(ci,{inks})};
+  const{design:stDesign,err:stErr}=useDstDesign(isEmb&&stitch?stitch.dstUrl:null);
+  // Embroidery with a DST: exactly one thread line per needle stop — no adding past the stop count.
+  const maxLines=isEmb&&stDesign?stDesign.blocks.length:null;
+  // The thread/ink line last clicked into. A quick-pick color REPLACES that line, then moves the
+  // highlight to the next line so a rep can click colors in sew order.
+  const[active,setActive]=useState(null); // {cwId, ii} — keyed by color-way id so removing a CW can't retarget it
+  const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];const cwId=cws[ci].id;
+    if(active&&active.cwId===cwId&&active.ii<inks.length){inks[active.ii]=v;updCw(ci,{inks});setActive(active.ii+1<inks.length?{cwId,ii:active.ii+1}:null);return}
+    const e=inks.findIndex(x=>!String(x||'').trim());if(e>=0)inks[e]=v;else if(maxLines==null||inks.length<maxLines)inks.push(v);else return;updCw(ci,{inks})};
+  const[stBusy,setStBusy]=useState(false);
+  const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
+  const stUseAsLogo=stitch?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await stitch.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  // One color way → preview to the right of the card; several → each preview under its own card.
+  const stSide=showStitch&&cws.length<=1;
+  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={stUseAsLogo} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
       <span style={{fontSize:9,color:'#94a3b8'}}>{isDtf?'Full-color — color ways optional':isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
       {cws.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#fff',background:'#94a3b8',borderRadius:8,padding:'0 7px',lineHeight:'16px'}}>{cws.length}</span>}
+      {showStitch&&<StitchBadge design={stDesign}/>}
     </div>
     {cws.length===0&&isDtf&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>DTF prints full-color (CMYK) — no color ways needed. Add one only to note a specific garment color.</div>}
     {cws.length===0&&!isDtf&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
-    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8,alignItems:'stretch'}}>
       {cws.map((cw,ci)=>{
         const gHex=threadHex(cw.garment_color);
         const inkCount=(cw.inks||[]).filter(x=>x&&x.trim()).length;
-        return<div key={cw.id} style={{flex:'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
+        const card=<div key={cw.id} style={{flex:showStitch&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
           {/* Header bar — CW number, garment color swatch + name, duplicate, remove */}
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
@@ -758,18 +779,29 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
-              <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
+            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));const isActive=active&&active.cwId===cw.id&&active.ii===ii;const extra=maxLines!=null&&ii>=maxLines;return<div key={ii} onFocus={()=>setActive({cwId:cw.id,ii})} title={extra?'The DST has only '+maxLines+' thread stops — remove this line':undefined} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4,borderRadius:6,boxShadow:isActive?'0 0 0 2px #c4b5fd':'none',background:extra?'#fef2f2':isActive?'#f5f3ff':'transparent'}}>
+              <span style={{fontSize:10,color:isActive?'#6d28d9':extra?'#dc2626':'#cbd5e1',fontWeight:isActive?700:400,width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...(cw.inks||[])];inks[ii]=v;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
-              <button onClick={()=>updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
+              <button onClick={()=>{setActive(null);updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
             </div>})}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
-            <button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color</button>
+            {((isEmb?threadColors:pantoneColors)||[]).length>0&&<div style={{fontSize:9,color:'#94a3b8',margin:'2px 0'}}>{active&&active.cwId===cw.id?'Pick a color to change line '+(active.ii+1):'Click a line, then a color to change it'}</div>}
+            {maxLines==null||(cw.inks||[]).length<maxLines
+              ?<button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color{maxLines!=null?' ('+(cw.inks||[]).length+' of '+maxLines+')':''}</button>
+              :<div style={{fontSize:9,color:'#6d28d9',fontWeight:600,padding:'4px 0'}}>{maxLines} of {maxLines} thread stops — matches the DST</div>}
           </div>
-        </div>})}
+        </div>;
+        if(!showStitch)return card;
+        if(stSide)return[card,<div key={cw.id+'_st'} style={{alignSelf:'flex-start'}}>{stTile(cw,ci,240)}</div>];
+        // Several color ways: card on top, its preview underneath, same column width — columns in a
+        // row stretch to equal height so the previews line up.
+        return<div key={cw.id} style={{flex:'1 1 240px',minWidth:240,maxWidth:380,display:'flex',flexDirection:'column',gap:8}}>{card}<div style={{width:'100%',maxWidth:260}}>{stTile(cw,ci,'100%')}</div></div>})}
+      {showStitch&&cws.length===0&&stTile(null,0,240)}
     </div>
-    <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
+    {showStitch&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws} palette={threadColors}/></div>}
+    {/* Embroidery: a new color way starts with CW 1's threads (same DST stops) — the rep adjusts. */}
+    <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:isEmb&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
 

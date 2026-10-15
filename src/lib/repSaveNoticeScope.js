@@ -14,7 +14,7 @@ export function createRepSaveNoticeFilter({repId, customers = [], salesOrders = 
     const id = rawId.startsWith('memo:') ? rawId.slice(5) : rawId;
     let table = entry.table;
     if (table === 'sales_order_memos') table = 'sales_orders';
-    if (!table) table = id.startsWith('SO-') ? 'sales_orders' : id.startsWith('EST-') ? 'estimates' : id.startsWith('INV-') ? 'invoices' : null;
+    if (!table) table = /^(?:SO-\d+|247-\d+|\d+)$/.test(id) ? 'sales_orders' : id.startsWith('EST-') ? 'estimates' : id.startsWith('INV-') ? 'invoices' : null;
     // Leave non-document failures (for example product edits) in their existing
     // session scope; they do not have a sales-rep assignment.
     if (!documents[table]) return true;

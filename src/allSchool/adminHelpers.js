@@ -4,17 +4,20 @@ export const allSchoolDefaults = () => ({
   promo_eyebrow: 'For the whole school', promo_heading: 'Wear your pride.',
   promo_description: 'Students, families, staff, and alumni. Your school favorites belong everywhere.',
   promo_button_label: 'Shop school spirit', promo_destination: 'spirit', promo_art_text: 'School Spirit.',
+  production: { auto_release_enabled: false, business_days: null },
   purchasing: { enabled: false, mode: 'minimum_weekly', minimum_cents: 20000, weekday: 3, time: '09:00', timezone: 'America/Los_Angeles', combine_regular: true, no_batch_policy: 'separate', max_wait_days: 7, max_run_cents: 100000 },
   shipping: { mode: 'flat', package_weight_oz: 2, length_in: 12, width_in: 10, height_in: 3, service_code: 'ups_ground', origin_code: 'OR', fallback: 'block' },
   dtf: { supplier_id: null, auto_send: false },
 });
 export const normalizeAllSchoolSettings = (value) => {
   const defaults = allSchoolDefaults(); const input = value || {};
-  return { ...defaults, ...input, show_promo_banner: input.show_promo_banner === true, secondary_logo_url: typeof input.secondary_logo_url === 'string' ? input.secondary_logo_url : '', programs: Array.isArray(input.programs) ? input.programs : [], purchasing: { ...defaults.purchasing, ...input.purchasing }, shipping: { ...defaults.shipping, ...input.shipping }, dtf: { ...defaults.dtf, ...input.dtf } };
+  return { ...defaults, ...input, show_promo_banner: input.show_promo_banner === true, secondary_logo_url: typeof input.secondary_logo_url === 'string' ? input.secondary_logo_url : '', programs: Array.isArray(input.programs) ? input.programs : [], production: { ...defaults.production, ...input.production, auto_release_enabled: input.production?.auto_release_enabled === true }, purchasing: { ...defaults.purchasing, ...input.purchasing }, shipping: { ...defaults.shipping, ...input.shipping }, dtf: { ...defaults.dtf, ...input.dtf } };
 };
 export const validateAllSchoolSettings = (value) => {
   const s = normalizeAllSchoolSettings(value);
   if (!Number.isInteger(Number(s.target_ship_days)) || Number(s.target_ship_days) < 1 || Number(s.target_ship_days) > 90) return 'Shipment target must be between 1 and 90 days.';
+  const pd = s.production.business_days;
+  if (pd != null && pd !== '' && (!Number.isInteger(Number(pd)) || Number(pd) < 0 || Number(pd) > 90)) return 'Production allowance must be 0–90 business days, or blank for the seasonal allowance.';
   const seen = new Set(); const slugs = new Set();
   for (const p of s.programs) {
     if (!p.id || !p.name?.trim() || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug || '')) return 'Each sport needs a name and a valid URL slug.';
@@ -30,7 +33,7 @@ export const validateAllSchoolSettings = (value) => {
   if (!(Number(s.shipping.package_weight_oz) > 0)) return 'Packaging weight must be greater than zero.';
   return '';
 };
-const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_sku_overrides', 'variant_label', 'personalization_template', 'weight_oz'];
+const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_skus', 'variant_label', 'personalization_template', 'weight_oz'];
 export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => {
   const copies = (sources || []).map((row, index) => {
     const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
@@ -75,7 +78,7 @@ export const applySportDesign = (rows, stock, logo) => (rows || []).map((row) =>
   ...row,
   image_url: null, image_back_url: null,
   transfer_codes: [stock.code], transfer_code: null,
-  decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: 'dtf', transfer_code: stock.code, baked: false }],
+  decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: stock.decoration_type || 'dtf', transfer_code: stock.code, baked: false }],
 }));
 
 export const stockLinkedArtError = (item, decorations) => {
@@ -86,7 +89,7 @@ export const stockLinkedArtError = (item, decorations) => {
   return '';
 };
 
-export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_sku_overrides', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
+export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_skus', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
 
 // Keep one visual card per shopper listing, and edit the selected art's own colors.
 export const schoolArtGroups = (catalog, stockByWp, artId) => {

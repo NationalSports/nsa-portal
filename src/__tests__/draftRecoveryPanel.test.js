@@ -85,3 +85,22 @@ test('discard preserves a newer draft that arrived during review',async()=>{
  expect((await screen.findByRole('alert')).textContent).toContain('newer copy has been kept');
  expect(screen.getByText('SO-1')).toBeTruthy();confirm.mockRestore();
 });
+
+test('download & clear all saves a file first, then clears every listed copy in one step',async()=>{
+ const confirm=jest.spyOn(window,'confirm').mockReturnValue(true);
+ const created=jest.fn(()=>'blob:x');const origCreate=URL.createObjectURL,origRevoke=URL.revokeObjectURL;
+ URL.createObjectURL=created;URL.revokeObjectURL=()=>{};
+ const click=jest.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{});
+ const other={...draft,key:'k2',revision:'r2',id:'SO-2',payload:{...draft.payload,id:'SO-2'}};
+ const journal={list:jest.fn().mockResolvedValue([draft,other]),acknowledge:jest.fn(async()=>true)};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-2');
+ journal.list.mockResolvedValue([]);
+ fireEvent.click(screen.getByText('Download & clear all'));
+ await waitFor(()=>expect(screen.queryByText('SO-1')).toBeNull());
+ expect(created).toHaveBeenCalledTimes(1);expect(click).toHaveBeenCalled();
+ expect(journal.acknowledge).toHaveBeenCalledWith({key:'k',owner:'staff-a',revision:'r'});
+ expect(journal.acknowledge).toHaveBeenCalledWith({key:'k2',owner:'staff-a',revision:'r2'});
+ expect(confirm).toHaveBeenCalledTimes(1);
+ URL.createObjectURL=origCreate;URL.revokeObjectURL=origRevoke;click.mockRestore();confirm.mockRestore();
+});

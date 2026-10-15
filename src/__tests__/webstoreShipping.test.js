@@ -145,7 +145,7 @@ describe('all-school public data and frozen production recipes', () => {
     expect(recipe.decorations[0].prod_files[0].url).toMatch(/v1/);
     expect(recipe.transfer_inventory).toEqual([{ id: 't1', code: 'CREST', production_file: 'https://assets.test/crest-v1.ai', artwork_version: 'v1', supplier: 'Astra Sport' }]);
     arts[0].prod_files[0].url = 'https://assets.test/approved-v2.ai';
-    expect(recipe.art_files).toEqual([{ id: 'a1', status: 'approved', files: [], prod_files: [{ url: 'https://assets.test/approved-v1.ai' }] }]);
+    expect(recipe.art_files).toEqual([{ id: 'a1', status: 'approved', files: [], web_logos: [], dtf_variants: [], prod_files: [{ url: 'https://assets.test/approved-v1.ai' }] }]);
     const saved = checkout.buildOrderItems([{ ...lines[0], production_recipe: recipe }], null, undefined, true);
     expect(saved[0].production_recipe).toBe(recipe);
     expect(checkout.buildOrderItems(lines, null)[0].production_recipe).toBeUndefined();

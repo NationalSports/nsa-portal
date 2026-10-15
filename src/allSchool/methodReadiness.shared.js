@@ -1,6 +1,12 @@
 // A saved placement over a catalog garment is a mockup too; no flattened upload is required.
 const hasSchoolMockup = (item) => !!item?.image_url || (item?.decorations || []).some((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && !!d.art_url);
-const schoolArtwork = (arts) => [...new Set(arts.map((a) => a.id))].map((id) => { const matches = arts.filter((a) => a.id === id); return { ...Object.assign({}, ...matches.slice().reverse()), files: matches.flatMap((a) => a.files || []), prod_files: matches.flatMap((a) => a.prod_files || []) }; });
+const schoolArtwork = (arts) => [...new Set(arts.map((a) => a.id))].map((id) => {
+  const matches = arts.filter((a) => a.id === id);
+  return { ...Object.assign({}, ...matches.slice().reverse()),
+    dtf_variants: matches[matches.length - 1].dtf_variants || [],
+    web_logos: matches[matches.length - 1].web_logos || [],
+    files: matches.flatMap(a => a.files || []), prod_files: matches.flatMap(a => a.prod_files || []) };
+});
 const STOCK_METHODS = ['dtf', 'heat_press', 'heat_transfer', 'twill', 'patch', 'chenille', 'embroidered_patch', 'woven_patch', 'sublimation_patch', 'screen_print_transfer'];
 const stockCodeForArt = (id) => `store-art-${encodeURIComponent(String(id))}`;
 function resolveSchoolSetup(item, transfers = [], art = []) {

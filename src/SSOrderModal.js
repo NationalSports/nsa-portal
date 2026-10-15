@@ -2,6 +2,7 @@
 // submit via the REST API (POST /v2/orders/). Defaults to a TEST order, which S&S
 // creates and cancels (nothing ships), so it's safe to validate before going live.
 // Credentials are injected server-side by ss-proxy and never appear here.
+import { addBusinessDays } from './lib/businessDates.shared';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetOrders, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
@@ -172,7 +173,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     }));
     return ls.map(l => {
       const whs = bySku[String(l.sku || '').toUpperCase()] || (shipments.length === 1 && shipments[0].warehouseAbbr ? [shipments[0].warehouseAbbr] : []);
-      return whs.length ? { ...l, warehouse: whs.join('+'), warehouse_id: whs.join('+'), warehouse_basis: 'vendor' } : l;
+      const days = whs.map(w => transitDays[w]);
+      const arrival = days.length && days.every(d => Number.isInteger(d) && d >= 0) ? addBusinessDays(new Date(), Math.max(...days)) : null;
+      return whs.length ? { ...l, estimated_arrival: arrival, warehouse: whs.join('+'), warehouse_id: whs.join('+'), warehouse_basis: 'vendor' } : l;
     });
   };
 

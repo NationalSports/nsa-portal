@@ -1,7 +1,7 @@
 import {createRepSaveNoticeFilter} from '../lib/repSaveNoticeScope';
 
 const setup = (repId = 'rep-a', customers = [{id:'customer',primary_rep_id:'rep-a'}]) => createRepSaveNoticeFilter({
-  repId,customers,salesOrders:[{id:'SO-1',customer_id:'customer',created_by:'creator'}],
+  repId,customers,salesOrders:[{id:'SO-1',customer_id:'customer',created_by:'creator'},{id:'1010042',customer_id:'customer',created_by:'creator'}],
   estimates:[{id:'EST-1',customer_id:'customer',created_by:'creator'}],
 });
 
@@ -10,6 +10,12 @@ test.each(['SO-1','EST-1','memo:SO-1'])('only the currently assigned rep sees %s
   expect(setup('rep-b')({id})).toBe(false);
   expect(setup('creator')({id})).toBe(false);
   expect(setup('admin')({id})).toBe(false);
+});
+
+test('untyped 247-series drafts are inferred as sales orders for rep notice scope', () => {
+  expect(setup()({id:'1010042'})).toBe(true);
+  expect(setup('rep-b')({id:'1010042'})).toBe(false);
+  expect(setup('creator')({id:'1010042'})).toBe(false);
 });
 
 test('current customer assignment beats stale draft ownership and updates on reassignment', () => {

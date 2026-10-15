@@ -67,6 +67,7 @@ test('the warehouse S&S actually assigned is shown and passed to the PO record',
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
   const [, apiLines] = onSubmitted.mock.calls[0];
   expect(apiLines[0]).toMatchObject({ sku: SKU, warehouse: 'NV', warehouse_basis: 'vendor' });
+  expect(apiLines[0].estimated_arrival).toBe(require('../lib/businessDates.shared').addBusinessDays(new Date(), 1));
   expect(await screen.findByText(/Shipping from \(per S&S\)/)).toBeTruthy();
   expect(screen.getByText(/Reno, NV \(1-day transit\)/)).toBeTruthy();
 });
@@ -84,6 +85,7 @@ test('a line S&S splits across two warehouses records both', async () => {
   fireEvent.click(screen.getByText(/Place Order with S&S/));
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
   expect(onSubmitted.mock.calls[0][1][0].warehouse).toBe('NV+KS');
+  expect(onSubmitted.mock.calls[0][1][0].estimated_arrival).toBe(require('../lib/businessDates.shared').addBusinessDays(new Date(), 3));
   expect(await screen.findByText(/split this PO into 2 orders/)).toBeTruthy();
 });
 

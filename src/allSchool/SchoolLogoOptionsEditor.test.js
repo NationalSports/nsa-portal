@@ -70,3 +70,15 @@ test('a saved logo can show first without production files or approval', () => {
   fireEvent.click(button);
   expect(onSetFirst).toHaveBeenCalledWith(other);
 });
+
+test('team stores can add screen-print logo choices without 24/7 inventory requirements', async () => {
+  const onCreate = jest.fn(async () => 'new-choice');
+  render(<SchoolLogoOptionsEditor {...base} productionSetup={false} onCreate={onCreate}
+    logoOptions={[{ id: 'art', name: 'Classic crest', url: 'crest.png', deco_type: 'screen_print' }]} />);
+  fireEvent.click(screen.getByRole('button', { name: '+ Add logo option' }));
+  fireEvent.change(screen.getByLabelText('New web logo'), { target: { value: 'art' } });
+  expect(screen.queryByLabelText('Production inventory (optional now)')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Create logo choice' }));
+  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(row, 'Original logo', 'Classic crest', null, expect.objectContaining({ deco_type: 'screen_print' })));
+  expect(screen.queryByRole('button', { name: 'Launch requirements' })).toBeNull();
+});

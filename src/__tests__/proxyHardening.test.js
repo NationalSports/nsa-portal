@@ -13,6 +13,13 @@ let mockVerifyResult = { ok: true, userId: 'u1', teamMemberId: 'tm1', role: 'sta
 jest.mock('../../netlify/functions/_shared', () => ({
   verifyUser: jest.fn(async () => mockVerifyResult),
   verifyUserOrInternal: jest.fn(async () => mockVerifyResult),
+  // Ordinary PO fixture: run the real supplier guard against an empty queue.
+  getSupabaseAdmin: jest.fn(() => {
+    const query = {};
+    for (const method of ['select', 'eq', 'in', 'not']) query[method] = () => query;
+    query.limit = async () => ({ data: [] });
+    return { from: () => query };
+  }),
 }));
 
 afterEach(() => {

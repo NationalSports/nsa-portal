@@ -40,4 +40,35 @@ const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'Y
 const _ONE_SIZE_PHRASE=/\bONE\s*SIZE\b|\bOSFA\b|\bOSFM\b/;
 const normSzName=s=>{if(!s)return s;const u=String(s).toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}if(_ONE_SIZE_PHRASE.test(u))return'OSFA';return u};
 
-module.exports = { SZ_NORM, normSzName };
+// Adidas represents half shoe sizes with a trailing dash ("10-"), while catalog/order data may
+// already contain the normal decimal spelling ("10.5"). Keep one internal display spelling so a
+// mixed feed cannot render duplicate columns. The fraction form is accepted for the same reason.
+const normalizeFootwearSize=(size)=>{
+  const s=String(size??'').trim();
+  const m=/^(\d{1,2})(-|½)$/.exec(s);
+  return m?String(Number(m[1])+0.5):s;
+};
+const _HALF=/^\d{1,2}\.5$/;
+// A footwear line shows its sizes as "10.5", but PO lines written before that normalization (or
+// copied from raw Adidas sizes) still hold "10-" / "10½" — and every PO reader looked the size up
+// by exact string, so those units read as never ordered and the PO row lost its column alignment
+// (SO-1829 "PO 45000 FPUBBW", 2026-10). Read one size out of a size map (a PO line, or its
+// received/cancelled/billed map) summing every spelling of it. Non-half sizes are a plain lookup.
+const sizeQtyIn=(map,sz)=>{
+  if(!map||typeof map!=='object')return 0;
+  const c=normalizeFootwearSize(sz);
+  if(!_HALF.test(c))return map[sz]||0;
+  let t=0;
+  Object.keys(map).forEach(k=>{if(normalizeFootwearSize(k)===c)t+=Number(map[k])||0});
+  return t;
+};
+// The key a size map already holds for `sz` — so an edit lands on the PO line's existing bucket
+// rather than opening a second spelling of the same size beside it. `sz` when there is none.
+const sizeKeyIn=(map,sz)=>{
+  if(!map||typeof map!=='object'||Object.prototype.hasOwnProperty.call(map,sz))return sz;
+  const c=normalizeFootwearSize(sz);
+  if(!_HALF.test(c))return sz;
+  return Object.keys(map).find(k=>normalizeFootwearSize(k)===c)||sz;
+};
+
+module.exports = { SZ_NORM, normSzName, normalizeFootwearSize, sizeQtyIn, sizeKeyIn };
