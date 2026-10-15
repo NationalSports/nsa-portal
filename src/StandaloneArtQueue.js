@@ -23,14 +23,19 @@ const uploadHint = type => type === 'web_logo'
   : type === 'vectorize' ? 'Vector files only: SVG, AI, EPS or PDF.' : 'Finished art and mockups: PNG, JPG, WebP, SVG, AI, EPS, PDF or DST.';
 // One line telling the artist what to do next, shown on the compact board card.
 const nextStep = request => request.status === 'requested' ? 'Next: open it and click Start, or upload the finished file'
-  : request.status === 'in_progress' ? (request.request_type === 'web_logo' ? 'Next: upload the logo PNG, then Mark completed' : 'Next: upload finished art / mocks, then Mark completed') : '';
+  : request.status === 'in_progress' ? ((request.result_files || []).length ? 'Next: open it and click Mark completed when done'
+    : request.request_type === 'web_logo' ? 'Next: upload the logo PNG, then Mark completed' : 'Next: upload finished art / mocks, then Mark completed') : '';
 
 export function ArtRequestCard({ request, supabase, onChanged, onOpenSource, onStagedChange, bare }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState([]);
+  // Files already saved on the request (from an earlier upload) are the starting list.
+  const [uploadedFiles, setUploadedFiles] = useState(() => isOpen(request?.status) ? (request?.result_files || []) : []);
+  const filesRef = useRef(uploadedFiles);
+  const [unsaved, setUnsaved] = useState(false);
   const [dragging, setDragging] = useState(false);
-  useEffect(() => { onStagedChange?.(uploadedFiles.length); }, [uploadedFiles.length, onStagedChange]);
+  const stage = next => { filesRef.current = next; setUploadedFiles(next); };
+  useEffect(() => { onStagedChange?.(unsaved ? uploadedFiles.length : 0); }, [unsaved, uploadedFiles.length, onStagedChange]);
   const inputRef = useRef(null);
   const service = useMemo(() => createArtService(supabase), [supabase]);
   const status = request?.status || 'requested';
@@ -38,7 +43,7 @@ export function ArtRequestCard({ request, supabase, onChanged, onOpenSource, onS
   const sourceLabel = request?.linked_so_id || request?.so_id ? 'Sales order' : request?.estimate_id ? 'Estimate · pre-approval' : 'Art Library';
   const sourceId = request?.linked_so_id || request?.so_id || request?.estimate_id || '';
   const colorWay = request?.color_way_label || request?.color_way_id;
-  const results = uploadedFiles.length ? uploadedFiles : (request?.result_files || []);
+  const results = isOpen(status) ? uploadedFiles : (request?.result_files || []);
 
   const upload = async fileList => {
     const picked = Array.from(fileList || []);
@@ -59,15 +64,26 @@ export function ArtRequestCard({ request, supabase, onChanged, onOpenSource, onS
         if (!url) throw new Error(`Upload did not return a file URL for ${file.name}.`);
         // Stage each successful upload immediately. If a later file or the completion
         // transition fails, the artist can retry saving without uploading it again.
-        setUploadedFiles(current => request.request_type === 'web_logo' ? [{ name: file.name, url }] : [...current, { name: file.name, url }]);
+        stage(request.request_type === 'web_logo' ? [{ name: file.name, url }] : [...filesRef.current, { name: file.name, url }]);
         staged++;
       }
     } catch (e) {
       setError(e.message || 'File upload failed. Retry the upload.');
     } finally { setBusy(false); if (inputRef.current) inputRef.current.value = ''; }
-    // Uploading on a request nobody has started yet starts it, so the board shows it's being worked.
-    if (staged && status === 'requested') await transition('in_progress');
+    if (!staged) return;
+    if (await saveFiles(filesRef.current) && status === 'requested') await transition('in_progress');
   };
+  // Save the current file list on the request right away; Mark completed is no longer needed to keep them.
+  const saveFiles = async files => {
+    setBusy(true);
+    try {
+      const saved = await service.saveFiles(request.id, files);
+      setUnsaved(false); onChanged?.(saved); return true;
+    } catch (e) {
+      setUnsaved(true); setError(`${e.message || 'Could not save the uploaded files.'} Your files are still here — try again.`); return false;
+    } finally { setBusy(false); }
+  };
+  const removeFile = i => { const next = filesRef.current.filter((_, j) => j !== i); stage(next); saveFiles(next); };
   const drop = e => { e.preventDefault(); setDragging(false); if (!busy) upload(e.dataTransfer?.files); };
 
   const transition = async (nextStatus, files = []) => {
@@ -103,7 +119,9 @@ export function ArtRequestCard({ request, supabase, onChanged, onOpenSource, onS
     {request.instructions && <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155', background: '#f8fafc', borderRadius: 7, padding: 9 }}><div style={labelStyle}>Instructions</div><div style={{ marginTop: 4 }}>{request.instructions}</div></div>}
     {(request.reference_files || []).length > 0 && <div><div style={labelStyle}>Reference files</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>{request.reference_files.map(fileLink)}</div></div>}
     {request.source_art && onOpenSource && <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}><span style={{ color: '#64748b' }}>Source artwork available</span><button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => onOpenSource?.(request.source_art, request)}>View source</button></div>}
-    {results.length > 0 && <div style={{ padding: 8, background: '#f0fdf4', borderRadius: 7 }}><div style={labelStyle}>Finished files</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>{results.map(fileLink)}</div></div>}
+    {results.length > 0 && <div style={{ padding: 8, background: '#f0fdf4', borderRadius: 7 }}><div style={labelStyle}>Finished files{isOpen(status) ? (unsaved ? ' · not saved yet' : ' · saved') : ''}</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>{results.map((f, i) => isOpen(status)
+      ? <span key={`${f.url}-${i}`} style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>{fileLink(f, i)}<button type="button" aria-label={`Remove ${f.name || 'file'}`} title="Remove this file" disabled={busy} onClick={() => removeFile(i)} style={{ border: 0, background: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 0 }}>×</button></span>
+      : fileLink(f, i))}</div>{unsaved && isOpen(status) && <button type="button" className="btn btn-sm btn-secondary" disabled={busy} style={{ marginTop: 6 }} onClick={() => saveFiles(filesRef.current)}>Retry saving files</button>}</div>}
     {isOpen(status) && <div onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}
       style={{ border: `2px dashed ${dragging ? '#1d4ed8' : '#93c5fd'}`, background: dragging ? '#dbeafe' : '#eff6ff', borderRadius: 10, padding: 14, display: 'grid', gap: 6, justifyItems: 'center', textAlign: 'center' }}>
       <div style={{ fontSize: 13, fontWeight: 800, color: '#1e3a8a' }}>{request.request_type === 'web_logo' ? 'Upload the finished logo PNG' : 'Upload finished art & mockups'}</div>
@@ -117,6 +135,7 @@ export function ArtRequestCard({ request, supabase, onChanged, onOpenSource, onS
       {(working || uploadedFiles.length > 0) && isOpen(status) && <>
         <button type="button" className="btn btn-sm" disabled={busy || !uploadedFiles.length} style={{ background: '#166534', color: 'white', border: 0 }} onClick={complete}>{busy ? 'Saving…' : 'Mark completed'}</button>
         {!uploadedFiles.length && <span style={{ fontSize: 10, color: '#64748b' }}>Upload finished files to enable completion.</span>}
+        {uploadedFiles.length > 0 && !unsaved && <span style={{ fontSize: 10, color: '#64748b' }}>Files are saved. Click Mark completed when the art is final.</span>}
       </>}
       {['requested', 'in_progress'].includes(status) && <button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => transition('cancelled')}>Cancel request</button>}
       {sourceId && <button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => onOpenSource?.(request.source_art || sourceId, request)}>Open {request.linked_so_id||request.so_id ? 'order' : 'estimate'}</button>}
@@ -133,7 +152,7 @@ export function ArtRequestTile({ request, supabase, onChanged, onOpenSource }) {
   const status = request.status || 'requested';
   const sourceId = request.linked_so_id || request.so_id || request.estimate_id || '';
   const step = nextStep(request);
-  const confirmLeave = () => !(staged > 0 && isOpen(status)) || window.confirm('Your uploaded files are not saved on this request until you click Mark completed. Close anyway?');
+  const confirmLeave = () => !(staged > 0 && isOpen(status)) || window.confirm('Some uploaded files did not save to this request. Close anyway and lose them?');
   const close = () => { if (confirmLeave()) setOpen(false); };
   const openSource = (...args) => { if (!confirmLeave()) return; setOpen(false); onOpenSource?.(...args); };
   return <>
@@ -148,6 +167,7 @@ export function ArtRequestTile({ request, supabase, onChanged, onOpenSource }) {
         <span style={{ fontSize: 8, fontWeight: 700, color: '#3730a3', background: '#eef2ff', borderRadius: 6, padding: '1px 5px', flexShrink: 0, whiteSpace: 'nowrap' }}>{TYPE_LABELS[request.request_type] || 'Art request'}</span>
       </div>
       <div style={{ fontSize: 10, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[sourceId, request.requested_by_name && `by ${request.requested_by_name}`].filter(Boolean).join(' · ')}</div>
+      {isOpen(status) && (request.result_files || []).length > 0 && <div style={{ fontSize: 10, color: '#166534', marginTop: 3 }}>📎 {request.result_files.length} file{request.result_files.length === 1 ? '' : 's'} uploaded</div>}
       {step && <div style={{ fontSize: 10, fontWeight: 700, color: '#1d4ed8', marginTop: 4 }}>👉 {step}</div>}
     </div>
     {open && createPortal(<div className="modal-overlay" onClick={close}>
