@@ -13,7 +13,7 @@ import { planOrderSave } from './lib/artJobsSaveRouting';
 import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
-import ArtRequestCard from './StandaloneArtQueue';
+import { ArtRequestTile } from './StandaloneArtQueue';
 import ClipboardImagePaste from './ClipboardImagePaste';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import { validateAllSchoolBatch, allSchoolWarehouseDestination, allSchoolSourceLines } from './lib/allSchoolBatchGuard';
@@ -24746,12 +24746,12 @@ export default function App(){
                 <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length+requestCards.length}</span>
               </div>
               {colJobs.length===0&&requestCards.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
-              {requestCards.map(request=><div key={request.id} style={{marginBottom:8}}><ArtRequestCard request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/></div>)}
+              {requestCards.map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/>)}
               {colJobs.map(j=>renderArtCard(j,'artist',col))}
             </div>})}
         </div>
 
-        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestCard key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
+        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
         {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
