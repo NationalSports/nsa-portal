@@ -3453,7 +3453,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // and personalization tokens). Written in one pass with a single flash/reload.
   const applyLogoBulk = useCallback(async (entries, artChoice) => {
     let added = 0;
-    if (sel?.org_type === 'all_school' && artChoice) {
+    // A different front logo on an already-decorated garment becomes another logo CHOICE
+    // (a copy of the item the shopper picks between) — team stores too, like All School.
+    if (supportsLogoChoices(sel) && artChoice) {
       const pending = [];
       const newGroups = new Map();
       for (const entry of entries) {
@@ -3468,7 +3470,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           pending.push({ ...entry, decorations: entry.decorations.map((d) => d.art_id === existing?.art_id && existing?.transfer_code ? { ...d, transfer_code: existing.transfer_code, type: existing.type } : d) });
         }
       }
-      for (const entry of pending) {
+      if (sel.org_type === 'all_school') for (const entry of pending) {
         const blocked = stockLinkedArtError(detail.catalog.find((r) => r.id === entry.id), entry.decorations);
         if (blocked) { flash(blocked); return 0; }
       }
@@ -7751,7 +7753,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && schoolMockAmbiguous && <div role="status" style={{ padding: 12, background: '#fef3c7', color: '#92400e', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>This school has different sport designs on the same blank and color. Use each offering’s Catalog art editor for mockups; the shared mock builder cannot distinguish these designs.</div>}
           {tab === 'art' && <AtOnceArtVariants store={s} catalog={catalog} stockByWp={stockByWp} artwork={[...(s.store_art || []), ...(detail?.libraryArt || [])]} transfers={detail?.transfers || []} onSaved={onRefreshInventory} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} logoChoices={logoChoicesEnabled} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} onRemoveOrderShipping={onRemoveOrderShipping} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab onRefreshInventory={onRefreshInventory} artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -13116,7 +13118,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false,
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onUpdateSchoolItem, onOpenSchoolItem }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder, isAllSchool = false, logoChoices = isAllSchool, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onUpdateSchoolItem, onOpenSchoolItem }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -13230,8 +13232,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   // Group store items into styles, each with its colorways; stamp the style key on each
   // item so placement (per style) and drag can resolve it.
-  const groups = isAllSchool ? schoolArtGroups(catalog, stockByWp, activeId) : [];
-  if (!isAllSchool) { const m = new Map();
+  const groups = logoChoices ? schoolArtGroups(catalog, stockByWp, activeId) : [];
+  if (!logoChoices) { const m = new Map();
     for (const it of singles) {
       const st = stockByWp[it.id] || {};
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
@@ -13461,7 +13463,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           entries.push({ id: it.id, decorations: [...kept, ...newDecos], image_url: it.img, image_back_url: it.backImg });
         }
       }
-      const n = await onApplyLogoBulk(entries, isAllSchool && !linkOnly ? { ...activeArt, url: activeUrl } : null);
+      const n = await onApplyLogoBulk(entries, logoChoices && !linkOnly ? { ...activeArt, url: activeUrl } : null);
       // Remember each style's final front placement per garment type, so the next
       // hoodie/tee/polo seeds where reps actually put it (quiet write, shared by all reps).
       // Skip for link-only — nothing was visually placed, so there's no placement to learn.
@@ -13608,7 +13610,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.</p>}
+      {logoChoices && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice shoppers pick between; selecting an existing logo edits that choice.{isAllSchool ? ' Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.' : ' Hide or remove a choice from Manage choices.'}</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
@@ -13674,7 +13676,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
-                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && (isAllSchool || d.art_id === activeArt.id))).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && (logoChoices || d.art_id === activeArt.id))).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
                 {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
                 {activeUrl && selG && bgImg && (
                   <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
@@ -13691,7 +13693,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {!selG && has && <button onClick={(e) => { e.stopPropagation(); removeArtFromStyle(g); }} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Applied <span style={{ fontSize: 11, lineHeight: 1, opacity: 0.85 }} aria-label="remove">✕</span></button>}
                 {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
-              {isAllSchool && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
+              {logoChoices && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{g.addingChoice && selG ? 'Adds another art choice' : 'Art choices'}</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{g.choices.filter((choice) => frontArt(choice.row)).map((choice) => {
                   const deco = frontArt(choice.row);
