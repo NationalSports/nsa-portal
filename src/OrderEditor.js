@@ -1,3 +1,5 @@
+import OrderPriceListSearch from './OrderPriceListSearch';
+import {priceListCustomDraft,priceListLineFields} from './lib/priceListOrderItem';
 import { substitutionPrice, preserveCustomerPrice } from './lib/storeSubstitution';
 import { isStoreSalesOrder } from './lib/storeCloseout';
 import { decoPoCost } from './lib/decoPoCost';
@@ -6802,6 +6804,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
+        <OrderPriceListSearch query={pS} onSelect={candidate=>{setCustItem(priceListCustomDraft(candidate,o.default_markup||1.65));setShowAdd(false);setPS('');setShowCustom(true)}}/>
         <div style={{maxHeight:'65vh',overflow:'auto'}}>
           {allFp.slice(0,40).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
@@ -6939,6 +6942,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
+      {custItem.priceListSource&&<div className="vpl-order-review"><strong>Price-list item · review cost before adding</strong><p>{custItem.priceListSource.file_name} · {custItem.priceListSource.location}. Source column: {custItem.priceListSource.priceLabel} ({custItem.priceListSource.sourceValue||'not identified'}). Confirm this is your per-unit USD vendor cost; check pack quantities and discounts. Sell price starts at the order markup and can be edited. This item will use quantity-only entry.</p>{!(custItem.nsa_cost>0)&&<p>Enter a confirmed cost greater than zero to use this price-list item.</p>}</div>}
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
       <div style={{display:'grid',gridTemplateColumns:'120px 1fr 120px',gap:8,marginBottom:8}}>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor <span style={{color:'#dc2626'}}>*</span></label><SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=vendorList.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
@@ -7013,11 +7017,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             :'Still needed: '+missing.join(', ')+'. Every line needs a vendor and a real SKU so it can be ordered and invoiced.'}
         </div>;})()}
       <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" disabled={!custItem.name.trim()||!custItem.vendor_id||!skuOk(custItem.sku)} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';
+        <button className="btn btn-primary" disabled={!custItem.name.trim()||!custItem.vendor_id||!skuOk(custItem.sku)||(custItem.priceListSource&&!(custItem.nsa_cost>0))} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';
           const itType=custItem.item_type||'apparel';
           const availSz=itType==='footwear'?[...FOOTWEAR_DEFAULT_SIZES]:itType==='osfa'?['OSFA']:['S','M','L','XL','2XL'];
           const cSku=custItem.sku.trim();
-          const newItem={product_id:null,sku:cSku,name:custItem.name.trim(),brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[]};
+          const newItem={product_id:null,sku:cSku,name:custItem.name.trim(),brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[],...priceListLineFields(custItem)};
           if(custItem.saveToCatalog&&onSaveProduct){
             const catCategory=itType==='footwear'?'Footwear':itType==='osfa'?'Hats':'Tees';
             const newProd={id:'p'+Date.now(),vendor_id:custItem.vendor_id||null,sku:cSku,name:custItem.name.trim(),brand:brandName,color:custItem.color||'',

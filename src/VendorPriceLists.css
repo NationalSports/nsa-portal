@@ -70,3 +70,6 @@
 .vpl-result-empty{padding:20px;background:#f8fafd;border-radius:8px;line-height:1.6}
 .vpl-library{min-width:0}
 @media(max-width:600px){.vpl-result-header{align-items:flex-start;flex-wrap:wrap;padding:14px}.vpl-price-table td,.vpl-price-table th{padding:10px}.vpl-price-table .vpl-price-cell{font-size:16px}}
+.vpl-order-search{margin:12px 0 18px;border:1px solid #dce4ef;border-radius:10px;padding:16px;background:#f8fafd}
+.vpl-order-search h4{margin:0 0 12px;font-size:14px}.vpl-order-search h4 span{display:block;font-weight:400;color:#64748b;font-size:12px;margin-top:4px}
+.vpl-order-search p{font-size:13px;color:#52637c}.vpl-order-row{display:flex;align-items:center;gap:12px;padding:14px 0;border-top:1px solid #dce4ef;font-size:13px}.vpl-order-row>div:first-child{flex:1;min-width:0;overflow-wrap:anywhere}.vpl-order-row small{display:block;color:#64748b;font-size:11px;margin-top:5px}.vpl-order-row>div:nth-child(2){white-space:nowrap;text-align:right}.vpl-order-review{background:#edf5ff;padding:14px;border-radius:8px;margin-bottom:16px;font-size:13px;line-height:1.6}.vpl-order-review p{margin:6px 0 0}@media(max-width:650px){.vpl-order-row{flex-wrap:wrap}.vpl-order-row>div:first-child{flex-basis:70%}}
