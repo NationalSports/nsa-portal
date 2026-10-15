@@ -71,16 +71,12 @@ test('a saved logo can show first without production files or approval', () => {
   expect(onSetFirst).toHaveBeenCalledWith(other);
 });
 
-test('team stores can add screen-print logo choices without 24/7 inventory requirements', async () => {
-  const onCreate = jest.fn(async () => 'new-choice');
-  render(<SchoolLogoOptionsEditor {...base} productionSetup={false} onCreate={onCreate}
+test('team stores add logo choices from the logo library, not the 24/7 add form', () => {
+  render(<SchoolLogoOptionsEditor {...base} productionSetup={false}
     logoOptions={[{ id: 'art', name: 'Classic crest', url: 'crest.png', deco_type: 'screen_print' }]} />);
-  fireEvent.click(screen.getByRole('button', { name: '+ Add logo option' }));
-  fireEvent.change(screen.getByLabelText('New web logo'), { target: { value: 'art' } });
-  expect(screen.queryByLabelText('Production inventory (optional now)')).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Create logo choice' }));
-  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(row, 'Original logo', 'Classic crest', null, expect.objectContaining({ deco_type: 'screen_print' })));
-  expect(screen.queryByRole('button', { name: 'Launch requirements' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '+ Add logo option' })).toBeNull();
+  expect(screen.queryByLabelText('New web logo')).toBeNull();
+  expect(screen.getByText('Tap a logo in the Logo library above to add another choice.')).toBeTruthy();
 });
 
 test('logo choice switcher shows every choice and opens the same color of another choice', () => {

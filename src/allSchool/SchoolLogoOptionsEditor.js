@@ -38,8 +38,8 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
   };
   return <section aria-label="Logo choices for this item" style={{ border: '1px solid #dbe3ef', borderRadius: 12, padding: 16, marginBottom: 18, background: '#fff' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3><p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Saved mockups appear in the store automatically. Choose which logo shows first here. Drag the color thumbnails under the garment preview to choose that logo’s first color.</p></div>
-      <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (!open && !newName.trim() && selectedLogo?.name) setNewName(selectedLogo.name.slice(0, 80)); setOpen((value) => !value); }}>{open ? 'Cancel' : '+ Add logo option'}</button>
+      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3>{productionSetup ? <p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Saved mockups appear in the store automatically. Choose which logo shows first here. Drag the color thumbnails under the garment preview to choose that logo’s first color.</p> : <p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Tap a logo in the Logo library above to add another choice.</p>}</div>
+      {productionSetup && <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (!open && !newName.trim() && selectedLogo?.name) setNewName(selectedLogo.name.slice(0, 80)); setOpen((value) => !value); }}>{open ? 'Cancel' : '+ Add logo option'}</button>}
     </div>
     <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
       {choices.map(({ key, row, colors }) => { const visualReady = colors.every(hasSchoolMockup); const live = colors.every((color) => color.active !== false); const nextReview = colors.find((color) => methodSetupError(color, transfers, art)); return <div key={key} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '7px 9px', background: '#f1f5f9', borderRadius: 7, fontSize: 12 }}>
@@ -52,7 +52,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
         <button type="button" className="btn btn-sm btn-secondary" disabled={busy || (!visualReady && !live)} onClick={async () => { setBusy(true); try { if (await onUpdate(row, { active: !live })) setMessage(live ? 'Logo choice hidden from shoppers.' : 'Logo choice is live for shoppers.'); } finally { setBusy(false); } }}>{live ? 'Hide from store' : 'Show in store'}</button>
       </div>; })}
     </div>
-    {open && <div style={{ marginTop: 15, padding: 14, background: '#f8fafc', borderRadius: 8 }}>
+    {productionSetup && open && <div style={{ marginTop: 15, padding: 14, background: '#f8fafc', borderRadius: 8 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10 }}>
         <label style={{ fontSize: 12 }}>Current logo name<input className="form-input" value={currentName} maxLength={80} onChange={(e) => setCurrentName(e.target.value)} /></label>
         <label style={{ fontSize: 12 }}>New logo name<input className="form-input" value={newName} maxLength={80} placeholder="Arched Serra" onChange={(e) => setNewName(e.target.value)} /></label>

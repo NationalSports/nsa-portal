@@ -22,7 +22,7 @@ import { conversionRpcActions } from './allSchool/teamStoreConversion';
 import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
 import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
-import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
+import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies, logoOptionsForItem } from './allSchool/adminHelpers';
 import { openSharedProductionPacket } from './productionPacket/api';
 import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
@@ -8397,7 +8397,7 @@ const vectorPreviewUrl = (url) => {
 };
 const _probeImg = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res(true); im.onerror = () => res(false); im.src = u; });
 
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false, colorRows = [], primaryColorId = null, onReorderColors, onRemoveColor, onColorBackChange }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false, colorRows = [], primaryColorId = null, onReorderColors, onRemoveColor, onColorBackChange, onAddLogoChoice }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const backRef = useRef();
@@ -8409,6 +8409,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const [swapFrom, setSwapFrom] = useState(null);   // a logo color the rep wants to change
   const [imgPalette, setImgPalette] = useState([]); // the selected logo's own colors
   const [dragOver, setDragOver] = useState(false);
+  const [pendingChoice, setPendingChoice] = useState(null); // { art, url, cw } — library logo tapped on an already-decorated front
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
   const sideOf = (d) => d.side || 'front';
@@ -8458,9 +8459,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const remove = (i) => { onChange(decos.filter((_, j) => j !== i)); setSel((s) => Math.max(0, s - (i <= s ? 1 : 0))); };
   // cw — set when the rep tapped a SPECIFIC color-way tile: the deco is stamped as an
   // explicit pick (color_way_id / cw_pick) so rendering never swaps it via auto-match.
-  const addLogo = (art, urlOverride, cw) => {
+  const addLogo = (art, urlOverride, cw, { stack = false } = {}) => {
     const url = urlOverride || artPlaceUrl(art); if (!url) { setNote('That art has no web-ready logo yet — drop a PNG/SVG below to place it.'); return; }
-    setNote('');
+    setNote(''); setPendingChoice(null);
+    // Logo-choice stores: a new logo on a front that already has one usually means "offer
+    // this as another logo choice" — ask, instead of silently stacking a second logo.
+    if (!stack && onAddLogoChoice && side === 'front' && decos.some((d) => sideOf(d) === 'front' && !isPerso(d) && (d.art_id || d.art_url))) { setPendingChoice({ art, url, cw }); return; }
     const p = placementById(defaultPlacement);
     const cwStamp = cw ? { cw_pick: true, ...(cw.color_way_id ? { color_way_id: cw.color_way_id } : {}), color_label: cw.color_way || 'original' } : { color_label: 'original' };
     onChange([...decos, { art_id: art.id, art_url: url, orig_url: url, source_url: artSourceUrl(art), placement: defaultPlacement, side, x: p.x, y: p.y, w: p.w, ...cwStamp }]);
@@ -8674,6 +8678,15 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           </div>
           {dragOver && <div style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, marginTop: 6 }}>Drop to add to the library</div>}
           {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginTop: 8 }}>{note}</div>}
+          {pendingChoice && <div role="dialog" aria-label="Add logo" style={{ marginTop: 10, padding: 10, borderRadius: 10, background: '#eef2ff', border: '1px solid #c7d2fe' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#312e81', marginBottom: 8 }}>Add “{pendingChoice.art.name || 'this logo'}” as…</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => { const pc = pendingChoice; setPendingChoice(null); onAddLogoChoice(pc.art, pc.url); }}>New logo choice</button>
+              <button type="button" className="btn btn-sm btn-secondary" onClick={() => { const pc = pendingChoice; addLogo(pc.art, pc.url, pc.cw, { stack: true }); }}>Add to this shirt too</button>
+              <button type="button" className="btn btn-sm btn-secondary" onClick={() => setPendingChoice(null)}>Cancel</button>
+            </div>
+            <div style={{ fontSize: 11, color: '#4338ca', marginTop: 6 }}>A logo choice is a separate version of this item that shoppers pick between.</div>
+          </div>}
         </div>
 
         {(takesNumber || takesName) && (
@@ -8992,6 +9005,30 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
 
 function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onEditItem, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolArt = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onCancel, onSave, onSaveColor }) {
   const isBundle = item.kind === 'bundle';
+  // Team stores: tapping a library logo on an already-decorated front can make it a new
+  // logo CHOICE — a copy of every color of this item with the new logo where the current
+  // one sits — and opens it for fine-tuning. A logo that's already a choice just opens it.
+  const teamLogoChoices = isTeam && !isAllSchool && !!onCreateSchoolLogoOption;
+  const addLogoChoice = async (art, url) => {
+    const existing = logoOptionsForItem(catalog, item).find((ch) => ch.colors.some((r) => frontArt(r)?.art_id === art.id));
+    if (existing) { const t = existing.colors.find((r) => r.product_id && r.product_id === item.product_id) || existing.row; if (t.id !== item.id) onEditItem?.(t.id, 'art'); return; }
+    const key = item.variant_group_id || item.id;
+    const sources = catalog.filter((r) => r.kind === 'single' && (r.variant_group_id || r.id) === key);
+    const cur = frontArt(item);
+    const p0 = placementById((cur && cur.placement) || 'full_front');
+    const spot = { placement: (cur && cur.placement) || p0.id, x: cur?.x ?? p0.x, y: cur?.y ?? p0.y, w: cur?.w ?? p0.w };
+    const entries = sources.map((r) => {
+      const st = stockByWp[r.id] || {};
+      const kept = (r.decorations || []).filter((d) => isPerso(d) || (d.side || 'front') !== 'front');
+      return { id: r.id, image_url: st.image_front_url || r.image_front_url || '', image_back_url: st.image_back_url || r.image_back_url || '',
+        decorations: [...kept, { art_id: art.id, art_url: url, orig_url: url, source_url: artSourceUrl(art), ...spot, side: 'front', color_label: 'original' }] };
+    });
+    const curName = item.school_design_label || (cur && (library.find((a) => a.id === cur.art_id)?.name)) || 'Original logo';
+    try {
+      const id = await onCreateSchoolLogoOption(item, curName, art.name || 'Another logo', null, { ...art, url }, entries);
+      if (id) onEditItem?.(id, 'art');
+    } catch (e) { window.alert(e.message || String(e)); }
+  };
   const [dragBundleId, setDragBundleId] = useState(null);
   const [overBundleId, setOverBundleId] = useState(null);
   // Other single items on this store, for "apply this logo to other items".
@@ -9815,6 +9852,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <LogoChoiceSwitcher item={item} catalog={catalog} onEdit={onEditItem} />}
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
+          onAddLogoChoice={teamLogoChoices ? addLogoChoice : undefined}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
