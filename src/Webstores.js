@@ -1234,21 +1234,28 @@ function _flyerPalette(store) {
     line: '#d5dae1', label: '#6b7280', footText: _fMix(_fMix(brand, '#000000', 0.45), W, 0.62),
   };
 }
-// The big word behind the logo. Most stores have no `sport` saved yet (it's set in Store
-// Settings → Branding), so fall back to the sport named in the store's own name
-// ("Incline Basketball Team Store" → BASKETBALL). All-school stores already have their
-// own "Hero background text" setting (blank = no word), which wins.
-const FLYER_SPORTS = ['Track & Field', 'Cross Country', 'Water Polo', 'Flag Football', 'Beach Volleyball', 'Basketball', 'Baseball', 'Softball', 'Football', 'Volleyball', 'Soccer', 'Wrestling', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swimming', 'Swim', 'Dive', 'Cheer', 'Dance', 'Band', 'Bowling', 'Rugby', 'Pickleball', 'Esports', 'Track'];
+// The sport named in a store/team name ("Incline Basketball Team Store" → Basketball;
+// "Pacific United SC" → Soccer), or '' when it names none. Store setup pre-fills the
+// store's Sport from this; the flyer falls back to it for stores saved without one.
+const NAME_SPORTS = [['Track & Field'], ['Cross Country'], ['Water Polo'], ['Flag Football'], ['Beach Volleyball'], ['Basketball'], ['Baseball'], ['Softball'], ['Football'], ['Volleyball'], ['Soccer'], ['Wrestling'], ['Wresting', 'Wrestling'], ['Lacrosse'], ['Field Hockey'], ['Hockey'], ['Golf'], ['Tennis'], ['Swimming', 'Swim'], ['Swim'], ['Dive'], ['Cheer'], ['Dance'], ['Band'], ['Bowling'], ['Rugby'], ['Pickleball'], ['Esports'], ['Track', 'Track & Field']];
+function _sportFromName(name) {
+  const n = String(name || '');
+  const hit = NAME_SPORTS.find(([w]) => new RegExp(`(^|[^a-z])${w}([^a-z]|$)`, 'i').test(n));
+  if (hit) return hit[1] || hit[0];
+  // Abbreviations — capitals only, so ordinary words don't match.
+  if (/(^|[^A-Za-z])(SC|FC)([^A-Za-z]|$)/.test(n)) return 'Soccer';
+  if (/(^|[^A-Za-z])XC([^A-Za-z]|$)/.test(n)) return 'Cross Country';
+  return '';
+}
+// The big word behind the logo: the store's Sport, else the sport in its name. All-school
+// stores already have their own "Hero background text" setting (blank = no word), which wins.
 function _flyerSport(store) {
   if (store.org_type === 'all_school') {
     const bg = store.all_school_settings && store.all_school_settings.hero_background_text;
     if (typeof bg === 'string') return bg.trim().toUpperCase();
   }
-  const own = String(store.sport || '').trim();
-  if (own) return own.toUpperCase();
-  const name = String(store.name || '');
-  const hit = FLYER_SPORTS.find((s) => new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i').test(name));
-  if (hit) return hit.toUpperCase();
+  const sport = String(store.sport || '').trim() || _sportFromName(store.name);
+  if (sport) return sport.toUpperCase();
   return store.org_type === 'all_school' ? 'ATHLETICS' : 'TEAM';
 }
 function _flyerModel(store, items = []) {
@@ -6692,6 +6699,14 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
   const [nameTouched, setNameTouched] = useState(!!(store && store.name) || !!(initialOverrides && initialOverrides.name));
+  // Sport follows the store name (incl. the auto-name from the customer) until the rep
+  // types one; a store that already has a sport saved keeps it.
+  const [sportTouched, setSportTouched] = useState(!!(store && String(store.sport || '').trim()));
+  useEffect(() => {
+    if (sportTouched) return;
+    const guess = _sportFromName(f.name);
+    setF((p) => (guess && p.sport !== guess ? { ...p, sport: guess } : p));
+  }, [f.name, sportTouched]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
@@ -6840,6 +6855,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.customer_id = payload.customer_id || null;
     payload.rep_id = payload.rep_id || null;
     payload.csr_id = payload.csr_id || null;
+    if ('sport' in payload) payload.sport = String(payload.sport || '').trim() || null;
     // Picker values are PT wall clock: stores open at 12:00 AM on the open date and
     // stop taking orders at the chosen time (default 11:59 PM) on the close date.
     // Writing the bare 'YYYY-MM-DD' instead let Postgres read it as midnight UTC,
@@ -6920,6 +6936,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       <Section title="Basics">
         <Row label={`${noun} (customer) — link this first`}><CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer} placeholder="Search by name or alpha — e.g. OLu" /></Row>
         <Row label="Store name (auto-named from customer)"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="OLu Football Team Store" /></Row>
+        {orgType !== 'all_school' && <Row label="Sport (filled in from the store name — check it)"><input className="form-input" aria-label="Sport" list="store-form-sports" value={f.sport || ''} onChange={(e) => { setSportTouched(true); set('sport', e.target.value); }} placeholder="e.g. Basketball" style={!String(f.sport || '').trim() ? { borderColor: '#f59e0b' } : undefined} /><datalist id="store-form-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist>{!String(f.sport || '').trim() && <div style={{ fontSize: 12, color: '#b45309' }}>Add the sport — it’s the big word on the launch flyer.</div>}</Row>}
         {store?.store_code && <Row label="Store # (auto-assigned — use it to look this store up)"><div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: '.06em', color: '#191919', padding: '6px 0' }}>{store.store_code}</div></Row>}
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
@@ -7063,7 +7080,6 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       <Section title="Branding">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
-        {orgType !== 'all_school' && <Row label="Sport"><input className="form-input" aria-label="Sport" list="store-form-sports" value={f.sport || ''} onChange={(e) => set('sport', e.target.value)} placeholder="e.g. Basketball" /><datalist id="store-form-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist><div style={{ fontSize: 12, color: '#64748b' }}>The big word behind the logo on the launch flyer. Leave blank to use the sport in the store name.</div></Row>}
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback={inheritedColors.primary || '#0b1f3a'} inherited={!!inheritedColors.primary} />
           <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback={inheritedColors.accent || '#e11d2a'} inherited={!!inheritedColors.accent} />
