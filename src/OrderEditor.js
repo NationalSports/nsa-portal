@@ -93,6 +93,7 @@ import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artR
 import { artFamilyKey, releasedSplitLink } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
 import { stitchPreviewsFor, threadLinesMissingMsg } from './DstPreview';
+import { vectorSourceFor } from './VectorPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -3965,6 +3966,19 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
   // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
   const syncLogoLibrary=async change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);const updates=logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change);if(!updates.length||!window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.'))return;for(const c of updates){if((await onSaveCustomer(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');if(cust&&c.id===cust.id)setCust(c)}};
+  // A stitch render (embroidery DST) or art render (recolored .svg/.ai) becomes this color way's web
+  // logo = its logo detail (stores, mockups, production sheet). Same save + Art Library sync as a
+  // logo uploaded from the job. kind: 'stitch' | 'art'.
+  const saveRenderAsWebLogo=async(art,blob,cw,kind)=>{
+    const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
+    const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
+    if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this '+kind+' render?'))return;
+    nf('Saving web logo...');
+    try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_'+kind+'.png',{type:'image/png'}),'nsa-web-logos');
+      const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:(kind==='stitch'?'Stitch':'Art')+' render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+      if(!(await saveArtFilesNow(arts,'Web logo')))return;
+      await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
+    catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
@@ -7411,21 +7425,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
-                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card */}
+                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card (embroidery);
+                        vector: the same for print art from an .svg/.ai (VectorPreview) */}
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}
                       stitch={art.deco_type==='embroidery'?(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-                        return{dstUrl,onEnlarge:setMockupLightbox,onAutoLogo:(cw,inks,makeFile)=>autoStitchLogo(art.id,cw,inks,makeFile),onUseAsLogo:async(blob,cw)=>{
-                          // The stitch render becomes this color way's web logo = its logo detail (stores, mockups,
-                          // production sheet). Same save + Art Library sync as a logo uploaded from the job.
-                          const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
-                          const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
-                          if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this stitch render?'))return;
-                          nf('Saving web logo...');
-                          try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-web-logos');
-                            const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:'Stitch render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
-                            if(!(await saveArtFilesNow(arts,'Web logo')))return;
-                            await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
-                          catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}}}})():null}/>
+                        return{dstUrl,onEnlarge:setMockupLightbox,onAutoLogo:(cw,inks,makeFile)=>autoStitchLogo(art.id,cw,inks,makeFile),onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'stitch')}})():null}
+                      vector={(()=>{const src=vectorSourceFor(art);if(!src)return null;
+                        // vector: the folder's .svg (or .ai, converted) drawn in each color way's inks; colors can be swapped or dropped out
+                        return{src,onEnlarge:setMockupLightbox,onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'art')}})()}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>

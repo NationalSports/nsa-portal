@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchPngFile } from './DstPreview';
+import { useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading } from './VectorPreview';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -730,7 +731,10 @@ function ThreadQuickPicks({colors,onPick}){
 
 // `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
 // preview beside its card (one color way) or under it (several, so previews line up with their cards).
-function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null}){
+// `vector` (print art with an .svg/.ai — see VectorPreview): {src,onEnlarge,onUseAsLogo(blob,cw)} draws each color
+// way's art in its inks the same way; each color can be kept, swapped or dropped out (saved on the color way).
+// With no color way (e.g. DTF) drop-outs are for this session only — enough to export a web logo / PNG / SVG.
+function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null,vector=null}){
   const isEmb=decoType==='embroidery';
   const isDtf=decoType==='dtf';
   const cws=colorWays||[];
@@ -759,15 +763,23 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   const[stBusy,setStBusy]=useState(false);
   const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
   const stUseAsLogo=stitch?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await stitch.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  const showVector=!!(!isEmb&&vector&&vector.src);
+  const{art:vArt,err:vErr}=useVectorArt(showVector?vector.src:null);
+  const[vDrops,setVDrops]=useState([]);// no-color-way drop-outs (not saved — there's no color way to hold them)
+  const vUseAsLogo=vector?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await vector.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  const showPrev=showStitch||showVector;
   // One color way → preview to the right of the card; several → each preview under its own card.
-  const stSide=showStitch&&cws.length<=1;
-  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={onAutoLogo?null:stUseAsLogo} autoLogo={!!onAutoLogo&&!!cw} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
+  const stSide=showPrev&&cws.length<=1;
+  const stTile=(cw,ci,width)=>showVector
+    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onRecolor={m=>updCw(ci,{art_recolor:m})} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
+    :stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={onAutoLogo?null:stUseAsLogo} autoLogo={!!onAutoLogo&&!!cw} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
       <span style={{fontSize:9,color:'#94a3b8'}}>{isDtf?'Full-color — color ways optional':isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
       {cws.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#fff',background:'#94a3b8',borderRadius:8,padding:'0 7px',lineHeight:'16px'}}>{cws.length}</span>}
       {showStitch&&<StitchBadge design={stDesign}/>}
+      {showVector&&<VectorBadge art={vArt}/>}
     </div>
     {cws.length===0&&isDtf&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>DTF prints full-color (CMYK) — no color ways needed. Add one only to note a specific garment color.</div>}
     {cws.length===0&&!isDtf&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
@@ -777,7 +789,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
         const inkCount=(cw.inks||[]).filter(x=>x&&x.trim()).length;
         const lines=linesOf(cw);
         const stopsSet=maxLines!=null?lines.slice(0,maxLines).filter(x=>String(x||'').trim()).length:0;
-        const card=<div key={cw.id} style={{flex:showStitch&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
+        const card=<div key={cw.id} style={{flex:showPrev&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
           {/* Header bar — CW number, garment color swatch + name, duplicate, remove */}
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
@@ -807,15 +819,16 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               :<div style={{fontSize:9,color:'#dc2626',fontWeight:700,padding:'4px 0'}}>{stopsSet} of {maxLines} thread stops filled — required before production</div>}
           </div>
         </div>;
-        if(!showStitch)return card;
+        if(!showPrev)return card;
         if(stSide)return[card,<div key={cw.id+'_st'} style={{alignSelf:'flex-start'}}>{stTile(cw,ci,240)}</div>];
         // Several color ways: card on top, its preview underneath, same column width — columns in a
         // row stretch to equal height so the previews line up.
         // Fixed 260px column so the thread card and its stitch preview are the same width.
         return<div key={cw.id} style={{flex:'0 0 260px',width:260,display:'flex',flexDirection:'column',gap:8}}>{card}<div style={{width:'100%'}}>{stTile(cw,ci,'100%')}</div></div>})}
-      {showStitch&&cws.length===0&&stTile(null,0,240)}
+      {showPrev&&cws.length===0&&stTile(null,0,240)}
     </div>
     {showStitch&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws} palette={threadColors}/></div>}
+    {showVector&&<div style={{marginTop:-4,marginBottom:8}}><VectorNotes art={vArt} err={vErr} colorWays={cws} palette={pantoneColors}/></div>}
     {/* Embroidery: a new color way starts with CW 1's threads (same DST stops) — the rep adjusts. */}
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:isEmb&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
