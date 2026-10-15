@@ -29,10 +29,12 @@ export function EnabledSalesOrderEditGate({editor:Editor,...props}) {
     const tick=setInterval(()=>{lease.canSave()},1000);
     const renew=setInterval(()=>{lease.renew()},30000);
     const resume=()=>{if(document.visibilityState==='visible')lease.renew()};
+    const pagehide=()=>lease.closeOnPageHide();
     const lost=event=>{if(event.detail?.id===props.order.id&&event.detail?.session===lease.state.session)lease.lose()};
     window.addEventListener('focus',resume);document.addEventListener('visibilitychange',resume);
+    window.addEventListener('pagehide',pagehide);
     window.addEventListener('nsa:edit-lease-lost',lost);
-    return()=>{mounted.current=false;clearInterval(tick);clearInterval(renew);window.removeEventListener('focus',resume);document.removeEventListener('visibilitychange',resume);window.removeEventListener('nsa:edit-lease-lost',lost);Promise.resolve().then(()=>{if(!mounted.current)lease.close()})};
+    return()=>{mounted.current=false;clearInterval(tick);clearInterval(renew);window.removeEventListener('focus',resume);document.removeEventListener('visibilitychange',resume);window.removeEventListener('pagehide',pagehide);window.removeEventListener('nsa:edit-lease-lost',lost);Promise.resolve().then(()=>{if(!mounted.current)lease.close()})};
   },[lease,props.order.id]);
   useEffect(()=>{
     if(state.phase!=='lost'||!loaded)return;
