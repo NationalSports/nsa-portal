@@ -150,16 +150,16 @@ function recolorSvg(svgText, map) {
 //   1. the color way's own choice, cw.art_recolor = { paletteHex: inkIndex | -1 | 'drop' }
 //   2. else a drop-out from `dropouts` ([paletteHex…] — the session-only picks for art with no
 //      color way, e.g. dropping a DTF white background)
-//   3. else the ink on the same line (file color 1 → ink 1), or keep if that line is empty.
+//   3. else keep the file's color. Nothing is swapped until a rep picks it — an ink list's order
+//      says nothing about which file color each ink belongs to, so guessing showed wrong colors.
 function recolorPlan(palette, cw, dropouts) {
   const inks = (cw && cw.inks) || [], set = (cw && cw.art_recolor) || {}, drop = new Set(dropouts || []);
   const ok = i => Number.isInteger(i) && i >= 0 && !!String(inks[i] || '').trim();
   const out = {};
-  (palette || []).forEach((c, i) => {
+  (palette || []).forEach(c => {
     const own = Object.prototype.hasOwnProperty.call(set, c.hex) ? set[c.hex] : undefined;
     if (own === 'drop' || (own === undefined && drop.has(c.hex))) out[c.hex] = 'drop';
-    else if (own !== undefined) out[c.hex] = ok(own) ? own : -1;
-    else out[c.hex] = ok(i) ? i : -1;
+    else out[c.hex] = own !== undefined && ok(own) ? own : -1;
   });
   return out;
 }

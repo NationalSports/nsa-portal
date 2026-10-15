@@ -64,7 +64,7 @@ describe('svgPalette', () => {
     expect(pal.map(g => g.members.slice().sort())).toEqual([
       ['#f6f6f6', '#fdfdfd', '#fefefe', '#ffffff'], ['#1b365d'], ['#000000', '#050505'], ['#c8102e'], ['#e6e6e6']]);
     // One pick on the white group changes every white in the file.
-    const out = recolorSvg(t, recolorMap(pal, { inks: ['Gold'] }, [], () => '#ffb81c'));
+    const out = recolorSvg(t, recolorMap(pal, { inks: ['Gold'], art_recolor: { [pal[0].hex]: 0 } }, [], () => '#ffb81c'));
     expect(svgColors(out).map(c => c.hex)).toEqual(['#ffb81c', '#1b365d', '#000000', '#050505', '#c8102e', '#e6e6e6']);
     expect(recolorSvg(t, recolorMap(pal, { inks: [], art_recolor: { [pal[0].hex]: 'drop' } }, [], () => null))).not.toMatch(/#f[6def]f[6def]f[6def]|#ffffff/);
   });
@@ -103,8 +103,9 @@ describe('recolorSvg', () => {
 describe('recolorPlan / recolorMap', () => {
   const pal = [{ hex: '#1b365d', members: ['#1b365d', '#1c375e'] }, { hex: '#ffffff', members: ['#ffffff'] }, { hex: '#c8a24a', members: ['#c8a24a'] }];
   const hex = n => ({ Maroon: '#8a1538', Gold: '#ffd700', White: '#ffffff' }[n] || null);
-  test('default: file color N takes ink line N; empty/missing lines keep the file color', () => {
-    expect(recolorPlan(pal, { inks: ['Maroon', ''] })).toEqual({ '#1b365d': 0, '#ffffff': -1, '#c8a24a': -1 });
+  test('default: every color stays as is until a rep picks an ink, whatever the ink list holds', () => {
+    expect(recolorPlan(pal, { inks: ['Maroon', 'Gold', 'White'] })).toEqual({ '#1b365d': -1, '#ffffff': -1, '#c8a24a': -1 });
+    expect(recolorMap(pal, { inks: ['Maroon', 'Gold', 'White'] }, [], hex)).toEqual({});
   });
   test("the color way's own pick wins, including keep (-1) and drop", () => {
     const cw = { inks: ['Maroon', 'Gold'], art_recolor: { '#1b365d': 1, '#ffffff': 'drop', '#c8a24a': -1 } };
@@ -119,7 +120,7 @@ describe('recolorPlan / recolorMap', () => {
     expect(recolorPlan(pal, { inks: ['Maroon'], art_recolor: { '#ffffff': 3 } })['#ffffff']).toBe(-1);
   });
   test('recolorMap expands groups to every member shade; unknown ink names keep the file color', () => {
-    expect(recolorMap(pal, { inks: ['Maroon', 'Mystery'], art_recolor: { '#c8a24a': 'drop' } }, [], hex))
+    expect(recolorMap(pal, { inks: ['Maroon', 'Mystery'], art_recolor: { '#1b365d': 0, '#ffffff': 1, '#c8a24a': 'drop' } }, [], hex))
       .toEqual({ '#1b365d': '#8a1538', '#1c375e': '#8a1538', '#c8a24a': 'none' });
   });
 });
