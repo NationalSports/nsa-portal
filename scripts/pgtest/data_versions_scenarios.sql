@@ -111,12 +111,36 @@ do $$ declare b jsonb := public.data_versions(); begin
 end $$;
 reset role;
 
--- 5. Who can read the counters.
+-- 5. An uncommitted writer makes its group read as "in flight" (null) until it commits, so a tab
+--    can never record a counter that a still-open save already bumped. Second session via dblink.
+create extension if not exists dblink;
+select dblink_connect('w', 'host=/tmp/pgtest-reads port=54999 dbname=' || current_database() || ' user=postgres');
+select dblink_exec('w', 'begin');
+select dblink_exec('w', 'insert into public.so_items values (''inflight'', 1)');
+select pg_temp.expect((pg_temp.v()->>'sales_orders') is null and (pg_temp.v()->>'invoices') is not null,
+  'while a save to the sales_orders group is open, that group reads null and others still read');
+select pg_temp.expect((select count(*) from public.so_items where id = 'inflight') = 0, 'and its rows are indeed not visible yet');
+select dblink_exec('w', 'commit');
+select pg_temp.expect((pg_temp.v()->>'sales_orders') is not null, 'after it commits the counter reads again');
+select dblink_exec('w', 'begin');
+select dblink_exec('w', 'insert into public.so_items values (''inflight2'', 1)');
+select dblink_exec('w', 'rollback');
+select pg_temp.expect((pg_temp.v()->>'sales_orders') is not null, 'a rolled-back writer releases the group too');
+select dblink_disconnect('w');
+
+-- 6. Who can read the counters.
 set role anon;
 do $$ begin perform public.data_versions(); raise exception 'SCENARIO FAILED: anon read the counters';
 exception when insufficient_privilege then raise notice 'ok: anon cannot read the counters'; end $$;
 do $$ begin perform nextval('public.data_version_sales_orders'); raise exception 'SCENARIO FAILED: anon bumped a counter directly';
-exception when insufficient_privilege then raise notice 'ok: nobody bumps a counter directly'; end $$;
+exception when insufficient_privilege then raise notice 'ok: anon cannot bump a counter directly'; end $$;
+reset role;
+-- Supabase's default privileges would grant the sequences to authenticated; the migration revokes them.
+grant usage on all sequences in schema public to authenticated;
+\i supabase/migrations/20261014220000_data_versions.sql
+set role authenticated;
+do $$ begin perform nextval('public.data_version_sales_orders'); raise exception 'SCENARIO FAILED: authenticated bumped a counter directly';
+exception when insufficient_privilege then raise notice 'ok: authenticated cannot bump a counter directly, even after a blanket sequence grant'; end $$;
 reset role;
 select pg_temp.expect((select count(*) from pg_trigger where tgname like '%data_version%' and not tgisinternal) = 22, '22 triggers, none duplicated by the re-run');
 

@@ -46,3 +46,10 @@ test('counters compare by value whether they arrive as numbers or strings (bigin
   markLoaded({ sales_orders: '12' }, ['sales_orders']);
   expect(allUnchanged({ sales_orders: 12 }, ['sales_orders'])).toBe(true);
 });
+
+test('a group the server reports as in flight (null) is changed and is never recorded', () => {
+  markLoaded({ sales_orders: 3, invoices: 9 }, ['sales_orders', 'invoices']);
+  expect(changedGroups({ sales_orders: null, invoices: 9 }, ['sales_orders', 'invoices'])).toEqual(['sales_orders']);
+  markLoaded({ sales_orders: null, invoices: 10 }, ['sales_orders', 'invoices']);
+  expect(changedGroups({ sales_orders: 3, invoices: 10 }, ['sales_orders', 'invoices'])).toEqual([]);
+});

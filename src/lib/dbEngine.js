@@ -435,7 +435,8 @@ const _dbLoad = async (opts={}) => {
     // wiped its 401/timeout marks, so an order came back items:[] with _itemsHydrated:true (SO-1518).
     const _loadBad=new Set();
     const _loadTableUntrusted=table=>_loadBad.has(table);
-    const _q=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):(table,o)=>_safeQuery(table,{...o,_track:_loadBad});
+    const _q0=source?(table,o)=>Promise.resolve(source(table,o)).then(r=>({data:(r&&r.data)||[],error:null,status:200})):(table,o)=>_safeQuery(table,{...o,_track:_loadBad});
+    const _q=(table,o)=>{if(_curGroup)_tableGroup.set(table,_curGroup);return _q0(table,o)};
     // A supplied read-only view has no local drafts to reconcile against.
     const recoveryOwner=source?null:currentDraftOwner();
     // Read the small recovery index alongside network I/O, not on every render.
@@ -454,7 +455,12 @@ const _dbLoad = async (opts={}) => {
     // groups — a realtime products change shouldn't re-download estimates, SOs, invoices, etc.
     // A group bundles a parent with every child table _dbLoad joins into it, so partial loads
     // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
-    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
+    // Which load group each table was fetched for, recorded as the group's queries start (q() calls _q()
+    // synchronously). _badGroups below is derived from it, so callers that skip unchanged groups
+    // (src/lib/dataVersions.js) never record a group whose tables came back untrusted this load.
+    const _tableGroup=new Map();let _curGroup=null;
+    const _run=(g,q)=>{_curGroup=g;try{return q()}finally{_curGroup=null}};
+    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?_run(g,q):_skip();if(cold&&coreOnly)return _skip();return _run(g,q)};
     const _cold=q=>()=>(coreOnly||only)?_skip():q();
     // Mirror of the _grp('products',…,true) gate: products are (re)built on initial + full polls + a
     // products-realtime reload, but NOT on coreOnly polls or non-products selective reloads. Drives
@@ -773,7 +779,10 @@ const _dbLoad = async (opts={}) => {
       // Storage failure keeps the copies; reconciliation never writes cloud data.
       reconcileSavedDocumentDrafts({owner:recoveryOwner,drafts:recoveryCandidates,documents,table,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));
     }
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly,
+      // Load groups with at least one table that timed out / failed / 404'd this load (app_state counts as
+      // its own group). Their rows may be hollow, so they must not be recorded as "current".
+      _badGroups:[...new Set([..._loadBad].map(t=>t==='app_state'?'app_state':_tableGroup.get(t)).filter(Boolean))]};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
