@@ -1,15 +1,16 @@
+import { artistCanSeeWork } from './artAssignment';
+
 export const ART_REQUEST_TYPES = { web_logo: 'CW web logo', vectorize: 'Vectorize logo', create_logo: 'Create logo' };
 export const isOpenArtRequest = r => ['requested', 'in_progress'].includes(r.status);
 
 export function filterArtRequests(rows, { cu, filter = 'all', search = '', reps = [], customers = [], orders = [] } = {}) {
-  const artists = reps.filter(r => ['art', 'artist'].includes(r.role) && r.is_active !== false);
   return rows.map(r => ({ ...r,
     assigned_artist_name: reps.find(a => a.id === r.assigned_artist)?.name || r.assigned_artist,
     customer_name: customers.find(c => c.id === r.customer_id)?.name || r.customer_id,
     linked_so_id: r.so_id || orders.find(s => r.estimate_id && s.estimate_id === r.estimate_id)?.id,
   })).filter(r => {
     if (['art', 'artist'].includes(cu?.role)) {
-      if (r.assigned_artist !== cu.id && artists.some(a => a.id === r.assigned_artist)) return false;
+      if (!artistCanSeeWork(r, cu.id, reps)) return false;
     } else if (filter !== 'all') {
       if (filter.startsWith('artist:')) { if (r.assigned_artist !== filter.slice(7)) return false; }
       else if (['rep', 'admin', 'super_admin'].includes(cu?.role)) { if (r.requested_by !== filter) return false; }
