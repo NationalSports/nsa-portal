@@ -24,3 +24,9 @@ Focused Jest tests cover file/date validation, active-staff authorization, incom
 The migration was also executed in isolated PostgreSQL (PGlite) with synthetic vendors and documents. Verified vendor scoping; archive/effective/expiry filters; exclusion of unpublished documents; atomic publication; rejection of republishing; private bucket configuration; and denial of direct table/RPC access to anon and authenticated roles. Live vendor IDs, inventory columns, and existing bucket policies were checked read-only. A production storage upload/download smoke test remains for rollout.
 
 After deploying, upload one known PDF and one Excel price list through Vendors → vendor → Price lists. Search a known SKU both there and through the assistant; compare prices with the original, stock quantities with the sync screen, and archive a superseded list to confirm its exclusion.
+
+## Price list panel
+
+Search and uploaded files appear together, alongside a drop zone for one PDF/XLS/XLSX at a time. Browse files is keyboard accessible. Optional dates apply to the next upload and must be set before choosing or dropping the file. Uploads reject multiple files, unsupported extensions, empty/oversized files, and reversed dates. Processing locks out additional uploads. Files display Searchable, Scheduled, Expired, Upload incomplete, or Archived status; only current ready files count as searchable. The layout stacks on narrow screens.
+
+For Athletic Specialties, try “Search Athletic Specialties’s price list for AA70” in the portal assistant, or enter `AA70` in the vendor's price list search. Review the cited row and open the original before using its price in an estimate or order. A zero source price needs vendor confirmation; it should not be assumed to mean free. Athletic Specialties does not have the Adidas/UA stock feed, so this price list alone does not establish availability.

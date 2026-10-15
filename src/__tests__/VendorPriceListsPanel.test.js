@@ -30,3 +30,47 @@ test('evidence stays literal, zero stock stays zero, and stale/missing sync is v
  expect(screen.getByText('Unknown · stale')).toBeInTheDocument();
  expect(screen.getByText('20 · 2026-12-01')).toBeInTheDocument();
 });
+
+test('drop uploads one file with optional dates and refreshes the library',async()=>{
+ uploadPriceList.mockReset().mockResolvedValue('new');
+ render(<VendorPriceLists vendor={{id:'v3',name:'Custom vendor'}}/>);
+ await screen.findByText(/No price list uploaded/);
+ fireEvent.change(screen.getByLabelText('Price list effective date'),{target:{value:'2026-01-01'}});
+ const file=new File(['prices'],'new.xlsx');
+ fireEvent.drop(screen.getByTestId('price-list-dropzone'),{dataTransfer:{files:[file]}});
+ await waitFor(()=>expect(uploadPriceList).toHaveBeenCalledWith('v3',file,{effective_date:'2026-01-01',expires_on:''},expect.any(Function)));
+ expect(await screen.findByText(/Price list is searchable/)).toBeInTheDocument();
+});
+test('drop rejects multiple files, unsupported files, and reversed dates',async()=>{
+ uploadPriceList.mockReset();
+ render(<VendorPriceLists vendor={{id:'v3',name:'Custom vendor'}}/>);
+ await screen.findByText(/No price list uploaded/);
+ const zone=screen.getByTestId('price-list-dropzone');
+ fireEvent.drop(zone,{dataTransfer:{files:[new File(['a'],'a.pdf'),new File(['b'],'b.pdf')]}});
+ expect(screen.getByRole('alert')).toHaveTextContent('one price list');
+ fireEvent.drop(zone,{dataTransfer:{files:[new File(['a'],'a.exe')]}});
+ expect(screen.getByRole('alert')).toHaveTextContent('PDF, XLS or XLSX');
+ fireEvent.change(screen.getByLabelText('Price list effective date'),{target:{value:'2026-02-01'}});
+ fireEvent.change(screen.getByLabelText('Price list expiry date'),{target:{value:'2026-01-01'}});
+ fireEvent.drop(zone,{dataTransfer:{files:[new File(['a'],'a.pdf')]}});
+ expect(screen.getByRole('alert')).toHaveTextContent('Expiry date');
+ expect(uploadPriceList).not.toHaveBeenCalled();
+});
+test('a second drop cannot start another upload while processing',async()=>{
+ let finish;uploadPriceList.mockReset().mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+ render(<VendorPriceLists vendor={{id:'v3',name:'Custom vendor'}}/>);
+ await screen.findByText(/No price list uploaded/);
+ const drop={dataTransfer:{files:[new File(['a'],'a.pdf')]}};
+ fireEvent.drop(screen.getByTestId('price-list-dropzone'),drop);
+ fireEvent.drop(screen.getByTestId('price-list-dropzone'),drop);
+ expect(uploadPriceList).toHaveBeenCalledTimes(1);
+ expect(screen.getByLabelText('Upload vendor price list')).toBeDisabled();
+ finish();await screen.findByText(/Price list is searchable/);
+});
+test('ready files outside their date window do not claim to be searchable',async()=>{
+ priceListCall.mockResolvedValue({documents:[{id:'future',file_name:'future.xlsx',status:'ready',effective_date:'2999-01-01'},{id:'old',file_name:'old.pdf',status:'ready',expires_on:'2000-01-01'}]});
+ render(<VendorPriceLists vendor={{id:'v3',name:'Custom vendor'}}/>);
+ expect(await screen.findByText('Scheduled')).toBeInTheDocument();
+ expect(screen.getByText('Expired')).toBeInTheDocument();
+ expect(screen.getByText('0 searchable')).toBeInTheDocument();
+});
