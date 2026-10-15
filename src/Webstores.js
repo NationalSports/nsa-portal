@@ -8865,14 +8865,14 @@ const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
 const _normColorWords = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
 // Returns the matched web_logos[] ENTRY (so callers can read its color_way_id, not just the
 // url); webLogoForGarmentColor below keeps the original url-returning shape.
+// Two-tone names ("Team Navy Blue/ White") are matched on the BODY color first — the part
+// before the "/" — so the white trim doesn't pull the White colorway onto a navy garment.
 const webLogoEntryForGarmentColor = (webLogos, colorName) => {
   const wls = (webLogos || []).filter((w) => w && w.url);
   if (!wls.length) return null;
-  const g = _normColorWords(colorName);
-  if (g.length) {
-    const hit = wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); });
-    if (hit) return hit;
-  }
+  const tryMatch = (g) => (g.length ? wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); }) : null);
+  const hit = tryMatch(_normColorWords(String(colorName || '').split('/')[0])) || tryMatch(_normColorWords(colorName));
+  if (hit) return hit;
   return wls.find((w) => { const c = (w.color_way || '').trim(); return w.is_default || !c || /all/i.test(c); }) || null;
 };
 const webLogoForGarmentColor = (webLogos, colorName) => { const e = webLogoEntryForGarmentColor(webLogos, colorName); return e ? e.url : null; };
@@ -9413,9 +9413,13 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // Bake the auto-matched web-logo color way into cw_by_color for every garment color in
       // this card, so the storefront and SO handoff (which don't have the art library) show the
       // right logo per color — a "Navy" colorway on Navy, a "Grey" one on Heather Grey, etc.
-      // Only fills colors without an explicit rep override.
+      // Only fills colors without an explicit rep override, and never touches a logo whose
+      // color way the rep picked (cw_pick / color_way_id): the editor shows that pick on every
+      // color, so the store must too — baking an auto-match here put the White cutout back on
+      // a navy jacket on every save, overriding the pick.
       const _cardColors = (groupColors || []).map((c) => (stockByWp[c.id]?.color) || c.sku).filter(Boolean);
       if (_cardColors.length) fields.decorations = fields.decorations.map((d) => {
+        if (d.cw_pick || d.color_way_id) return d;
         const art = (library || []).find((a) => a.id === d.art_id);
         // normalize stamps color_way_id from the label match, so the bake below carries the
         // STABLE CW identity to the storefront/SO handoff — not just a url keyed by color name.
