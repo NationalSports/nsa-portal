@@ -26868,12 +26868,21 @@ export default function App(){
       // PostgREST caps a single request at 1,000 rows whatever .limit() asks
       // for, and the ledger is past that: page through it so dedup and the
       // QuickBooks backfill see every applied bill, not the newest 1,000.
-      const data=[];
-      for(let from=0;from<20000;from+=1000){
-        const{data:page,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+999);
+      // Pages of 200: each row carries ~11KB of raw_meta, and a 1,000-row page took
+      // ~8s to serialize, so the second page hit the 8s statement_timeout (57014)
+      // and the whole ledger silently failed to load — Bill History and the QBO
+      // backfill then showed only this browser's local bills (2026-10-15: 2 vs 105).
+      const data=[];const PAGE=200;
+      for(let from=0;from<20000;from+=PAGE){
+        let page=null,error=null;
+        for(let attempt=0;attempt<3;attempt++){
+          ({data:page,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+PAGE-1));
+          if(!error)break;
+          await new Promise(r=>setTimeout(r,1000*(attempt+1)));
+        }
         if(error)throw error;
         data.push(...(page||[]));
-        if(!page||page.length<1000)break;
+        if(!page||page.length<PAGE)break;
       }
       (data||[]).forEach(r=>{
         if(r.status&&r.status!=='pushed')return;// only applied rows may dedup (future holds-merge rows must not)
@@ -26881,7 +26890,7 @@ export default function App(){
         if(r.si_doc_number)_appliedLedger.current.add(_appliedLedgerKey('s',r.si_doc_number,r.is_credit));
       });
       setServerBills((data||[]).filter(r=>!r.status||r.status==='pushed'));
-    }catch(e){_appliedLedgerLoaded.current=false;/* retry on next import visit; SO-scan dedup still guards meanwhile */}
+    }catch(e){_appliedLedgerLoaded.current=false;console.warn('applied bills ledger load failed',e);nf('Bill history could not load from the server — counts on this page only show this computer\'s bills. Reload the page to try again.','error');/* retry on next import visit; SO-scan dedup still guards meanwhile */}
   };
   // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
   // before any manual pull, so the dedup sees server holds; a teammate's mid-session hold is picked
