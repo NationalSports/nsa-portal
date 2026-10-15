@@ -13156,7 +13156,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item'|'backStyle', box, grab }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
-  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
+  // Picking a logo is a request to place it, so it also reopens the garment grid (✕ Close
+  // otherwise left only a "Place … on items" link and the garments seemed to vanish).
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); if (activeId) setBulkOpen(true); }, [activeId]);
   // Upload NEW artwork here via the "New art folder" modal: web PNG/SVGs are the logo's
   // color-way cutouts (first = default), .ai/.eps/.dst/.pdf are production files — one
   // record saved to the customer's art library AND this store's set. That folder is what
