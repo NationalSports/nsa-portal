@@ -786,6 +786,10 @@ const _dbLoad = async (opts={}) => {
 // event) resolve to their order; ids that no longer exist are simply skipped. `missing` lists
 // requested order ids with no row, so the caller can let the full reload handle a deletion.
 const _DELTA_CHUNK=100;
+// Same per-request deadline as _safeQuery: a request that hangs on a dead connection must fail (and
+// so retry / fall back) instead of holding the live-update queue forever (it waits on this promise).
+const _DELTA_TIMEOUT_MS=20000;
+const _withDeadline=(run)=>Promise.race([run(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('timed out after '+_DELTA_TIMEOUT_MS/1000+'s')),_DELTA_TIMEOUT_MS))]);
 const _readRowsIn=async(table,col,values)=>{
   const out=[];
   for(let i=0;i<values.length;i+=_DELTA_CHUNK){
@@ -793,7 +797,7 @@ const _readRowsIn=async(table,col,values)=>{
     for(let offset=0;;offset+=1000){
       // Deterministic paging: composite-key tables need their parent column too (see _PAGE_TIEBREAK_PARENT).
       const parent=_PAGE_TIEBREAK_PARENT[table];
-      const{data,error}=await _retryNet(()=>{let q=supabase.from(table).select('*').in(col,chunk);if(parent)q=q.order(parent);return q.order('id').range(offset,offset+999)});
+      const{data,error}=await _withDeadline(()=>_retryNet(()=>{let q=supabase.from(table).select('*').in(col,chunk);if(parent)q=q.order(parent);return q.order('id').range(offset,offset+999)}));
       if(error||!Array.isArray(data))throw new Error(table+': '+(error?.message||'no rows returned'));
       out.push(...data);
       if(data.length<1000)break;

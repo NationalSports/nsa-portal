@@ -33,13 +33,14 @@ const tables = {
   ],
   so_firm_dates: [{id: 501, so_id: 'SO-1', item_desc: 'Tees', date: '2026-10-20', approved: true}],
 };
-let failTable = null;
+let failTable = null, hangTable = null;
 const builder = table => {
   const filters = [];
   let ordered = [];
   let rng = null;
   const run = () => {
     if (table === failTable) return Promise.resolve({data: null, error: {message: 'boom'}, status: 500, count: null});
+    if (table === hangTable) return new Promise(() => {}); // never answers
     let rows = (tables[table] || []).filter(r => filters.every(f => f(r)));
     ordered.slice().reverse().forEach(col => { rows = [...rows].sort((a, b) => (a[col] > b[col] ? 1 : a[col] < b[col] ? -1 : 0)); });
     const count = rows.length;
@@ -115,4 +116,21 @@ test('many pick-line events from one order count as one order, not many', async 
   expect(res.sales_orders.map(s => s.id)).toEqual(['SO-1']);
   const two = await _dbLoadSalesOrdersByIds(['SO-1'], ['21'], {maxOrders: 1});
   expect(two.tooMany).toBe(true);
+});
+
+test('a request that never answers times out instead of hanging the refresh forever', async () => {
+  jest.useFakeTimers();
+  try {
+    const {_dbLoadSalesOrdersByIds} = engine();
+    hangTable = 'so_items';
+    const p = _dbLoadSalesOrdersByIds(['SO-1'], []);
+    // let the parent read resolve and the hung child request start, then fire the deadline
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    jest.advanceTimersByTime(20000 + 10);
+    // Observe without awaiting p itself: a missing deadline would leave p pending forever.
+    let outcome = {settled: false};
+    p.then(v => { outcome = {settled: true, v}; });
+    for (let i = 0; i < 50; i++) await Promise.resolve(); // let the rejection propagate through the catch
+    expect(outcome).toEqual({settled: true, v: null});
+  } finally { hangTable = null; jest.useRealTimers(); }
 });

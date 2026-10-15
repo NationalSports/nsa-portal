@@ -3303,9 +3303,10 @@ export default function App(){
       // the rep's own saves. Fetch only the changed orders (same assembly as the full load) and merge them
       // with the same rules as the full reload. Returns false when the full reload must run instead: too
       // many orders at once, a failed read, or an order that is gone (deletion keeps today's semantics).
-      // A failed read (flaky connection) is retried once as another light refresh (re-queued keys run on
-      // the queue's next pass) rather than going straight to the heavy full reload on the same bad
-      // connection; a second failure for the same keys falls back to the full reload exactly as before.
+      // A failed read (flaky connection) is retried once as another light refresh (the re-queued keys run
+      // on the queue's next pass, about a second later) rather than going straight to the heavy full
+      // reload on the same bad connection; a second failure for the same keys falls back to the full
+      // reload exactly as before. A key superseded by a queued full reload simply drops its retry mark.
       const _SO_DELTA_MAX=25;
       const _deltaRetried=new Set();
       const reloadSalesOrderDelta=async(soIds,itemIds)=>{
@@ -3338,8 +3339,9 @@ export default function App(){
         // else is an entity group. A queued full sales_orders (or __all__) reload already covers the ids.
         const soIds=[],itemIds=[],pendingGroups=new Set();
         pendingAll.forEach(g=>{if(g.startsWith('so:'))soIds.push(g.slice(3));else if(g.startsWith('soitem:'))itemIds.push(g.slice(7));else pendingGroups.add(g)});
-        if((soIds.length||itemIds.length)&&!pendingGroups.has('__all__')&&!pendingGroups.has('sales_orders')){
-          if(!(await reloadSalesOrderDelta(soIds,itemIds)))pendingGroups.add('sales_orders');
+        if(soIds.length||itemIds.length){
+          if(pendingGroups.has('__all__')||pendingGroups.has('sales_orders')){[...soIds.map(id=>'so:'+id),...itemIds.map(id=>'soitem:'+id)].forEach(k=>_deltaRetried.delete(k))}
+          else if(!(await reloadSalesOrderDelta(soIds,itemIds)))pendingGroups.add('sales_orders');
           if(cancelled)return;
         }
         if(!pendingGroups.size)return;
