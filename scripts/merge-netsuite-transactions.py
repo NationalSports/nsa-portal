@@ -329,6 +329,10 @@ FROM _prior_links p
 WHERE cil.customer_id IS NULL
   AND cil.netsuite_internal_id = p.netsuite_internal_id;
 """)
+    # Global search's "past items" list reads a precomputed summary of this archive
+    # (migration 20261014210000); rebuild it so the new lines show up right away. CONCURRENTLY so
+    # searches keep working during the rebuild (allowed inside this transaction; verified on PG16).
+    lines.append("REFRESH MATERIALIZED VIEW CONCURRENTLY public.txn_item_search_stats;")
     lines.append("COMMIT;")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines))

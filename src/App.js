@@ -2,6 +2,7 @@ import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
+import { fetchDataVersions, allUnchanged, changedGroups, markLoaded } from './lib/dataVersions';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
@@ -23,6 +24,7 @@ import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
 import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
+import { detectFloorRosterChanges, stampRosterChanges, describeRosterChange } from './lib/rosterChangeAlert';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
@@ -3345,7 +3347,12 @@ export default function App(){
           if(cancelled)return;
         }
         if(!pendingGroups.size)return;
-        const groups=pendingGroups.has('__all__')?null:pendingGroups;
+        let groups=pendingGroups.has('__all__')?null:pendingGroups;
+        // Drop groups nothing has written to since this tab last loaded them (src/lib/dataVersions.js);
+        // the counters are read BEFORE the load, so a write landing mid-load still triggers the next one.
+        const _versions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(groups){const todo=changedGroups(_versions,[...groups]);if(!todo.length)return;groups=new Set(todo)}
         const _has=g=>!groups||groups.has(g);
         const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
@@ -3416,6 +3423,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next reload).
+        markLoaded(_versions,(groups?[...groups]:['estimates','sales_orders','invoices','messages','assigned_todos','app_state']).filter(g=>!(d._badGroups||[]).includes(g)));
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single selective reload.
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
@@ -3621,6 +3631,14 @@ export default function App(){
           }
         }
         const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
+        // A core poll re-downloads every order, estimate, invoice and message. Skip it when nothing has
+        // written to any of them since this tab last loaded them (src/lib/dataVersions.js); full syncs
+        // always run. The app_state counter tracks only the six keys applied below — keep that list in
+        // step with migration 20261014220000_data_versions.
+        const _POLL_GROUPS=['estimates','sales_orders','invoices','messages','app_state'];
+        const _pollVersions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(coreOnly&&allUnchanged(_pollVersions,_POLL_GROUPS)){_pollConsecutiveFailures=0;schedulePoll();return}
         const d=await _dbLoad({coreOnly});
         if(!d||!d.hasData){
           _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
@@ -3762,6 +3780,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>{const incStr=JSON.stringify(as.batch_pos);if(JSON.stringify(prev)===incStr){_batchPosApplied.current=incStr;return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=incStr;return as.batch_pos});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next poll).
+        markLoaded(_pollVersions,(d._coreOnly?_POLL_GROUPS:[..._POLL_GROUPS,'assigned_todos']).filter(g=>!(d._badGroups||[]).includes(g)));
       }catch(e){
         _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
         if(_pollConsecutiveFailures<=2)console.warn('[DB] Poll failed:',e.message);
@@ -4856,6 +4877,8 @@ export default function App(){
   const[historySummary,setHistorySummary]=useState(null);
   const[historyCheckError,setHistoryCheckError]=useState('');
   const _historySummaryLoaded=useRef(false);
+  const _historySummaryFails=useRef(0);
+  const _historySummaryNextTry=useRef(0);
   const _refreshHistorySummary=async()=>{
     try{const rows=await _historyStore.summary();setHistorySummary(rows);_historySummaryLoaded.current=true;setHistoryCheckError('');}
     catch(e){setHistoryCheckError('History checks unavailable: '+e.message);throw e;}
@@ -6592,7 +6615,14 @@ export default function App(){
     const retry=async()=>{
       try{await _historyStore.flush();if(cancelled)return;setHistoryError('');}
       catch(e){if(!cancelled)setHistoryError(e.message);return;}
-      if(!_historySummaryLoaded.current)await _refreshHistorySummary().catch(()=>{});
+      // A failed summary backs off (1, 2, 4… up to 30 min) instead of re-running a whole-table query
+      // every 30 s: on 2026-10-14 every open staff tab did that and it became the database's top load.
+      if(!_historySummaryLoaded.current&&Date.now()>=_historySummaryNextTry.current){
+        await _refreshHistorySummary().then(()=>{_historySummaryFails.current=0;},()=>{
+          _historySummaryFails.current++;
+          _historySummaryNextTry.current=Date.now()+Math.min(60000*2**(_historySummaryFails.current-1),1800000);
+        });
+      }
     };
     retry();
     const timer=setInterval(retry,30000);
@@ -6746,7 +6776,11 @@ export default function App(){
     const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
     setDashView(map[cu.role]||'warehouse');
   },[cu?.id,cu?.role]);
-  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user));
+    // A tab whose sign-in had expired boots with every table denied (business data is staff-only since
+    // 20261013120000), so the initial load fails and the "load did not complete" banner stays up until
+    // the next poll, up to 5 minutes later. Signing in again is the fix, so load right now.
+    if(!_dbLoadSuccess.current&&_runPollRef.current)_runPollRef.current();};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
   // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
@@ -7491,6 +7525,9 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,pending_shipping:updatedRows,pending_shipping_usage:[...(cc.pending_shipping_usage||[]),...newUsages]}:cc));
     setSelC(s=>s&&s.id===c.id?{...s,pending_shipping:updatedRows,pending_shipping_usage:[...(s.pending_shipping_usage||[]),...newUsages]}:s);
   };
+  // Back-to-back saves of one edit (onSave + savSONow) can both see the old roster before state
+  // settles — remember what was already announced so production gets one message, not two.
+  const _rosterAlertSeen=useRef(new Map());
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
@@ -7514,6 +7551,33 @@ export default function App(){
       if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
     if(prev)_recordHistory('so_history',sl.id,prev);
+    // Numbers/names edited after a job was lined up: the printed sheet is now wrong (SO-2506).
+    // Keep an unacknowledged flag across saves from editors that never loaded it, flag newly
+    // changed jobs, and tell production. Only the production board's "Reprinted" clears it.
+    if(prev&&Array.isArray(sl.jobs)){
+      const _prevJobs=new Map(safeJobs(prev).map(j=>[j.id,j]));
+      sl.jobs=sl.jobs.map(j=>{
+        if(!j)return j;
+        if(j._rosterAck){const{_rosterAck,...rest}=j;return{...rest,roster_change:null}}
+        const pr=_prevJobs.get(j.id)?.roster_change;
+        return pr&&!j.roster_change?{...j,roster_change:pr}:j;
+      });
+      const _rc=detectFloorRosterChanges(prev,sl);
+      if(_rc.length){
+        sl.jobs=stampRosterChanges(sl,_rc,{by:cu?.name||''}).jobs;
+        const _sig=sl.id+'|'+JSON.stringify(_rc);const _now=Date.now();
+        const _dup=_now-(_rosterAlertSeen.current.get(_sig)||0)<60000;_rosterAlertSeen.current.set(_sig,_now);
+        if(!_dup){
+        const _stLabel=st=>st==='in_process'?'In Process':'In Line';
+        const _jobIds=_rc.map(r=>r.jobId);
+        const _assigned=new Set(sl.jobs.filter(j=>_jobIds.includes(j.id)).map(j=>j.assigned_to).filter(Boolean));
+        const _tag=REPS.filter(r=>r.is_active!==false&&(r.role==='prod_manager'||_assigned.has(r.name))).map(r=>r.id);
+        const _txt='⚠️ Numbers/names changed after the sheet was printed — reprint before pressing.\n'+_rc.map(r=>r.jobId+' ('+_stLabel(r.status)+'): '+r.changes.slice(0,8).map(describeRosterChange).join('; ')+(r.changes.length>8?' (+'+(r.changes.length-8)+' more)':'')).join('\n')+(cu?.name?'\nChanged by '+cu.name+'.':'');
+        setMsgs(p=>[...p,{id:'m'+Date.now()+'-rc',so_id:sl.id,author_id:cu?.id,text:_txt,ts:new Date().toLocaleString(),read_by:cu?.id?[cu.id]:[],dept:'production',tagged_members:_tag,entity_type:'so',entity_id:sl.id}]);
+        nf('Heads up: '+_jobIds.join(', ')+' '+(_rc.length>1?'are':'is')+' already on the floor. Production was told to reprint the sheet.','warn');
+        }
+      }
+    }
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
     if(!skipMerge&&prev&&sl.items&&prev.items){
@@ -14297,6 +14361,21 @@ export default function App(){
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
     savSO({...so,jobs:updatedJobs});
   };
+  // Numbers/names changed on the SO after this job was lined up (see lib/rosterChangeAlert).
+  // "Reprinted" is the only thing that clears it — savSO carries it across every other save.
+  const ackRosterChange=(j)=>{updateJobField(j,{_rosterAck:true,roster_change:null});setProdJobModal(pm=>pm&&pm.id===j.id?{...pm,roster_change:null}:pm);nf('Marked reprinted — '+j.id)};
+  const rosterChangeBanner=(j,big)=>{
+    const rc=j?.roster_change;if(!rc||!Array.isArray(rc.changes)||!rc.changes.length)return null;
+    const when=rc.at?new Date(rc.at).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    const shown=rc.changes.slice(-(big?20:3));
+    return<div role="alert" style={{background:'#fef2f2',border:'2px solid #dc2626',borderRadius:big?8:6,padding:big?'12px 16px':'6px 8px',margin:big?'12px 20px':'0 0 6px'}} onClick={e=>e.stopPropagation()}>
+      <div style={{fontSize:big?14:10,fontWeight:800,color:'#b91c1c'}}>⚠️ Numbers/names changed — reprint the sheet</div>
+      <div style={{fontSize:big?11:9,color:'#7f1d1d',marginTop:2}}>{[rc.by,when].filter(Boolean).join(' · ')}</div>
+      {shown.map((c,i)=><div key={i} style={{fontSize:big?13:10,fontWeight:700,color:'#991b1b',marginTop:2}}>{describeRosterChange(c)}</div>)}
+      {rc.changes.length>shown.length&&<div style={{fontSize:big?11:9,color:'#7f1d1d'}}>+{rc.changes.length-shown.length} more</div>}
+      <button className="btn btn-sm" style={{marginTop:6,fontSize:big?12:9,padding:big?'6px 12px':'3px 8px',background:'#dc2626',color:'white',border:'none',width:big?'auto':'100%'}} onClick={e=>{e.stopPropagation();ackRosterChange(j)}}>Sheet reprinted ✓</button>
+    </div>;
+  };
   // Set the manual link group on a job living on another sales order (used by OrderEditor when
   // a rep links jobs across sub-customers). Persists via savSO so state + DB stay in sync.
   const setJobLinkGroup=(soId,jobId,groupId)=>{
@@ -14500,6 +14579,7 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
+                  {rosterChangeBanner(j,false)}
                   {/* Dual-run: art + numbers run order */}
                   {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
                     {!j.run_order?<div>
@@ -14970,6 +15050,7 @@ export default function App(){
               </div>})()}
             </div>}
 
+            {rosterChangeBanner(j,true)}
             {/* Compact job-level info: machine + assigned */}
             {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
               {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>

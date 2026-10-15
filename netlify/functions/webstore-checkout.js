@@ -1,7 +1,7 @@
 const { loadItemEstimates } = require('./_webstoreItemEstimates');
 const { artworkSetup, isAtOnceStore } = require('../../src/allSchool/atOnceArtwork.shared');
 const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
-const { effectiveWebstoreColors } = require('../../src/lib/webstoreBranding');
+const { applyCustomerBranding } = require('./_webstorePublicBranding');
 // Server-side storefront checkout — the browser never decides a price again.
 //
 // Actions (POST, public by design — shoppers have no accounts):
@@ -211,24 +211,7 @@ async function publicStorefront(sb, body) {
   if (!store || store.status === 'archived') return bad(404, 'Store not found');
   // Resolve current school/team branding on each load, without copying it into
   // store overrides or exposing customer records to the public client.
-  if (row.customer_id && (!store.logo_url || !store.primary_color || !store.accent_color)) {
-    const customer = await sb.from('customers').select('logo_url,parent_id,school_colors').eq('id', row.customer_id).limit(1);
-    if (customer.error) throw customer.error;
-    const linked = (customer.data || [])[0];
-    let parent = null;
-    const needsParentLogo = !store.logo_url && !linked?.logo_url;
-    const needsParentColors = (!store.primary_color || !store.accent_color)
-      && (!Array.isArray(linked?.school_colors) || !linked.school_colors.length);
-    if (linked?.parent_id && (needsParentLogo || needsParentColors)) {
-      const parentResult = await sb.from('customers').select('logo_url,school_colors').eq('id', linked.parent_id).limit(1);
-      if (parentResult.error) throw parentResult.error;
-      parent = (parentResult.data || [])[0] || null;
-    }
-    if (!store.logo_url) store.logo_url = linked?.logo_url || parent?.logo_url || '';
-    const colors = effectiveWebstoreColors(store, linked, parent);
-    store.primary_color = colors.primary;
-    store.accent_color = colors.accent;
-  }
+  await applyCustomerBranding(sb, row, store);
   let products = await drainView(
     () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),
     3000,

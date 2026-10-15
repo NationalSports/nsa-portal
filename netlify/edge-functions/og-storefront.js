@@ -6,10 +6,14 @@
 // most search/AI crawlers never run JS, so they'd see a bare shell.
 //
 // This edge function runs on every /shop/* request. For a real store slug it
-// looks the store up in the anon-readable webstores_public view and rewrites the
-// served HTML BEFORE it reaches the crawler:
+// looks the store up through this site's store-preview function (the public
+// store views are service-role only since 2026-09-02, so reading them here with
+// the browser key 401'd and every link fell back to the generic NSA preview) and
+// rewrites the served HTML BEFORE it reaches the crawler:
 //   • <head> — store-specific <title>, description, canonical (→ the canonical
 //     nationalteamshop.com domain), lifecycle-aware robots, and OG/Twitter tags.
+//     og:image is the store's headline drawn as a 1200×630 card (logo in front,
+//     sport/mascot word ghosted behind, team colors) by store-preview.
 //   • <body> — for the indexable store HOME on the canonical host, the store's
 //     above-the-fold content (name, blurb, category list, product grid with
 //     names/prices/images/links) is rendered INTO #root. React's createRoot
@@ -18,19 +22,20 @@
 // Everything is fail-safe — any lookup/markup problem falls back to the
 // unmodified (or head-only) response, never a broken page.
 
-// `Netlify` is a Deno-edge-only global — reading it at module load throws
-// ReferenceError under Jest (or any non-edge runtime), failing the whole
-// import. Read lazily instead: env() is only called from ensureEnv(), which
-// the handler calls on first use, never at module top level.
-const env = (k) => (typeof Netlify !== 'undefined' ? Netlify.env.get(k) : (globalThis.process?.env?.[k] ?? ''));
-let SUPABASE_URL = '';
-let SUPABASE_ANON_KEY = '';
-let _envLoaded = false;
-function ensureEnv() {
-  if (_envLoaded) return;
-  _envLoaded = true;
-  SUPABASE_URL = env('REACT_APP_SUPABASE_URL') || env('SUPABASE_URL') || '';
-  SUPABASE_ANON_KEY = env('REACT_APP_SUPABASE_ANON_KEY') || '';
+// Lookups go through this site's own functions (same deploy, same origin as the
+// request), which read with the service role and return only public fields.
+const PREVIEW_FN = '/.netlify/functions/store-preview';
+const CHECKOUT_FN = '/.netlify/functions/webstore-checkout';
+const LOOKUP_TIMEOUT_MS = 3000;
+
+async function fetchWithTimeout(url, init = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), LOOKUP_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Canonical store domain. nationalteamshop.com is a Netlify alias of this site
@@ -79,7 +84,8 @@ const closesText = (closeAt) => {
   if (!closeAt) return '';
   const d = new Date(closeAt);
   if (isNaN(d.getTime())) return '';
-  return 'Store closes ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  // Stores close at 11:59 PM Pacific; the edge runs in UTC, which would print the next day.
+  return 'Store closes ' + d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'long', day: 'numeric', year: 'numeric' });
 };
 
 // Pull the <slug> out of /shop/<slug>[/...]. Bare /shop or /shop/ has none.
@@ -93,51 +99,34 @@ const slugFromPath = (pathname) => {
   }
 };
 
-async function fetchStore(slug) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-  const qs = new URLSearchParams({
-    slug: `eq.${slug}`,
-    select:
-      'id,name,logo_url,banner_url,hero_blurb,status,public_listed,require_login,primary_color,close_at',
-    limit: '1',
-  });
+// → { store, image_path } or null (unknown/archived slug, or lookup failed).
+async function fetchStore(origin, slug) {
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/webstores_public?${qs}`, {
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Accept: 'application/json',
-      },
+    const res = await fetchWithTimeout(`${origin}${PREVIEW_FN}?format=meta&slug=${encodeURIComponent(slug)}`, {
+      headers: { Accept: 'application/json' },
     });
     if (!res.ok) return null;
-    const rows = await res.json();
-    const store = Array.isArray(rows) ? rows[0] : null;
-    if (!store || store.status === 'archived') return null;
-    return store;
+    const body = await res.json();
+    const store = body && body.store;
+    if (!store || !store.name || store.status === 'archived') return null;
+    return { store, imagePath: typeof body.image_path === 'string' ? body.image_path : '' };
   } catch {
     return null;
   }
 }
 
-async function fetchProducts(storeId) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !storeId) return [];
-  const qs = new URLSearchParams({
-    store_id: `eq.${storeId}`,
-    select: 'webstore_product_id,name,category,image_front_url,retail_price,kind,sort_order',
-    order: 'sort_order.asc',
-    limit: '100',
-  });
+async function fetchProducts(origin, storeId) {
+  if (!storeId) return [];
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/webstore_storefront_products?${qs}`, {
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Accept: 'application/json',
-      },
+    const res = await fetchWithTimeout(`${origin}${CHECKOUT_FN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ action: 'storefront_products', storeId }),
     });
     if (!res.ok) return [];
-    const rows = await res.json();
-    return Array.isArray(rows) ? rows : [];
+    const body = await res.json();
+    const rows = Array.isArray(body && body.rows) ? body.rows : [];
+    return rows.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).slice(0, 100);
   } catch {
     return [];
   }
@@ -330,7 +319,6 @@ export default async function handler(request, context) {
   // slips past its own try/catch, a future edit) falls through to the normal
   // SPA response instead of a 'function crashed' 500 — mirrors og-teamshop.js.
   try {
-    ensureEnv();
     const url = new URL(request.url);
     const slug = slugFromPath(url.pathname);
 
@@ -350,8 +338,8 @@ export default async function handler(request, context) {
     const isHome = sub.length === 0;
     const isTransactional = sub[0] === 'cart' || sub[0] === 'checkout';
 
-    const store = await fetchStore(slug);
-    if (!store) {
+    const found = await fetchStore(url.origin, slug);
+    if (!found) {
       // Unknown/archived slug → keep the default NSA preview, but canonical + noindex.
       const html0 = await response.text();
       const headers0 = new Headers(response.headers);
@@ -362,11 +350,17 @@ export default async function handler(request, context) {
       });
     }
 
-    const title = `${store.name} — Team Store`;
+    const { store, imagePath } = found;
+    // Most store names already end in "Team Store"; don't print it twice.
+    const title = /\b(store|shop)$/i.test(String(store.name).trim()) ? store.name : `${store.name} — Team Store`;
+    const closes = store.status === 'open' ? closesText(store.close_at) : '';
     const description =
       store.hero_blurb ||
-      `The official ${store.name} store — custom team apparel, decorated and delivered. Order before the window closes.`;
-    const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
+      `The official ${store.name} — custom team apparel, decorated and delivered.${closes ? ` ${closes}.` : ''}`;
+    // The drawn headline card; served from this same origin, so deploy previews
+    // show their own version. Falls back to the old logo-on-white treatment.
+    const drawnCard = imagePath ? `${url.origin}${imagePath}` : '';
+    const image = drawnCard || ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
 
     // Index only the real, public, open, ungated stores — and only on the canonical
     // host (the raw netlify.app duplicate always stays noindex). Transactional
@@ -384,7 +378,7 @@ export default async function handler(request, context) {
     // and the noindex duplicate origin keep the head-only treatment; product-page SSR
     // and Product/Offer markup are a later phase.
     const renderHome = isHome && isCanonicalHost && indexable;
-    const items = renderHome ? dedupeItems(await fetchProducts(store.id), GRID_LIMIT) : [];
+    const items = renderHome ? dedupeItems(await fetchProducts(url.origin, store.id), GRID_LIMIT) : [];
 
     const tags = [
       `  <meta name="description" content="${escapeHtml(description)}" />`,
@@ -395,7 +389,18 @@ export default async function handler(request, context) {
       `  <meta property="og:title" content="${escapeHtml(title)}" />`,
       `  <meta property="og:description" content="${escapeHtml(description)}" />`,
       `  <meta property="og:image" content="${escapeHtml(image)}" />`,
-      `  <meta property="og:url" content="${escapeHtml(pageUrl)}" />`,
+      ...(drawnCard
+        ? [
+            `  <meta property="og:image:type" content="image/jpeg" />`,
+            `  <meta property="og:image:width" content="1200" />`,
+            `  <meta property="og:image:height" content="630" />`,
+            `  <meta property="og:image:alt" content="${escapeHtml(store.name)}" />`,
+          ]
+        : []),
+      // og:url = the link actually shared, not the canonical domain: some previewers
+      // (Facebook, Slack) re-fetch og:url, and nationalteamshop.com may still be
+      // behind its launch gate. Search consolidation is the canonical link's job.
+      `  <meta property="og:url" content="${escapeHtml(url.origin + url.pathname)}" />`,
       `  <meta name="twitter:card" content="summary_large_image" />`,
       `  <meta name="twitter:title" content="${escapeHtml(title)}" />`,
       `  <meta name="twitter:description" content="${escapeHtml(description)}" />`,
