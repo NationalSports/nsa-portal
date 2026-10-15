@@ -1558,7 +1558,9 @@ async function _sendLaunchEmail(store, to, coachUrl) {
     const b64 = await _withTimeout(generateFlyerPdfBase64(store, items), _FLYER_BUILD_MS, 'Flyer PDF build timed out');
     if (b64 && b64.length <= _FLYER_ATTACH_MAX_B64) attachment = [{ content: b64, name: `${store.slug || 'team-store'}-flyer.pdf` }];
   } catch (_) {}
-  const base = { to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachUrl), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' };
+  // Brevo rejects a blank recipient name ("name is missing"), so only send one we have.
+  const toName = (store.director_name || store.coach_contact_name || '').trim();
+  const base = { to: [toName ? { email: to, name: toName } : { email: to }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachUrl), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' };
   let r = await sendBrevoEmail(attachment ? { ...base, attachment } : base);
   let attached = !!attachment;
   if (r && r.error && attachment) { r = await sendBrevoEmail(base); attached = false; }
@@ -1709,7 +1711,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [omgVendList, setOmgVendList] = useState([]); // cached at fetch time, reused on per-row SKU re-resolve
   const [omgMomentecDiscount, setOmgMomentecDiscount] = useState(0.15);
 
-  const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
+  // One timer at a time, so an earlier toast's timer can't cut a later (e.g. error) toast short.
+  const _toastTimer = useRef(null);
+  const flash = useCallback((msg, ms = 2600) => { setToast(msg); clearTimeout(_toastTimer.current); _toastTimer.current = setTimeout(() => setToast(null), ms); }, []);
 
   const custName = useCallback((id) => cust.find((c) => c.id === id)?.name || '—', [cust]);
   const repName = useCallback((id) => REPS.find((r) => r.id === id)?.name || '—', [REPS]);
@@ -1731,9 +1735,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // here left the rep with a stale "Generating flyer PDF…" toast and no send.
     try {
       const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
-      if (r && r.error) flash('Email failed: ' + r.error);
+      if (r && r.error) flash('Email failed: ' + r.error, 10000);
       else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (link only — the PDF flyer could not be attached)'));
-    } catch (e) { flash('Email failed: ' + (e.message || e)); }
+    } catch (e) { flash('Email failed: ' + (e.message || e), 10000); }
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
@@ -2030,9 +2034,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
       // Surface a failed send — this used to ignore the result and claim the email
       // went out even when it never reached Brevo.
-      if (r && r.error) flash('Launched — but the coach email FAILED: ' + r.error);
+      if (r && r.error) flash('Launched — but the coach email FAILED: ' + r.error, 10000);
       else flash('Launched — family flyer emailed' + (r.attached ? ' with PDF attachment' : '') + '.');
-    } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
+    } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').', 10000); }
   }, [coachPortalUrl, flash]);
 
   // On a manual close, trigger the server handler that creates a rep to-do and emails the
@@ -7339,6 +7343,9 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
   const [conversionOpen, setConversionOpen] = useState(false);
   const [emailLinkOpen, setEmailLinkOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
+  // Same /shop/<slug> URL for both: a store that isn't open yet renders with a PREVIEW banner.
+  const [storeLinkCopied, setStoreLinkCopied] = useState(false);
+  const copyStoreLink = () => { navigator.clipboard?.writeText(_storefrontUrl(s)); onFlash?.((s.status === 'open' ? 'Store' : 'Preview') + ' link copied'); setStoreLinkCopied(true); setTimeout(() => setStoreLinkCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -7514,6 +7521,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
           <MenuButton label="Share" align="right" items={[
+            { label: storeLinkCopied ? '✓ Copied!' : (s.status === 'open' ? 'Copy store link' : 'Copy preview link'), icon: '📋', title: _storefrontUrl(s), onClick: copyStoreLink },
             portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
