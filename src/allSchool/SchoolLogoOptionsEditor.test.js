@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import SchoolLogoOptionsEditor from './SchoolLogoOptionsEditor';
+import SchoolLogoOptionsEditor, { LogoChoiceSwitcher } from './SchoolLogoOptionsEditor';
 
 const row = { id: 'hoodie', kind: 'single', sku: 'HOODIE-BLUE', display_name: 'Club Fleece Hoodie', product_id: 'blank', retail_price: 42, active: true };
 const base = { item: row, catalog: [row], transfers: [], logoOptions: [], onCreate: jest.fn(), onUpdate: jest.fn(), onSaveItem: jest.fn(), onEdit: jest.fn() };
@@ -81,4 +81,21 @@ test('team stores can add screen-print logo choices without 24/7 inventory requi
   fireEvent.click(screen.getByRole('button', { name: 'Create logo choice' }));
   await waitFor(() => expect(onCreate).toHaveBeenCalledWith(row, 'Original logo', 'Classic crest', null, expect.objectContaining({ deco_type: 'screen_print' })));
   expect(screen.queryByRole('button', { name: 'Launch requirements' })).toBeNull();
+});
+
+test('logo choice switcher shows every choice and opens the same color of another choice', () => {
+  const onEdit = jest.fn();
+  const mk = (id, vg, product_id, label, art, active = true) => ({ id, kind: 'single', product_id, variant_group_id: vg, school_style_group_id: 'style', school_design_label: label, active, decorations: [{ art_id: art, art_url: `https://example.com/${art}.png`, side: 'front' }] });
+  const catalog = [mk('orig-black', 'orig-black', 'black', 'Original logo', 'a'), mk('orig-grey', 'orig-black', 'grey', 'Original logo', 'a'),
+    mk('arch-black', 'arch', 'black', 'Arched', 'b', false), mk('arch-grey', 'arch', 'grey', 'Arched', 'b', false)];
+  render(<LogoChoiceSwitcher item={catalog[1]} catalog={catalog} onEdit={onEdit} />);
+  expect(screen.getByRole('button', { name: /Original logo/ }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByText('HIDDEN')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /Arched/ }));
+  expect(onEdit).toHaveBeenCalledWith('arch-grey', 'art');
+});
+
+test('logo choice switcher stays out of the way for a single-logo item', () => {
+  const { container } = render(<LogoChoiceSwitcher item={row} catalog={[row]} onEdit={jest.fn()} />);
+  expect(container.innerHTML).toBe('');
 });

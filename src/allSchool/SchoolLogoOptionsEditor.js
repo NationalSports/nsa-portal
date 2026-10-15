@@ -1,6 +1,6 @@
 import { hasSchoolMockup, methodSetupError, STOCK_METHODS } from './methodReadiness.shared';
 import React, { useEffect, useState } from 'react';
-import { logoOptionsForItem } from './adminHelpers';
+import { frontArt, logoOptionsForItem } from './adminHelpers';
 import ProductionSetupReview from './ProductionSetupReview';
 
 export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOptions = [], firstLogoByStyle = {}, onSetFirst, transfers = [], art = [], stockByWp = {}, staffId, selectedLogoId, onCreate, onUpdate, onSaveItem, onEdit, productionSetup = true }) {
@@ -48,7 +48,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
         <span style={{ color: '#64748b' }}>{colors.length} color{colors.length === 1 ? '' : 's'} · {live ? 'shown in store' : visualReady ? 'hidden' : 'save mockup'}</span>
         {choices.length > 1 && (key === defaultChoice ? <b style={{ color: '#166534' }}>Shows first</b> : <button type="button" className="btn btn-sm btn-secondary" disabled={busy || !visualReady || !live || !onSetFirst} title={!visualReady || !live ? 'Save the mockup and show this choice first' : ''} onClick={async () => { setBusy(true); try { if (await onSetFirst(row)) setMessage('This logo now shows first on the customer preview. Its first color leads the image.'); else setMessage('Save the mockup for this logo choice first.'); } finally { setBusy(false); } }}>Show first</button>)}
         {productionSetup && nextReview && onSaveItem && <button type="button" className="btn btn-sm btn-secondary" onClick={() => setReviewItem(nextReview)}>Launch requirements</button>}
-        {row.id !== item.id && <button type="button" className="btn btn-sm btn-secondary" onClick={() => onEdit?.(row.id, 'art')}>Edit mockups</button>}
+        {colors.some((color) => color.id === item.id) ? <b style={{ color: '#4f46e5' }}>Editing now</b> : <button type="button" className="btn btn-sm btn-secondary" onClick={() => onEdit?.(row.id, 'art')}>Edit mockups</button>}
         <button type="button" className="btn btn-sm btn-secondary" disabled={busy || (!visualReady && !live)} onClick={async () => { setBusy(true); try { if (await onUpdate(row, { active: !live })) setMessage(live ? 'Logo choice hidden from shoppers.' : 'Logo choice is live for shoppers.'); } finally { setBusy(false); } }}>{live ? 'Hide from store' : 'Show in store'}</button>
       </div>; })}
     </div>
@@ -68,4 +68,27 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
     {message && <p role="status" style={{ fontSize: 12, color: '#334155', marginBottom: 0 }}>{message}</p>}
     {productionSetup && reviewItem && <div style={{ marginTop: 14 }}><ProductionSetupReview key={reviewItem.id} item={catalog.find((row) => row.id === reviewItem.id) || reviewItem} stock={stockByWp[reviewItem.id]} transfers={transfers} art={art} staffId={staffId} onSave={onSaveItem} onClose={() => setReviewItem(null)} /></div>}
   </section>;
+}
+
+// Sits right above the garment preview: one tile per logo choice, so the rep can see every
+// choice and jump to the one to adjust. Keeps the same garment color when switching.
+export function LogoChoiceSwitcher({ item, catalog = [], onEdit }) {
+  const choices = logoOptionsForItem(catalog, item);
+  if (choices.length < 2) return null;
+  return <div role="group" aria-label="Logo choices" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+    <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Logo choice:</span>
+    {choices.map(({ key, row, colors }) => {
+      const current = colors.some((color) => color.id === item.id);
+      const target = colors.find((color) => color.product_id && color.product_id === item.product_id) || row;
+      const deco = frontArt(target) || frontArt(row);
+      const live = colors.every((color) => color.active !== false);
+      const label = row.school_design_label || 'Original logo';
+      return <button key={key} type="button" aria-pressed={current} title={current ? `Editing ${label}` : `Edit ${label}`} onClick={() => { if (!current) onEdit?.(target.id, 'art'); }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 4px', borderRadius: 8, cursor: current ? 'default' : 'pointer', background: current ? '#eef2ff' : '#fff', border: current ? '2px solid #4f46e5' : '1px solid #cbd5e1', opacity: live ? 1 : 0.7 }}>
+        {deco?.art_url ? <img src={deco.art_url} alt="" style={{ width: 36, height: 28, objectFit: 'contain', background: '#f1f5f9', borderRadius: 5 }} /> : <span style={{ width: 36, height: 28, background: '#f1f5f9', borderRadius: 5 }} />}
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: '#191919', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+        {!live && <span style={{ fontSize: 9.5, fontWeight: 800, color: '#92400e' }}>HIDDEN</span>}
+      </button>;
+    })}
+  </div>;
 }

@@ -16,7 +16,7 @@ import AllSchoolDtfQueue from './allSchool/AllSchoolDtfQueue';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './allSchool/transferDemand';
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
-import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import SchoolLogoOptionsEditor, { LogoChoiceSwitcher } from './allSchool/SchoolLogoOptionsEditor';
 import TeamStoreConversionModal from './allSchool/TeamStoreConversionModal';
 import { conversionRpcActions } from './allSchool/teamStoreConversion';
 import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
@@ -52,7 +52,7 @@ import ShipFromPicker, { useDecoShipFromLocations } from './ui/ShipFromPicker';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import { normalizeOmgSize } from './lib/omgReport';
-import { supportsLogoChoices } from './lib/webstoreLogoChoices';
+import { fillHiddenRowStock, supportsLogoChoices } from './lib/webstoreLogoChoices';
 import QuickMockBuilder from './QuickMockBuilder';
 import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, reportBlockingIssues, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
@@ -2021,6 +2021,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const orders = ordRes.data || [];
     const orderIds = new Set(orders.map((o) => o.id));
     const stockByWp = {}; (stockRes.data || []).forEach((s) => { stockByWp[s.webstore_product_id] = s; });
+    fillHiddenRowStock(catalog, stockByWp);
     // The storefront snapshot doesn't carry back images — fall back to the master product's
     // image_back_url so the editor's Back tab (and mockups) show it without a manual upload.
     catalog.forEach((c) => { const back = c.product_id && imgBackByPid[c.product_id]; if (!back) return; const s = stockByWp[c.id]; if (s) { if (!s.image_back_url) s.image_back_url = back; } else { stockByWp[c.id] = { image_back_url: back }; } });
@@ -9811,6 +9812,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'art' && !isBundle && <React.Fragment>
 
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
+        {(isAllSchool || (isTeam && onCreateSchoolLogoOption)) && <LogoChoiceSwitcher item={item} catalog={catalog} onEdit={onEditItem} />}
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
