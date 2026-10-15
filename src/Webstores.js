@@ -65,6 +65,9 @@ import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
 import * as WEBSTORE_BRANDING from './lib/webstoreBranding';
+import flyerFont700 from './assets/flyerFonts/barlow-condensed-700.ttf';
+import flyerFont800 from './assets/flyerFonts/barlow-condensed-800.ttf';
+import flyerFont700i from './assets/flyerFonts/barlow-condensed-700-italic.ttf';
 import * as WEBSTORE_BUILD_REQUESTS from './lib/webstoreBuildRequests';
 
 // The proxy already explains an OMG outage in words ("their report service did not
@@ -1198,345 +1201,486 @@ function launchEmailHtml(store, portalUrl) {
   </div>`;
 }
 
-// 2-page print-ready flyer with team colors, items, QR, and key dates.
-function flyerHtml(store, items = []) {
-  const url = _storefrontUrl(store);
+// ── 2-page launch flyer (print HTML + jsPDF attachment) ──────────────
+// Both renderers draw the SAME layout from the same point grid (letter, 612×792pt), so
+// the printed flyer and the emailed/downloaded PDF match. _flyerModel decides everything
+// store-specific (colors, sport, which items land on which page); the renderers only draw.
+const _fRgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const _fHex = (rgb) => '#' + rgb.map((c) => Math.round(Math.max(0, Math.min(255, c))).toString(16).padStart(2, '0')).join('');
+const _fMix = (a, b, t) => { const x = _fRgb(a); const y = _fRgb(b); return _fHex(x.map((c, i) => c + (y[i] - c) * t)); };
+const _fLum = (hex) => { const [r, g, b] = _fRgb(hex).map((c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const _fContrast = (a, b) => { const x = _fLum(a); const y = _fLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+// Team colors → flyer roles. `brand` carries white text (bands, headline, price tags), so a
+// light school color (white, gold, silver) can't be it — the other team color takes over,
+// else a neutral navy. `pop` is the other team color: `popBright` for the hero ribbon,
+// `popText` darkened until it reads on white, `popOnBrand` for stars/big words on the bands.
+function _flyerPalette(store) {
+  const W = '#ffffff';
   const primary = _hex(store.primary_color, '#0b1f3a');
   const accent = _hex(store.accent_color, '#e11d2a');
-  const closeDate = _fmtDate(store.close_at);
-  const delivLabel = _deliveryLabel(store);
-  const dk = (hex, a) => { try { const n = parseInt(hex.slice(1), 16); return '#' + [(n>>16)&255,(n>>8)&255,n&255].map((c)=>Math.round(c*(1-a)).toString(16).padStart(2,'0')).join(''); } catch(e){return hex;} };
-  const primaryDark = dk(primary, 0.34);
-  const accentDeep = dk(accent, 0.24);
-  const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
-  // The Player Pack (bundle) gets a highlighted feature band at the top; everything
-  // else flows into the product grid below. Inactive items (active===false) are bundle
-  // components — they're represented by the package band, so keep them out of the grid.
-  const pkg = (items || []).find((i) => i.active !== false && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
-  // The pack's component photos (all items in the bundle); fall back to a single image.
+  const brand = _fContrast(primary, W) >= 3 ? primary : _fContrast(accent, W) >= 3 ? accent : '#16223f';
+  const pop = brand === accent ? primary : accent;
+  const washedOut = _fLum(pop) > 0.8;
+  let popText = pop;
+  for (let t = 0.1; _fContrast(popText, W) < 3 && t <= 0.6; t += 0.1) popText = _fMix(pop, '#000000', t);
+  if (washedOut || _fContrast(popText, W) < 3) popText = brand;
+  const popBright = !washedOut && _fContrast(pop, W) >= 1.7 ? pop : popText;
+  const popOnBrand = _fContrast(pop, brand) >= 2.2 ? pop : W;
+  return {
+    brand, popText, popBright, popOnBrand,
+    popOnBrandSmall: _fContrast(pop, brand) >= 3.5 ? pop : W, // small labels need more contrast
+    ink: _fMix(brand, '#000000', 0.45),
+    heroBg: _fMix(brand, W, 0.955), stripe: _fMix(brand, W, 0.915), stripeEdge: _fMix(brand, W, 0.83), watermark: _fMix(brand, W, 0.86),
+    line: '#d5dae1', label: '#6b7280', footText: _fMix(_fMix(brand, '#000000', 0.45), W, 0.62),
+  };
+}
+// The big word behind the logo. Most stores have no `sport` saved yet (it's set in Store
+// Settings → Branding), so fall back to the sport named in the store's own name
+// ("Incline Basketball Team Store" → BASKETBALL). All-school stores already have their
+// own "Hero background text" setting (blank = no word), which wins.
+const FLYER_SPORTS = ['Track & Field', 'Cross Country', 'Water Polo', 'Flag Football', 'Beach Volleyball', 'Basketball', 'Baseball', 'Softball', 'Football', 'Volleyball', 'Soccer', 'Wrestling', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swimming', 'Swim', 'Dive', 'Cheer', 'Dance', 'Band', 'Bowling', 'Rugby', 'Pickleball', 'Esports', 'Track'];
+function _flyerSport(store) {
+  if (store.org_type === 'all_school') {
+    const bg = store.all_school_settings && store.all_school_settings.hero_background_text;
+    if (typeof bg === 'string') return bg.trim().toUpperCase();
+  }
+  const own = String(store.sport || '').trim();
+  if (own) return own.toUpperCase();
+  const name = String(store.name || '');
+  const hit = FLYER_SPORTS.find((s) => new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i').test(name));
+  if (hit) return hit.toUpperCase();
+  return store.org_type === 'all_school' ? 'ATHLETICS' : 'TEAM';
+}
+function _flyerModel(store, items = []) {
+  const all = items || [];
+  // The Player Pack (bundle) gets a feature band on page 1. Inactive items (active===false)
+  // are bundle components — represented by the band, so they stay out of the grid.
+  const pkg = all.find((i) => i.active !== false && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0) || null;
   const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
     ? pkg._componentImages.slice(0, 4)
-    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items || []).filter((i) => i.active === false && i.image_front_url).map((i) => i.image_front_url).slice(0, 4)));
-  const visItems = _groupFlyerItems((items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle'));
-  // Image fills the whole card; the price floats as a pill badge (team accent color)
-  // over the bottom-left corner so the product photo gets the maximum area.
+    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : all.filter((i) => i.active === false && i.image_front_url).map((i) => i.image_front_url).slice(0, 4));
+  const vis = _groupFlyerItems(all.filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle'));
+  const p1n = pkg ? 4 : 8;
+  const toTeam = store.delivery_mode === 'deliver_club';
+  const close = ptDateLabel(store.close_at, { month: 'long', day: 'numeric' });
+  const ships = toTeam ? 'Ships to the Team' : 'Ships to Your Home';
+  return {
+    pal: _flyerPalette(store), sport: _flyerSport(store), pkg, pkgImgs,
+    p1: vis.slice(0, p1n), p2: vis.slice(p1n, p1n + 12), more: Math.max(0, vis.length - p1n - 12),
+    name: String(store.name || 'Team Store').toUpperCase(), logo: store.logo_url || '',
+    url: _storefrontUrl(store), qrSrc: _storefrontSrcUrl(store, 'qr'),
+    features: ['Custom Decorated', ships, 'No Minimums'],
+    stats: [['Order By', close || 'Open Now'], ['Delivery', toTeam ? 'To the Team' : 'To Your Home'], ['Minimums', 'None']],
+    orderLine: `Order Online — ${ships}`,
+    steps: [['Visit the store', 'Scan the QR code or visit the link below to open the store.'], ['Pick sizes & gear', 'Browse all items and choose sizes for each player.'], ['Check out', `Place your order${close ? ' before ' + close : ''}. ${storeShippingPromise(store)}`]],
+  };
+}
+// Shared geometry (pt). Page 1 grid fills 356→636 (two rows of 4; one taller row when the
+// store has ≤4 items), or one row under the Player Pack band; page 2 holds three rows of 4.
+const FLY = {
+  W: 612, H: 792, M: 33, GAP: 9,
+  colW: (612 - 66 - 27) / 4,
+  hero: [30, 188], band: [189, 222], notch: 9,
+  p1Grid: (pkg, n) => (pkg ? { y: 433, h: 165 } : n <= 4 ? { y: 356, h: 220 } : { y: 356, h: (636 - 356 - 9) / 2 }),
+  p2Grid: { y: 108, h: 168 },
+};
+// The storefront shows the linked school/team's logo and colors when the store has none of
+// its own (_webstorePublicBranding.js) — the flyer and launch email must do the same, or a
+// store riding on the school's branding prints with no logo and default navy/red.
+async function _withSchoolBranding(store) {
+  if (!store || !store.customer_id || (store.logo_url && store.primary_color && store.accent_color)) return store;
+  try {
+    const { data: c } = await supabase.from('customers').select('logo_url,parent_id,school_colors').eq('id', store.customer_id).maybeSingle();
+    let parent = null;
+    const needParent = (!store.logo_url && !c?.logo_url) || ((!store.primary_color || !store.accent_color) && !(Array.isArray(c?.school_colors) && c.school_colors.length));
+    if (c?.parent_id && needParent) { const { data: p } = await supabase.from('customers').select('logo_url,school_colors').eq('id', c.parent_id).maybeSingle(); parent = p || null; }
+    const colors = WEBSTORE_BRANDING.effectiveWebstoreColors(store, c, parent);
+    return { ...store, logo_url: store.logo_url || c?.logo_url || parent?.logo_url || '', primary_color: colors.primary, accent_color: colors.accent };
+  } catch (_) { return store; }
+}
+
+function flyerHtml(store, items = []) {
+  const m = _flyerModel(store, items);
+  const { pal } = m;
+  const { W, M, GAP, colW } = FLY;
+  const at = (x, y, w, h, extra = '') => `position:absolute;left:${x}pt;top:${y}pt;${w != null ? `width:${w}pt;` : ''}${h != null ? `height:${h}pt;` : ''}${extra}`;
+  const notchClip = (n) => `clip-path:polygon(0 0,100% 0,100% calc(100% - ${n}pt),calc(100% - ${n}pt) 100%,0 100%)`;
+  const star = (c) => `<span style="color:${c}">&#9733;</span>`;
+  const label = 'font-weight:700;text-transform:uppercase;';
+  const heavy = 'font-weight:800;text-transform:uppercase;';
   // A DECORATED garment renders RAW + object-fit:contain in a 4:5 box — exactly the
   // storefront card + art-editor frame — so the web-logo decorations land at the same %
   // placements shoppers see in the store. Undecorated garments keep normGarment's uniform
   // cover fill (nothing to align).
   const decoImgs = (it) => _flyerDecos(it).map((d) => { const p = _decoPos(d); return `<img src="${_esc(d.art_url)}" alt="" style="position:absolute;left:${p.x}%;top:${p.y}%;width:${p.w}%;transform:translate(-50%,-50%);filter:drop-shadow(0 1px 2px rgba(0,0,0,.2));z-index:1"/>`; }).join('');
-  const itemCard = (it, h=150) => {
+  const priceTag = (price) => (Number(price) > 0 ? `<div style="position:absolute;left:7pt;bottom:7pt;z-index:2;background:${pal.brand};color:#fff;${heavy}font-size:11pt;line-height:1;padding:2.5pt 6pt;transform:skewX(-12deg)">$${Math.round(Number(price))}</div>` : '');
+  const card = (it, x, y, h) => {
     const dec = _flyerDecos(it).length > 0;
-    const gsrc = dec ? it.image_front_url : normGarment(it.image_front_url);
-    const gfit = dec ? 'contain' : 'cover';
-    return `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(gsrc)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:${gfit}"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+    const photo = it.image_front_url
+      ? `<div style="position:absolute;inset:6pt;display:flex;justify-content:center"><div style="position:relative;height:100%;aspect-ratio:4/5;max-width:100%"><img src="${_esc(dec ? it.image_front_url : normGarment(it.image_front_url))}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain"/>${decoImgs(it)}</div></div>`
+      : `<div style="position:absolute;inset:6pt;display:grid;place-items:center;font-size:9pt;color:#9aa1ac">No image</div>`;
+    return `<div style="${at(x, y, colW, h)}background:${pal.line};${notchClip(FLY.notch)}"><div style="position:absolute;inset:.6pt;background:#fff;${notchClip(FLY.notch - 0.3)}">${photo}${priceTag(it.retail_price)}</div></div>`;
   };
-  // Render an item array as rows of 4.
-  const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
-  // Highlighted Player Pack band (only when the store has a bundle).
-  const pkgBand = pkg ? `
-    <div style="margin:16px 40px 0">
-      <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
-        ${pkgImgs.length ? `<div style="flex:0 0 130px;background:#fff;display:grid;grid-template-columns:repeat(${pkgImgs.length === 1 ? 1 : 2},1fr);gap:3px;padding:6px;align-content:center">${pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;height:${pkgImgs.length <= 2 ? 104 : 52}px"><img src="${_esc(normGarment(u))}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`).join('')}</div>` : ''}
-        <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
-          <div>
-            <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
-            <div style="font-weight:800;font-size:30px;text-transform:uppercase;line-height:1.02;margin-top:3px">${_esc(pkg.name || pkg.display_name || 'Player Pack')}</div>
-            <div style="font-size:13px;color:rgba(255,255,255,.82);margin-top:6px;font-family:Arial,sans-serif">Everything your player needs in one bundle &mdash; add it to the cart in one click.</div>
-          </div>
-          <div style="text-align:center;flex-shrink:0">
-            <div style="font-weight:800;font-size:42px;color:#fff;line-height:1">$${Math.round(Number(pkg.retail_price))}</div>
-            <div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.72)">Complete Pack</div>
-          </div>
-        </div>
+  const grid = (arr, y0, h) => arr.map((it, i) => card(it, M + (i % 4) * (colW + GAP), y0 + Math.floor(i / 4) * (h + GAP), h)).join('');
+  const qr = (size) => `<img src="${_qrImg(m.qrSrc, 300)}" alt="QR code to the store" style="width:${size}pt;height:${size}pt;display:block"/>`;
+  // Watermark sized from an average Barlow Condensed 800 cap advance (~.52em); the PDF measures exactly.
+  const wmSize = m.sport ? Math.min(114, 440 / (m.sport.length * 0.52)) : 0;
+  const nameSize = Math.min(10, 470 / (m.name.length * 0.62));
+  const stripes = (c, s = 9) => `repeating-linear-gradient(125deg,transparent 0 ${s - 3.5}pt,${c} ${s - 3.5}pt ${s}pt)`;
+  const p1 = FLY.p1Grid(m.pkg, m.p1.length);
+  const pkgBand = m.pkg ? `
+    <div style="${at(M, 326, W - 2 * M, 74)}background:${pal.brand};${notchClip(10)};display:flex;align-items:center;color:#fff">
+      ${m.pkgImgs.length ? `<div style="flex:0 0 70pt;height:62pt;margin-left:6pt;background:#fff;display:grid;grid-template-columns:repeat(${m.pkgImgs.length === 1 ? 1 : 2},1fr);gap:2pt;padding:3pt">${m.pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;min-height:0"><img src="${_esc(normGarment(u))}" alt="" style="max-width:100%;max-height:${m.pkgImgs.length <= 2 ? 56 : 27}pt;object-fit:contain"/></div>`).join('')}</div>` : ''}
+      <div style="flex:1;padding:0 14pt;min-width:0">
+        <div style="${label}font-size:8pt;letter-spacing:1.6pt;color:${pal.popOnBrandSmall}">&#9733; Required For Every Player</div>
+        <div style="${heavy}font-size:22pt;line-height:1;margin-top:2pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(m.pkg.name || m.pkg.display_name || 'Player Pack')}</div>
+        <div style="font-family:Arial,sans-serif;font-size:8.5pt;color:rgba(255,255,255,.82);margin-top:3pt">Everything your player needs in one bundle.</div>
+      </div>
+      <div style="flex-shrink:0;text-align:right;padding-right:18pt">
+        <div style="${heavy}font-size:30pt;line-height:1">$${Math.round(Number(m.pkg.retail_price))}</div>
+        <div style="${label}font-size:7.5pt;letter-spacing:1.2pt;color:${pal.popOnBrandSmall}">Complete Pack</div>
       </div>
     </div>` : '';
-  const p1Items = visItems.slice(0, 12);
-  const p2Items = visItems.slice(12);
+  const howTo = `<div style="${at(M, 356, W - 2 * M, 270)}">${m.steps.map(([t, b], i) => `<div style="display:flex;align-items:flex-start;gap:10pt;margin-bottom:16pt"><div style="flex:0 0 auto;width:22pt;height:22pt;border-radius:50%;background:${pal.brand};color:#fff;text-align:center;line-height:22pt;${heavy}font-size:12pt">${i + 1}</div><div><div style="${heavy}font-size:14pt;color:${pal.brand}">${t}</div><div style="font-family:Arial,sans-serif;font-size:10pt;color:${pal.label};margin-top:2pt">${_esc(b)}</div></div></div>`).join('')}</div>`;
+  const page1Body = m.p1.length
+    ? `<div style="${at(M, 332 + (m.pkg ? 77 : 0), null, null)}${heavy}font-size:13pt;letter-spacing:.5pt;color:${pal.brand};white-space:nowrap;line-height:1">What&rsquo;s In The Store</div>
+       <div style="${at(150, 340 + (m.pkg ? 77 : 0), W - M - 150, 1)}background:${pal.line}"></div>
+       ${grid(m.p1, p1.y, p1.h)}`
+    : (m.pkg ? '' : howTo);
   return `<!doctype html><html><head>
   <meta charset="utf-8">
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,700;0,800;1,700&display=swap" rel="stylesheet">
   <title>${_esc(store.name)} — Team Store Flyer</title>
   <style>
     *{box-sizing:border-box}
-    html,body{margin:0;padding:0;font-family:'Barlow Condensed',Arial,sans-serif;background:#5b5b5b}
+    html,body{margin:0;padding:0;font-family:'Barlow Condensed',Arial,sans-serif;background:#5b5b5b;-webkit-print-color-adjust:exact;print-color-adjust:exact}
     .no-print{text-align:center;padding:12px;background:#444}
-    .page{width:816px;min-height:1056px;margin:0 auto 28px;background:#fff;position:relative;overflow:hidden;box-shadow:0 12px 50px rgba(0,0,0,.35)}
-    @media print{html,body{background:#fff}.no-print{display:none!important}.page{box-shadow:none;margin:0;page-break-after:always;width:100%}}
+    .page{width:612pt;height:792pt;margin:0 auto 28px;background:#fff;position:relative;overflow:hidden;box-shadow:0 12px 50px rgba(0,0,0,.35)}
+    @media print{html,body{background:#fff}.no-print{display:none!important}.page{box-shadow:none;margin:0;page-break-after:always}}
     @page{size:letter portrait;margin:0}
   </style></head><body>
   <div class="no-print">
-    <button onclick="window.print()" style="padding:9px 20px;font-size:13.5px;font-weight:800;border:none;border-radius:7px;background:${primary};color:#fff;cursor:pointer;margin-right:8px">Print / Save as PDF</button>
+    <button onclick="window.print()" style="padding:9px 20px;font-size:13.5px;font-weight:800;border:none;border-radius:7px;background:${pal.brand};color:#fff;cursor:pointer;margin-right:8px">Print / Save as PDF</button>
     <span style="color:#aaa;font-size:12px">Browser Print → Save as PDF</span>
   </div>
   <!-- PAGE 1 -->
   <div class="page">
-    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
-      <span><span style="color:${accent}">&#9733;</span> Official Team Store</span>
-      <span style="color:rgba(255,255,255,.62)">Powered by National Sports Apparel</span>
+    <div style="${at(0, 0, W, 30)}background:${pal.ink};color:#fff;display:flex;justify-content:space-between;align-items:center;padding:0 ${M}pt;${label}font-size:9.5pt;letter-spacing:1.6pt">
+      <span>${star('#fff')} Official Team Store</span><span>Powered by National Sports Apparel</span>
     </div>
-    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:14px 40px 12px;position:relative">
-      <div style="position:absolute;inset:0;background:repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.045) 26px,rgba(255,255,255,.045) 52px)"></div>
-      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:9px">
-        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:42px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
-        <div>
-          <div style="font-weight:700;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent}">${_esc(store.name)}</div>
-          ${closeDate ? `<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.6)">Order by ${_esc(closeDate)}</div>` : ''}
-        </div>
-      </div>
-      <h1 style="position:relative;font-weight:800;font-size:40px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
-      <p style="position:relative;font-size:12.5px;line-height:1.4;color:rgba(255,255,255,.85);max-width:560px;margin:7px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
+    <div style="${at(0, 30, W, 158)}background:${stripes(pal.stripe)},${pal.heroBg};overflow:hidden">
+      <div style="${at(0, 0, 64, 158)}background:${stripes(pal.stripeEdge)}"></div>
+      <div style="${at(0, 0, W, 158)}clip-path:polygon(560pt 0,100% 0,100% 100%,560pt 100%,545pt 79pt);background:${pal.popBright}"></div>
+      ${m.sport ? `<div style="${at(0, 145 - wmSize * 0.95, W, null)}text-align:center;${heavy}font-size:${wmSize}pt;line-height:1;color:${pal.watermark};white-space:nowrap">${_esc(m.sport)}</div>` : ''}
+      <div style="${at(0, 20, W, 22)}display:flex;justify-content:center"><div style="background:${pal.brand};color:#fff;${heavy}font-size:${nameSize}pt;letter-spacing:1.4pt;line-height:22pt;padding:0 14pt;transform:skewX(-12deg);white-space:nowrap">${_esc(m.name)}</div></div>
+      ${m.logo ? `<div style="${at(246, 50, 120, 96)}display:flex;align-items:center;justify-content:center"><img src="${_esc(m.logo)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>` : ''}
     </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);background:${ink}">
-      <div style="padding:9px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
-      <div style="padding:9px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
-      <div style="padding:9px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
+    <div style="${at(0, 186, W, 3)}background:${pal.popBright}"></div>
+    <div style="${at(0, 189, W, 33)}background:${pal.brand};display:flex;justify-content:center;align-items:center;gap:28pt;color:#fff;${heavy}font-size:12.5pt;letter-spacing:.8pt">
+      ${m.features.map((f) => `<span>${star(pal.popOnBrand)} ${_esc(f)}</span>`).join('')}
     </div>
+    <div style="${at(M, 238, 270, null)}${heavy}font-size:38pt;line-height:.86;color:${pal.brand}">The Team Store Is<br/><span style="font-style:italic;font-weight:700;color:${pal.popText}">Now Open</span></div>
+    <div style="${at(M, 313, 38, 2.5)}background:${pal.popText}"></div>
+    ${m.stats.map(([k, v], i) => `<div style="${at(311 + i * 92, 244, 85, 70)}background:#fff;border:.6pt solid ${pal.line};border-top:2.5pt solid ${i === 2 ? pal.popBright : pal.brand};padding:6pt 7pt">
+      <div style="${label}font-size:8pt;letter-spacing:1.6pt;color:${pal.label}">${k}</div>
+      <div style="${heavy}font-size:14.5pt;line-height:1.02;color:${pal.brand};margin-top:3pt">${_esc(v)}</div></div>`).join('')}
     ${pkgBand}
-    ${p1Items.length > 0 ? `
-    <div style="padding:18px 40px 104px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-        <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
-        <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
-      </div>
-      ${grid(p1Items, pkg ? 142 : 156)}
-    </div>` : (pkg ? '' : `
-    <div style="padding:22px 40px 120px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. ${storeShippingPromise(store)}`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
-    </div>`)}
-    <div style="position:absolute;bottom:0;left:0;right:0">
-      <div style="background:${cream};border-top:1px solid ${line};padding:9px 40px;display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div style="font-weight:700;font-size:9.5px;letter-spacing:1.8px;text-transform:uppercase;color:${accentDeep}">Shop The Store</div>
-          <div style="font-weight:800;font-size:15px;text-transform:uppercase;color:${ink}">${_esc(url)}</div>
-          <div style="font-size:11px;color:${sub};margin-top:1px">Questions? hello@nationalsportsapparel.com</div>
-        </div>
-        <div style="text-align:center;flex-shrink:0">
-          <img src="${_qrImg(_storefrontSrcUrl(store, 'qr'), 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
-          <div style="font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:3px">Scan To Shop</div>
-        </div>
-      </div>
-      <div style="background:${ink};padding:6px 40px;display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
-        <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
-        <span>Authorized Dealer &middot; Adidas &middot; Under Armour &middot; Rawlings</span>
-      </div>
+    ${page1Body}
+    <div style="${at(M, 643, W - 2 * M, 112)}background:${pal.brand};${notchClip(11)};color:#fff">
+      <div style="${at(13, 18, 430, null)}${heavy}font-size:21pt;line-height:1">Shop The <span style="font-style:italic;font-weight:700;color:${pal.popOnBrand}">Store</span></div>
+      <div style="${at(13, 47, 430, null)}${label}font-size:9pt;letter-spacing:.3pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(m.url)}</div>
+      <div style="${at(13, 63, 430, null)}font-family:Arial,sans-serif;font-size:9.5pt;color:rgba(255,255,255,.85)">Questions? hello@nationalsportsapparel.com</div>
+      <div style="${at(456, 9, 77, 77)}background:#fff;padding:4pt">${qr(69)}</div>
+      <div style="${at(456, 90, 77, null)}text-align:center;${label}font-size:8pt;letter-spacing:2pt;color:${pal.popOnBrandSmall}">Scan To Shop</div>
+    </div>
+    <div style="${at(0, 767, W, 25)}background:${pal.ink};color:${pal.footText};display:flex;justify-content:space-between;align-items:center;padding:0 ${M}pt;${label}font-size:7.5pt;letter-spacing:1.2pt">
+      <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span><span>Authorized Dealer &middot; Adidas &middot; Under Armour &middot; Rawlings</span>
     </div>
   </div>
-  ${p2Items.length > 0 ? `<!-- PAGE 2 -->
+  ${m.p2.length > 0 ? `<!-- PAGE 2 -->
   <div class="page">
-    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
-      <span><span style="color:${accent}">&#9733;</span> ${_esc(store.name)}</span>
-      <span style="color:rgba(255,255,255,.62)">Page 2 &middot; More Gear</span>
+    <div style="${at(0, 0, W, 30)}background:${pal.ink};color:#fff;display:flex;justify-content:space-between;align-items:center;gap:20pt;padding:0 ${M}pt;${label}font-size:9.5pt;letter-spacing:1.6pt">
+      <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${star('#fff')} ${_esc(m.name)}</span><span style="flex-shrink:0">Page 2 &middot; More Gear</span>
     </div>
-    <div style="padding:22px 40px 80px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">Also Available</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      ${grid(p2Items.slice(0, 16), 150)}
+    <div style="${at(0, 30, W, 4)}background:${pal.brand}"></div><div style="${at(0, 30, 135, 4)}background:${pal.popBright}"></div>
+    <div style="${at(M, 50, null, null)}${heavy}font-size:40pt;line-height:1;color:${pal.brand};white-space:nowrap">Also <span style="font-style:italic;font-weight:700;color:${pal.popText}">Available</span></div>
+    <div style="${at(M, 92, 38, 2.5)}background:${pal.popText}"></div>
+    ${grid(m.p2, FLY.p2Grid.y, FLY.p2Grid.h)}
+    <div style="${at(M, 672, W - 2 * M, 70)}border:1.6pt solid ${pal.brand};background:#fff">
+      <div style="${at(12, m.more ? 16 : 24, 440, null)}${heavy}font-size:17pt;line-height:1;color:${pal.brand}">${_esc(m.orderLine)}</div>
+      ${m.more ? `<div style="${at(12, 40, 440, null)}font-family:Arial,sans-serif;font-size:9pt;color:${pal.label}">+ ${m.more} more item${m.more === 1 ? '' : 's'} in the online store</div>` : ''}
+      <div style="${at(482, 8, 50, 50)}">${qr(50)}</div>
     </div>
-    <div style="position:absolute;bottom:0;left:0;right:0;background:${ink};padding:9px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
-      <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
-      <span>${_esc(url)}</span>
+    <div style="${at(0, 755, W, 37)}background:${pal.ink};color:${pal.footText};display:flex;justify-content:space-between;align-items:center;gap:20pt;padding:0 ${M}pt;${label}font-size:7.5pt;letter-spacing:1.2pt">
+      <span style="flex-shrink:0">National Sports Apparel &middot; Orange, CA &middot; Since 2009</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(m.url.replace(/^https?:\/\//, ''))}</span>
     </div>
   </div>` : ''}
   </body></html>`;
 }
 
-// Generate a branded PDF flyer (jsPDF, client-side) for email attachment or download.
+// Barlow Condensed (OFL) for the PDF, so it matches the printed flyer. Fetched once per
+// session; if it can't load, the PDF falls back to Helvetica rather than failing.
+let _flyerFontsP = null;
+const _flyerFonts = () => {
+  if (!_flyerFontsP) {
+    _flyerFontsP = Promise.all([flyerFont700, flyerFont800, flyerFont700i].map(async (u) => {
+      const r = await fetchWithTimeout(u, {}, IMG_FETCH_MS);
+      if (!r.ok) throw new Error('font ' + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      return btoa(s);
+    })).catch((e) => { _flyerFontsP = null; throw e; });
+  }
+  return _flyerFontsP;
+};
+
+// Generate the branded PDF flyer (jsPDF, client-side) for email attachment or download.
 async function generateFlyerPdfBase64(store, items = []) {
   const { jsPDF } = await import('jspdf');
-  const url = _storefrontUrl(store);
-  const primary = _hex(store.primary_color, '#0b1f3a');
-  const accent = _hex(store.accent_color, '#e11d2a');
-  const closeDate = _fmtDate(store.close_at);
-  const delivLabel = _deliveryLabel(store);
-  const hexRgb = (hex) => { const h = (_hex(hex,'#000000')).replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; };
-  const [pr,pg,pb] = hexRgb(primary);
-  const [ar,ag,ab] = hexRgb(accent);
-  const INK = [22,34,63];
-  const doc = new jsPDF({ unit:'pt', format:'letter', orientation:'portrait' });
-  const W = 612, H = 792;
-  let y = 0;
-  // Top strip
-  doc.setFillColor(...INK); doc.rect(0,0,W,24,'F');
-  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab);
-  doc.text('★ OFFICIAL TEAM STORE', 20, 16);
-  doc.setFont('helvetica','normal'); doc.setTextColor(190,190,190);
-  doc.text('POWERED BY NATIONAL SPORTS APPAREL', W-20, 16, {align:'right'});
-  y = 24;
-  // Hero band
-  doc.setFillColor(pr,pg,pb); doc.rect(0,y,W,148,'F');
-  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(ar,ag,ab);
-  doc.text(store.name.toUpperCase(), W/2, y+22, {align:'center'});
-  doc.setFontSize(30); doc.setTextColor(255,255,255);
-  doc.text('THE TEAM STORE IS', W/2, y+60, {align:'center'});
-  doc.setFontSize(42); doc.setTextColor(ar,ag,ab);
-  doc.text('NOW OPEN', W/2, y+104, {align:'center'});
-  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(230,230,230);
-  doc.text("Order your player's official, custom-decorated gear. Ships to the team.", W/2, y+128, {align:'center'});
-  y += 148;
-  // Stats strip
-  doc.setFillColor(...INK); doc.rect(0,y,W,44,'F');
-  [['ORDER BY',closeDate||'Open Now'],['DELIVERY',delivLabel],['MINIMUMS','None']].forEach(([lbl,val],i)=>{
-    const cx = W/6 + (W/3)*i;
-    doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(ar,ag,ab); doc.text(lbl,cx,y+14,{align:'center'});
-    doc.setFontSize(13); doc.setTextColor(255,255,255); doc.text(val.toUpperCase(),cx,y+31,{align:'center'});
-  });
-  doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
-  doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
-  y += 44;
-  // Items — the Player Pack (bundle) gets a highlighted band; the rest fill the grid.
-  // Inactive items (active===false) are bundle components, surfaced via the band only.
-  const pkg = (items||[]).find((i)=>i.active!==false && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
-  const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
-    ? pkg._componentImages.slice(0, 4)
-    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items||[]).filter((i)=>i.active===false && i.image_front_url).map((i)=>i.image_front_url).slice(0, 4)));
-  const visItems = _groupFlyerItems((items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle')).slice(0,8);
-  // Pre-load product images (best-effort), including the package images. Supplier CDNs
-  // (cdnm.sanmar.com etc.) send no CORS headers, so a direct browser fetch() throws and
-  // the flyer rendered empty gray cards — go through image-proxy first (same pattern as
-  // QuickMockBuilder), falling back to a direct fetch for hosts the proxy doesn't allow.
-  const imgCache = {};
-  // Every fetch here is bounded: a supplier CDN (or a cold image-proxy) that accepts the
-  // connection and never answers used to hang this Promise.all forever, which silently
-  // stalled the launch/share email before it ever reached Brevo. onerror must settle the
-  // FileReader promise for the same reason.
+  const m = _flyerModel(store, items);
+  const { pal } = m;
+  const { W, H, M, GAP, colW } = FLY;
+  const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
+  // Fonts: label = 700, heavy = 800, italic = 700 italic.
+  let FONT = { label: ['helvetica', 'bold'], heavy: ['helvetica', 'bold'], italic: ['helvetica', 'bolditalic'] };
+  try {
+    const [f700, f800, f700i] = await _flyerFonts();
+    doc.addFileToVFS('bc700.ttf', f700); doc.addFont('bc700.ttf', 'BarlowCondensed', 'normal');
+    doc.addFileToVFS('bc800.ttf', f800); doc.addFont('bc800.ttf', 'BarlowCondensed', 'bold');
+    doc.addFileToVFS('bc700i.ttf', f700i); doc.addFont('bc700i.ttf', 'BarlowCondensed', 'italic');
+    FONT = { label: ['BarlowCondensed', 'normal'], heavy: ['BarlowCondensed', 'bold'], italic: ['BarlowCondensed', 'italic'] };
+  } catch (_) { /* Helvetica fallback */ }
+  const fill = (hex) => doc.setFillColor(..._fRgb(hex));
+  const rect = (x, y, w, h, hex) => { fill(hex); doc.rect(x, y, w, h, 'F'); };
+  const poly = (pts, style = 'F') => { const d = []; for (let i = 1; i < pts.length; i++) d.push([pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]]); doc.lines(d, pts[0][0], pts[0][1], [1, 1], style, true); };
+  const notched = (x, y, w, h, n, style) => poly([[x, y], [x + w, y], [x + w, y + h - n], [x + w - n, y + h], [x, y + h]], style);
+  const star = (cx, cy, r, hex) => { fill(hex); const pts = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + (i * Math.PI) / 5; const rr = i % 2 ? r * 0.42 : r; pts.push([cx + rr * Math.cos(a), cy + rr * Math.sin(a)]); } poly(pts); };
+  const width = (s, cs) => doc.getTextWidth(s) + cs * Math.max(0, s.length - 1);
+  // Text with letter-spacing + alignment (jsPDF's own align ignores charSpace); shrinks to maxW.
+  const T = (s, x, y, { f = 'heavy', size = 10, color = '#000000', cs = 0, align = 'left', maxW } = {}) => {
+    doc.setFont(...FONT[f]); let sz = size; doc.setFontSize(sz);
+    if (maxW) while (width(s, cs) > maxW && sz > 5) { sz -= 0.5; doc.setFontSize(sz); }
+    const w = width(s, cs);
+    doc.setTextColor(..._fRgb(color));
+    doc.text(s, align === 'center' ? x - w / 2 : align === 'right' ? x - w : x, y, cs ? { charSpace: cs } : undefined);
+    return w;
+  };
+  // Images: every fetch is bounded — a supplier CDN that accepts the connection and never
+  // answers used to hang this build forever, silently stalling the launch email. Supplier
+  // CDNs (cdnm.sanmar.com etc.) send no CORS headers, so go through image-proxy first,
+  // falling back to a direct fetch for hosts the proxy doesn't allow.
   const _imgB64 = async (u) => {
     const toB64 = async (src) => { const resp = await fetchWithTimeout(src, {}, IMG_FETCH_MS); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); }); };
     try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
-    catch(_) { try { return await toB64(u); } catch(_) { return null; } }
+    catch (_) { try { return await toB64(u); } catch (_) { return null; } }
   };
-  // Match the storefront's garment framing so the flyer items look like the store: a
-  // DECORATED garment is fetched RAW (drawn object-fit:contain below, logos mapped onto it)
-  // exactly like the store's product card + art editor; an UNDECORATED garment keeps
-  // normGarment's uniform trim. Logo art passes through normGarment untouched (it's a no-op
-  // for non-SanMar hosts). Map key = raw url so addImg/drawDecos lookups still resolve.
-  const fetchOf = new Map();
-  const noteGarment = (item, decorated) => { if (item && item.image_front_url && !fetchOf.has(item.image_front_url)) fetchOf.set(item.image_front_url, decorated ? item.image_front_url : normGarment(item.image_front_url)); };
-  [pkg, ...visItems].forEach((item) => {
-    if (!item) return;
-    const decos = _flyerDecos(item);
-    noteGarment(item, decos.length > 0);
-    decos.forEach((d) => { if (!fetchOf.has(d.art_url)) fetchOf.set(d.art_url, d.art_url); });
+  // Re-encode every image at print size (≤600px) before it goes in the PDF: 20 full-size
+  // supplier photos (often 2000px PNGs) pushed the attachment past the email size cap, and
+  // some PNG variants (16-bit, interlaced) or SVG logos jsPDF can't embed at all. Garments
+  // become JPEG on white (the card is white); logos/art stay PNG to keep transparency.
+  const _shrink = (dataUrl, alpha) => new Promise((res) => {
+    if (!dataUrl) { res(null); return; }
+    const img = new Image();
+    img.onload = () => { try {
+      const k = Math.min(1, 600 / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+      const c = document.createElement('canvas'); c.width = Math.max(1, Math.round((img.naturalWidth || 1) * k)); c.height = Math.max(1, Math.round((img.naturalHeight || 1) * k));
+      const g = c.getContext('2d'); if (!alpha) { g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height); }
+      g.drawImage(img, 0, 0, c.width, c.height);
+      res(alpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.86));
+    } catch (_) { res(dataUrl); } };
+    img.onerror = () => res(dataUrl);
+    img.src = dataUrl;
   });
-  pkgImgs.forEach((u) => { if (u && !fetchOf.has(u)) fetchOf.set(u, normGarment(u)); });
-  await Promise.all([...fetchOf.entries()].map(async ([key, src]) => {
-    const b64 = await _imgB64(src);
-    if (b64) imgCache[key] = b64;
-  }));
-  // Contain-fit the image inside the (x,iy,w,h) box, centered — drawing at the raw box
-  // size stretched photos to the card's aspect ratio and they came out scrunched.
+  // Match the storefront's garment framing: a DECORATED garment is fetched RAW (contain-fit,
+  // logos mapped onto it) exactly like the store's product card + art editor; an UNDECORATED
+  // garment keeps normGarment's uniform trim. Map key = raw url so lookups still resolve.
+  const imgCache = {};
+  const fetchOf = new Map(); // raw url → { src, alpha }
+  const shown = [m.pkg, ...m.p1, ...m.p2].filter(Boolean);
+  shown.forEach((item) => {
+    const decos = _flyerDecos(item);
+    if (item.image_front_url && !fetchOf.has(item.image_front_url)) fetchOf.set(item.image_front_url, { src: decos.length ? item.image_front_url : normGarment(item.image_front_url), alpha: false });
+    decos.forEach((d) => { if (!fetchOf.has(d.art_url)) fetchOf.set(d.art_url, { src: d.art_url, alpha: true }); });
+  });
+  m.pkgImgs.forEach((u) => { if (u && !fetchOf.has(u)) fetchOf.set(u, { src: normGarment(u), alpha: false }); });
+  if (m.logo) fetchOf.set(m.logo, { src: m.logo, alpha: true });
+  let qrB64 = null;
+  await Promise.all([
+    ...[...fetchOf.entries()].map(async ([key, { src, alpha }]) => { const b64 = await _shrink(await _imgB64(src), alpha); if (b64) imgCache[key] = b64; }),
+    (async () => {
+      try {
+        const qrResp = await fetchWithTimeout(_qrImg(m.qrSrc, 300), {}, IMG_FETCH_MS);
+        const qrBlob = await qrResp.blob();
+        qrB64 = await new Promise((resolve) => { const r = new FileReader(); r.onloadend = () => resolve(r.result); r.onerror = () => resolve(null); r.readAsDataURL(qrBlob); });
+      } catch (_) { /* skip if network fails */ }
+    })(),
+  ]);
+  const fmtOf = (b64) => (b64.startsWith('data:image/png') ? 'PNG' : b64.startsWith('data:image/webp') ? 'WEBP' : 'JPEG');
+  // Contain-fit the image inside the box, centered — drawing at the raw box size stretched
+  // photos to the card's aspect ratio and they came out scrunched.
   const addImg = (b64, x, iy, w, h) => { try {
-    const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG';
-    let dw=w, dh=h, dx=x, dy=iy;
-    try { const p=doc.getImageProperties(b64); if (p.width>0 && p.height>0) { const s=Math.min(w/p.width, h/p.height); dw=p.width*s; dh=p.height*s; dx=x+(w-dw)/2; dy=iy+(h-dh)/2; } } catch(_) {}
-    doc.addImage(b64,fmt,dx,dy,dw,dh,'','FAST'); return {dx,dy,dw,dh};
-  } catch(_) { return false; } };
+    let dw = w, dh = h, dx = x, dy = iy;
+    try { const p = doc.getImageProperties(b64); if (p.width > 0 && p.height > 0) { const s = Math.min(w / p.width, h / p.height); dw = p.width * s; dh = p.height * s; dx = x + (w - dw) / 2; dy = iy + (h - dh) / 2; } } catch (_) {}
+    doc.addImage(b64, fmtOf(b64), dx, dy, dw, dh, '', 'FAST'); return { dx, dy, dw, dh };
+  } catch (_) { return false; } };
   // Composite the item's applied web logos over its drawn garment photo, mirroring the
   // storefront's DecoOverlay. Placements are % of a 4:5 card box that CONTAIN-fits the raw
   // garment (matching the store card + the art editor); the PDF also contain-fits the photo,
   // so map box-% → garment fractions → PDF points.
-  const drawDecos = (item, rect) => {
-    if (!rect || !item) return;
+  const drawDecos = (item, r) => {
+    if (!r || !item) return;
     const gb64 = imgCache[item.image_front_url]; if (!gb64) return;
-    let gp; try { gp = doc.getImageProperties(gb64); } catch(_) { return; }
+    let gp; try { gp = doc.getImageProperties(gb64); } catch (_) { return; }
     if (!(gp && gp.width > 0 && gp.height > 0)) return;
-    const cw = 0.8, ch = 1; // storefront card box aspect (4:5), arbitrary units
-    const s = Math.min(cw/gp.width, ch/gp.height); // CONTAIN-fit — matches the store
-    const ox = (cw - gp.width*s)/2, oy = (ch - gp.height*s)/2;
+    const cw = 0.8, ch = 1;
+    const s = Math.min(cw / gp.width, ch / gp.height);
+    const ox = (cw - gp.width * s) / 2, oy = (ch - gp.height * s) / 2;
     _flyerDecos(item).forEach((d) => {
       const b = imgCache[d.art_url]; if (!b) return;
-      let lp; try { lp = doc.getImageProperties(b); } catch(_) { return; }
+      let lp; try { lp = doc.getImageProperties(b); } catch (_) { return; }
       const p = _decoPos(d);
-      const u = ((p.x/100)*cw - ox)/(gp.width*s), v = ((p.y/100)*ch - oy)/(gp.height*s);
-      const wpt = ((p.w/100)*cw)/(gp.width*s)*rect.dw;
-      const hpt = (lp.width > 0 && lp.height > 0) ? wpt*lp.height/lp.width : wpt;
-      const fmt = b.startsWith('data:image/png')?'PNG':b.startsWith('data:image/webp')?'WEBP':'JPEG';
-      try { doc.addImage(b, fmt, rect.dx + u*rect.dw - wpt/2, rect.dy + v*rect.dh - hpt/2, wpt, hpt, '', 'FAST'); } catch(_) {}
+      const u = ((p.x / 100) * cw - ox) / (gp.width * s), v = ((p.y / 100) * ch - oy) / (gp.height * s);
+      const wpt = ((p.w / 100) * cw) / (gp.width * s) * r.dw;
+      const hpt = (lp.width > 0 && lp.height > 0) ? wpt * lp.height / lp.width : wpt;
+      try { doc.addImage(b, fmtOf(b), r.dx + u * r.dw - wpt / 2, r.dy + v * r.dh - hpt / 2, wpt, hpt, '', 'FAST'); } catch (_) {}
     });
   };
-  // Player Pack highlight band
-  if (pkg) {
-    y += 14;
-    const bh = 88;
-    doc.setFillColor(pr,pg,pb); doc.setDrawColor(ar,ag,ab); doc.setLineWidth(1.5); doc.roundedRect(40,y,W-80,bh,6,6,'FD');
-    let tx = 54;
-    if (pkgImgs.length) {
-      const bx=48, by=y+8, bw=72, bhh=bh-16;
-      doc.setFillColor(255,255,255); doc.roundedRect(bx,by,bw,bhh,4,4,'F');
-      if (pkgImgs.length === 1) { const b=imgCache[pkgImgs[0]]; if (b) { const r = addImg(b, bx+4, by+4, bw-8, bhh-8); if (pkgImgs[0] === pkg.image_front_url) drawDecos(pkg, r); } }
-      else { const cols=2, rows=Math.ceil(pkgImgs.length/2), cw=(bw-6)/cols, ch=(bhh-6)/rows; pkgImgs.forEach((u,k)=>{ const b=imgCache[u]; if(!b) return; const cx=bx+3+(k%2)*cw, cy=by+3+Math.floor(k/2)*ch; addImg(b, cx+1, cy+1, cw-2, ch-2); }); }
-      tx = 132;
+  const priceTag = (x, yb, price) => {
+    if (!(Number(price) > 0)) return;
+    const s = '$' + Math.round(Number(price));
+    doc.setFont(...FONT.heavy); doc.setFontSize(11);
+    const w = doc.getTextWidth(s) + 12, h = 15, sk = 3;
+    fill(pal.brand); poly([[x + sk, yb - h], [x + w + sk, yb - h], [x + w, yb], [x, yb]]);
+    T(s, x + 6 + sk / 2, yb - 4, { size: 11, color: '#ffffff' });
+  };
+  const card = (item, x, y, h) => {
+    fill('#ffffff'); doc.setDrawColor(..._fRgb(pal.line)); doc.setLineWidth(0.6); notched(x, y, colW, h, FLY.notch, 'FD');
+    const b64 = item.image_front_url && imgCache[item.image_front_url];
+    const r = b64 && addImg(b64, x + 6, y + 6, colW - 12, h - 12);
+    if (r) drawDecos(item, r);
+    else T('No image', x + colW / 2, y + h / 2, { f: 'label', size: 9, color: '#9aa1ac', align: 'center' });
+    priceTag(x + 5, y + h - 7, item.retail_price);
+  };
+  const grid = (arr, y0, h) => arr.forEach((it, i) => card(it, M + (i % 4) * (colW + GAP), y0 + Math.floor(i / 4) * (h + GAP), h));
+  const qrAt = (x, y, s) => { if (qrB64) { try { doc.addImage(qrB64, 'PNG', x, y, s, s, '', 'FAST'); } catch (_) {} } };
+  const stripeBand = (x0, x1, y0, y1, hex) => {
+    doc.saveGraphicsState(); doc.rect(x0, y0, x1 - x0, y1 - y0, null); doc.clip(); doc.discardPath();
+    fill(hex); const dx = (y1 - y0) * 0.7;
+    for (let x = x0 - dx; x < x1; x += 9) poly([[x, y1], [x + 3.5, y1], [x + 3.5 + dx, y0], [x + dx, y0]]);
+    doc.restoreGraphicsState();
+  };
+  const topBar = (left, right) => {
+    rect(0, 0, W, 30, pal.ink);
+    star(M + 4.5, 15.6, 5, '#ffffff');
+    T(left, M + 13, 19, { f: 'label', size: 9.5, color: '#ffffff', cs: 1.6, maxW: W - 2 * M - 13 - width(right, 1.6) - 30 });
+    T(right, W - M, 19, { f: 'label', size: 9.5, color: '#ffffff', cs: 1.6, align: 'right' });
+  };
+
+  // ── PAGE 1 ──
+  doc.setFont(...FONT.label); doc.setFontSize(9.5);
+  topBar('OFFICIAL TEAM STORE', 'POWERED BY NATIONAL SPORTS APPAREL');
+  const [hy0, hy1] = FLY.hero;
+  rect(0, hy0, W, hy1 - hy0, pal.heroBg);
+  stripeBand(0, W, hy0, hy1, pal.stripe);
+  stripeBand(0, 64, hy0, hy1, pal.stripeEdge);
+  fill(pal.popBright); poly([[560, hy0], [W, hy0], [W, hy1], [560, hy1], [545, hy0 + 79]]);
+  if (m.sport) {
+    doc.setFont(...FONT.heavy); doc.setFontSize(114);
+    const sz = Math.min(114, 114 * 440 / Math.max(1, doc.getTextWidth(m.sport)));
+    T(m.sport, W / 2, 175, { size: sz, color: pal.watermark, align: 'center' });
+  }
+  // Store-name banner (skewed), shrunk to fit.
+  doc.setFont(...FONT.heavy); let nsz = 10; doc.setFontSize(nsz);
+  while (width(m.name, 1.4) > 440 && nsz > 6) { nsz -= 0.5; doc.setFontSize(nsz); }
+  const nw = width(m.name, 1.4) + 28;
+  fill(pal.brand); poly([[W / 2 - nw / 2 + 4, 50], [W / 2 + nw / 2 + 4, 50], [W / 2 + nw / 2 - 4, 72], [W / 2 - nw / 2 - 4, 72]]);
+  T(m.name, W / 2, 64.5, { size: nsz, color: '#ffffff', cs: 1.4, align: 'center' });
+  if (m.logo && imgCache[m.logo]) addImg(imgCache[m.logo], 246, 80, 120, 96);
+  rect(0, 186, W, 3, pal.popBright);
+  // Feature band
+  rect(0, FLY.band[0], W, FLY.band[1] - FLY.band[0], pal.brand);
+  doc.setFont(...FONT.heavy); doc.setFontSize(12.5);
+  const feats = m.features.map((f) => f.toUpperCase());
+  const fw = feats.map((f) => 15 + width(f, 0.8));
+  let fx = W / 2 - (fw.reduce((a, b) => a + b, 0) + 28 * (feats.length - 1)) / 2;
+  feats.forEach((f, i) => { star(fx + 5.5, 205, 5.5, pal.popOnBrand); T(f, fx + 15, 210, { size: 12.5, color: '#ffffff', cs: 0.8 }); fx += fw[i] + 28; });
+  // Headline + stat boxes
+  T('THE TEAM STORE IS', M, 272, { size: 38, color: pal.brand, maxW: 268 });
+  T('NOW OPEN', M, 305, { f: 'italic', size: 38, color: pal.popText });
+  rect(M, 313, 38, 2.5, pal.popText);
+  m.stats.forEach(([k, v], i) => {
+    const x = 311 + i * 92;
+    fill('#ffffff'); doc.setDrawColor(..._fRgb(pal.line)); doc.setLineWidth(0.6); doc.rect(x, 244, 85, 70, 'FD');
+    rect(x, 244, 85, 2.5, i === 2 ? pal.popBright : pal.brand);
+    T(k.toUpperCase(), x + 7, 261, { f: 'label', size: 8, color: pal.label, cs: 1.6 });
+    doc.setFont(...FONT.heavy); doc.setFontSize(14.5);
+    doc.splitTextToSize(v.toUpperCase(), 85 - 14).slice(0, 2).forEach((ln, j) => T(ln, x + 7, 279 + j * 15, { size: 14.5, color: pal.brand }));
+  });
+  // Player Pack band
+  if (m.pkg) {
+    fill(pal.brand); notched(M, 326, W - 2 * M, 74, 10, 'F');
+    let tx = M + 14;
+    if (m.pkgImgs.length) {
+      const bx = M + 6, by = 332, bw = 70, bh = 62;
+      rect(bx, by, bw, bh, '#ffffff');
+      if (m.pkgImgs.length === 1) { const b = imgCache[m.pkgImgs[0]]; if (b) { const r = addImg(b, bx + 3, by + 3, bw - 6, bh - 6); if (m.pkgImgs[0] === m.pkg.image_front_url) drawDecos(m.pkg, r); } }
+      else { const rows = Math.ceil(m.pkgImgs.length / 2), cw = (bw - 6) / 2, ch = (bh - 6) / rows; m.pkgImgs.forEach((u, k) => { const b = imgCache[u]; if (b) addImg(b, bx + 3 + (k % 2) * cw + 1, by + 3 + Math.floor(k / 2) * ch + 1, cw - 2, ch - 2); }); }
+      tx = bx + bw + 14;
     }
-    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(ar,ag,ab); doc.text('REQUIRED FOR EVERY PLAYER', tx, y+20);
-    doc.setFontSize(20); doc.setTextColor(255,255,255);
-    const pn=doc.splitTextToSize((pkg.name || pkg.display_name || 'Player Pack').toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
-    if (pn[1]) { doc.setFontSize(14); doc.text(pn[1], tx, y+58); }
-    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(225,228,235); doc.text('Everything your player needs in one bundle.', tx, y+72);
-    doc.setFont('helvetica','bold'); doc.setFontSize(30); doc.setTextColor(255,255,255); doc.text('$'+Math.round(Number(pkg.retail_price)), W-52, y+44, {align:'right'});
-    doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab); doc.text('COMPLETE PACK', W-52, y+58, {align:'right'});
-    y += bh;
+    star(tx + 3.5, 345, 3.5, pal.popOnBrandSmall);
+    T('REQUIRED FOR EVERY PLAYER', tx + 10, 348, { f: 'label', size: 8, color: pal.popOnBrandSmall, cs: 1.6 });
+    T(String(m.pkg.name || m.pkg.display_name || 'Player Pack').toUpperCase(), tx, 370, { size: 22, color: '#ffffff', maxW: W - M - 120 - tx });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(225, 228, 235); doc.text('Everything your player needs in one bundle.', tx, 384);
+    T('$' + Math.round(Number(m.pkg.retail_price)), W - M - 18, 370, { size: 30, color: '#ffffff', align: 'right' });
+    T('COMPLETE PACK', W - M - 18, 383, { f: 'label', size: 7.5, color: pal.popOnBrandSmall, cs: 1.2, align: 'right' });
   }
-  if (visItems.length > 0) {
-    y += 16;
-    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(...INK);
-    doc.text("WHAT'S IN THE STORE", 40, y);
-    doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
-    y += 12;
-    // Image fills the card; price floats as a pill over the bottom-left corner.
-    const GAP=8, colW=(W-80-GAP*3)/4, cardH=pkg?100:128;
-    visItems.forEach((item,idx)=>{
-      const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
-      doc.setFillColor(255,255,255); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.roundedRect(x,iy,colW,cardH,4,4,'FD');
-      const b64=imgCache[item.image_front_url];
-      const r = b64 && addImg(b64,x+5,iy+5,colW-10,cardH-10);
-      if(!r){ doc.setFillColor(235,231,224); doc.rect(x+5,iy+5,colW-10,cardH-10,'F'); }
-      else drawDecos(item, r);
-      if(item.retail_price){
-        const lbl='$'+Math.round(Number(item.retail_price));
-        doc.setFont('helvetica','bold'); doc.setFontSize(11); const tw=doc.getTextWidth(lbl);
-        doc.setFillColor(ar,ag,ab); doc.roundedRect(x+6, iy+cardH-21, tw+12, 16, 8, 8, 'F');
-        doc.setTextColor(255,255,255); doc.text(lbl, x+6+(tw+12)/2, iy+cardH-10, {align:'center'});
-      }
+  if (m.p1.length) {
+    const hy = 345 + (m.pkg ? 77 : 0);
+    const hw = T("WHAT'S IN THE STORE", M, hy, { size: 13, color: pal.brand, cs: 0.5 });
+    rect(M + hw + 12, hy - 4.5, W - M - (M + hw + 12), 1, pal.line);
+    const g = FLY.p1Grid(m.pkg, m.p1.length);
+    grid(m.p1, g.y, g.h);
+  } else if (!m.pkg) {
+    m.steps.forEach(([t, b], i) => {
+      const y = 370 + i * 56;
+      fill(pal.brand); doc.circle(M + 11, y, 11, 'F');
+      T(String(i + 1), M + 11, y + 4.5, { size: 12, color: '#ffffff', align: 'center' });
+      T(t.toUpperCase(), M + 32, y + 4, { size: 14, color: pal.brand });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(..._fRgb(pal.label));
+      doc.text(doc.splitTextToSize(b, W - 2 * M - 32), M + 32, y + 18);
     });
-    y += Math.ceil(visItems.length/4)*(cardH+GAP)+14;
-  } else if (!pkg) {
-    // Fallback: How To Order steps (mirrors the HTML flyer)
-    y += 20;
-    doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...INK);
-    doc.text('HOW TO ORDER', 40, y);
-    doc.setFillColor(ar,ag,ab); doc.rect(40+doc.getTextWidth('HOW TO ORDER')+12,y-5,W-40-doc.getTextWidth('HOW TO ORDER')-52,3,'F');
-    y += 22;
-    const closeDate2 = _fmtDate(store.close_at);
-    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. ${storeShippingPromise(store)}`]].forEach(([num,title,body])=>{
-      doc.setFillColor(pr,pg,pb); doc.circle(54,y+6,9,'F');
-      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(255,255,255); doc.text(num,54,y+10,{align:'center'});
-      doc.setTextColor(...INK); doc.setFontSize(13); doc.text(title.toUpperCase(),70,y+10);
-      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
-      const bl=doc.splitTextToSize(body,W-120); doc.text(bl,70,y+22);
-      y += 52;
-    });
-    y += 10;
   }
-  // QR
-  y = Math.max(y, H-250);
-  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...INK);
-  doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
-  y += 10;
-  try {
-    const qrResp = await fetchWithTimeout(_qrImg(_storefrontSrcUrl(store, 'qr'), 200), {}, IMG_FETCH_MS);
-    const qrBlob = await qrResp.blob();
-    const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
-    doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
-  } catch(_){ /* skip if network fails */ }
-  y += 150;
-  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
-  doc.text(url, W/2, y, {align:'center'});
-  // Footer
-  doc.setFillColor(...INK); doc.rect(0,H-50,W,50,'F');
-  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(255,255,255);
-  doc.text('NATIONAL SPORTS APPAREL', W/2, H-29, {align:'center'});
-  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,160,160);
-  doc.text("California's Largest Independent Team Dealer  ·  Since 2009", W/2, H-13, {align:'center'});
+  // Shop-the-store block
+  fill(pal.brand); notched(M, 643, W - 2 * M, 112, 11, 'F');
+  const sw = T('SHOP THE ', M + 13, 680, { size: 21, color: '#ffffff' });
+  T('STORE', M + 13 + sw, 680, { f: 'italic', size: 21, color: pal.popOnBrand });
+  T(m.url.toUpperCase(), M + 13, 698, { f: 'label', size: 9, color: '#ffffff', cs: 0.3, maxW: 430 });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(..._fRgb(_fMix(pal.brand, '#ffffff', 0.85)));
+  doc.text('Questions? hello@nationalsportsapparel.com', M + 13, 716);
+  rect(M + 456, 652, 77, 77, '#ffffff'); qrAt(M + 460, 656, 69);
+  T('SCAN TO SHOP', M + 456 + 38.5, 742, { f: 'label', size: 8, color: pal.popOnBrandSmall, cs: 2, align: 'center' });
+  rect(0, 767, W, 25, pal.ink);
+  T('NATIONAL SPORTS APPAREL · ORANGE, CA · SINCE 2009', M, 782, { f: 'label', size: 7.5, color: pal.footText, cs: 1.2 });
+  T('AUTHORIZED DEALER · ADIDAS · UNDER ARMOUR · RAWLINGS', W - M, 782, { f: 'label', size: 7.5, color: pal.footText, cs: 1.2, align: 'right' });
+
+  // ── PAGE 2 ──
+  if (m.p2.length) {
+    doc.addPage('letter', 'portrait');
+    doc.setFont(...FONT.label); doc.setFontSize(9.5);
+    topBar(m.name, 'PAGE 2 · MORE GEAR');
+    rect(0, 30, W, 4, pal.brand); rect(0, 30, 135, 4, pal.popBright);
+    const aw = T('ALSO ', M, 82, { size: 40, color: pal.brand });
+    T('AVAILABLE', M + aw, 82, { f: 'italic', size: 40, color: pal.popText });
+    rect(M, 92, 38, 2.5, pal.popText);
+    grid(m.p2, FLY.p2Grid.y, FLY.p2Grid.h);
+    fill('#ffffff'); doc.setDrawColor(..._fRgb(pal.brand)); doc.setLineWidth(1.6); doc.rect(M, 672, W - 2 * M, 70, 'FD');
+    T(m.orderLine.toUpperCase(), M + 13, m.more ? 703 : 713, { size: 17, color: pal.brand, maxW: 430 });
+    if (m.more) { doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(..._fRgb(pal.label)); doc.text(`+ ${m.more} more item${m.more === 1 ? '' : 's'} in the online store`, M + 13, 720); }
+    qrAt(M + 482, 682, 50);
+    rect(0, 755, W, 37, pal.ink);
+    const lw = T('NATIONAL SPORTS APPAREL · ORANGE, CA · SINCE 2009', M, 777, { f: 'label', size: 7.5, color: pal.footText, cs: 1.2 });
+    T(m.url.replace(/^https?:\/\//, '').toUpperCase(), W - M, 777, { f: 'label', size: 7.5, color: pal.footText, cs: 1.2, align: 'right', maxW: W - 2 * M - lw - 20 });
+  }
   return doc.output('datauristring').split(',')[1];
 }
 
@@ -1551,7 +1695,8 @@ const _FLYER_ATTACH_MAX_B64 = 4_500_000; // chars ≈ 3.4MB binary, safe under t
 // _sendLaunchEmail before Brevo was ever called: no email, no error, and the UI had
 // already flashed "Generating flyer PDF…" as if the send were under way.)
 const _FLYER_BUILD_MS = 45_000;
-async function _sendLaunchEmail(store, to, coachUrl) {
+async function _sendLaunchEmail(rawStore, to, coachUrl) {
+  const store = await _withSchoolBranding(rawStore);
   const items = await loadFlyerItems(store);
   let attachment;
   try {
@@ -1737,10 +1882,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
-  const openFlyer = useCallback((store, items = []) => {
+  const openFlyer = useCallback(async (store, items = []) => {
     const w = window.open('', '_blank');
     if (!w) { flash('Allow pop-ups to open the flyer.'); return; }
-    w.document.write(flyerHtml(store, items)); w.document.close();
+    w.document.write(flyerHtml(await _withSchoolBranding(store), items)); w.document.close();
   }, [flash]);
 
   const loadStores = useCallback(async (options = {}) => {
@@ -6918,6 +7063,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       <Section title="Branding">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
+        {orgType !== 'all_school' && <Row label="Sport"><input className="form-input" aria-label="Sport" list="store-form-sports" value={f.sport || ''} onChange={(e) => set('sport', e.target.value)} placeholder="e.g. Basketball" /><datalist id="store-form-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist><div style={{ fontSize: 12, color: '#64748b' }}>The big word behind the logo on the launch flyer. Leave blank to use the sport in the store name.</div></Row>}
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback={inheritedColors.primary || '#0b1f3a'} inherited={!!inheritedColors.primary} />
           <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback={inheritedColors.accent || '#e11d2a'} inherited={!!inheritedColors.accent} />
@@ -7004,7 +7150,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
                 try {
                   setBusy(true);
                   const pdfItems = await loadFlyerItems(store);
-                  const b64 = await generateFlyerPdfBase64(store, pdfItems);
+                  const b64 = await generateFlyerPdfBase64(await _withSchoolBranding(store), pdfItems);
                   const a = document.createElement('a');
                   a.href = 'data:application/pdf;base64,' + b64;
                   a.download = `${store.slug || 'team-store'}-flyer.pdf`;
@@ -7015,10 +7161,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
                 ↓ Download Flyer PDF
               </button>
               <button type="button" onClick={async () => {
-                const printItems = await loadFlyerItems(store);
                 const w = window.open('', '_blank');
                 if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
-                w.document.write(flyerHtml(store, printItems)); w.document.close();
+                const [printItems, printStore] = await Promise.all([loadFlyerItems(store), _withSchoolBranding(store)]);
+                w.document.write(flyerHtml(printStore, printItems)); w.document.close();
               }} style={{ background: '#fff', color: '#191919', border: '1px solid #e2e6ec', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
                 Print Flyer
               </button>
