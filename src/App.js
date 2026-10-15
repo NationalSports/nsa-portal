@@ -2,6 +2,7 @@ import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
+import { fetchDataVersions, allUnchanged, changedGroups, markLoaded } from './lib/dataVersions';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
@@ -3287,7 +3288,12 @@ export default function App(){
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
       const reloadAll=async(pendingGroups)=>{
         if(cancelled)return;
-        const groups=pendingGroups.has('__all__')?null:pendingGroups;
+        let groups=pendingGroups.has('__all__')?null:pendingGroups;
+        // Drop groups nothing has written to since this tab last loaded them (src/lib/dataVersions.js);
+        // the counters are read BEFORE the load, so a write landing mid-load still triggers the next one.
+        const _versions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(groups){const todo=changedGroups(_versions,[...groups]);if(!todo.length)return;groups=new Set(todo)}
         const _has=g=>!groups||groups.has(g);
         const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
@@ -3364,6 +3370,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next reload).
+        markLoaded(_versions,(groups?[...groups]:['estimates','sales_orders','invoices','messages','assigned_todos','app_state']).filter(g=>!(d._badGroups||[]).includes(g)));
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single selective reload.
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
@@ -3555,6 +3564,14 @@ export default function App(){
           }
         }
         const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
+        // A core poll re-downloads every order, estimate, invoice and message. Skip it when nothing has
+        // written to any of them since this tab last loaded them (src/lib/dataVersions.js); full syncs
+        // always run. The app_state counter tracks only the six keys applied below — keep that list in
+        // step with migration 20261014220000_data_versions.
+        const _POLL_GROUPS=['estimates','sales_orders','invoices','messages','app_state'];
+        const _pollVersions=await fetchDataVersions(supabase);
+        if(cancelled)return;
+        if(coreOnly&&allUnchanged(_pollVersions,_POLL_GROUPS)){_pollConsecutiveFailures=0;schedulePoll();return}
         const d=await _dbLoad({coreOnly});
         if(!d||!d.hasData){
           _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
@@ -3696,6 +3713,9 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>{const incStr=JSON.stringify(as.batch_pos);if(JSON.stringify(prev)===incStr){_batchPosApplied.current=incStr;return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=incStr;return as.batch_pos});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
+        // Only now, after every setter above ran, is this load "the one the tab has".
+        // (and never a group whose tables came back untrusted: a hollow load must heal on the next poll).
+        markLoaded(_pollVersions,(d._coreOnly?_POLL_GROUPS:[..._POLL_GROUPS,'assigned_todos']).filter(g=>!(d._badGroups||[]).includes(g)));
       }catch(e){
         _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
         if(_pollConsecutiveFailures<=2)console.warn('[DB] Poll failed:',e.message);

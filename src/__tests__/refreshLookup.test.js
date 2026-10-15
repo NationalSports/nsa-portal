@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { indexFirstById } from '../lib/rowLookup';
+import { allUnchanged, markLoaded, _resetDataVersionsForTest } from '../lib/dataVersions';
 const source=fs.readFileSync(path.join(__dirname,'..','App.js'),'utf8');
 
 test('index retains strict ID matching, first duplicate, object identity and order',()=>{
@@ -71,18 +72,19 @@ test('incomplete initial load still blocks writes and retains changed drafts as 
   expect(h.save).not.toHaveBeenCalled();expect(h.snap.current.rows).toEqual([]);expect(h.pending.has('a')).toBe(true);
 });
 
-function pollHarness({custCount=1}={}){
+function pollHarness({custCount=1,versions=null}={}){
+  _resetDataVersionsForTest();
   const start=source.indexOf('    const runPoll=async()=>{');
   const end=source.indexOf('    schedulePoll();\n    // Expose an early-trigger',start);
-  const load=jest.fn(),schedule=jest.fn();
-  const run=Function('_dbLoad','schedulePoll','document','_custCount',`
+  const load=jest.fn(),schedule=jest.fn(),fetchDataVersions=jest.fn(async()=>versions);
+  const run=Function('_dbLoad','schedulePoll','document','_custCount','fetchDataVersions','allUnchanged','markLoaded','supabase',`
     let cancelled=false,pollRunning=false,_pollConsecutiveFailures=0;
     const _dbReady={current:true},_dbSavingCount=0,_lastFullSyncAt=Date.now(),_FULL_SYNC_MS=1800000;
     const _getPollInterval=()=>300000;
     ${source.slice(start,end)}
     return runPoll;
-  `)(load,schedule,{hidden:false},{current:custCount});
-  return {run,load,schedule};
+  `)(load,schedule,{hidden:false},{current:custCount},fetchDataVersions,allUnchanged,markLoaded,null);
+  return {run,load,schedule,fetchDataVersions};
 }
 test('navigation cannot overlap an in-flight poll; polling resumes after completion',async()=>{
   const h=pollHarness();let finish;
@@ -105,4 +107,19 @@ test('an empty customer list is refetched before the core load, so a skipped pol
   expect(h.load).toHaveBeenCalledTimes(2);
   expect([...h.load.mock.calls[0][0].only]).toEqual(['customers']);
   expect(h.load.mock.calls[1][0].only).toBeUndefined();
+});
+test('a core poll is skipped when nothing it loads has changed since the last load, and runs when anything moves',async()=>{
+  const groups=['estimates','sales_orders','invoices','messages','app_state'];
+  const v={estimates:1,sales_orders:5,invoices:2,messages:9,app_state:3};
+  const quiet=pollHarness({versions:v});markLoaded(v,groups);
+  await quiet.run();
+  expect(quiet.fetchDataVersions).toHaveBeenCalledTimes(1);
+  expect(quiet.load).not.toHaveBeenCalled();expect(quiet.schedule).toHaveBeenCalledTimes(1);
+  const busy=pollHarness({versions:{...v,sales_orders:6}});markLoaded(v,groups);busy.load.mockResolvedValue(null);
+  await busy.run();
+  expect(busy.load).toHaveBeenCalledTimes(1);
+});
+test('without counters (RPC missing or failing) every poll loads exactly as before',async()=>{
+  const h=pollHarness({versions:null});h.load.mockResolvedValue(null);
+  await h.run();expect(h.load).toHaveBeenCalledTimes(1);
 });

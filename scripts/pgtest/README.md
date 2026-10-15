@@ -44,6 +44,12 @@ Harnesses:
   untouched; re-running is a no-op; a 50k-row staff read gets faster).
   Self-contained; ends with `ALL_RLS_CHECK_ONCE_SCENARIOS_PASSED`. Apply this
   migration before `20261013120000` — that one refuses to run otherwise.
+- `txn_item_search_scenarios.sql` — migration
+  `20261014210000_txn_item_search_stats` (global search's archive-item search reads a
+  precomputed per-item summary instead of all ~230k invoice lines: identical results to
+  the previous search across 23 queries × 4 limits, charge and invoice-only codes still
+  excluded, staff-only, a refresh picks up new imports, one nightly refresh job).
+  Self-contained; ends with `ALL_TXN_ITEM_SEARCH_SCENARIOS_PASSED`.
 
 ## place_webstore_order (00171)
 
