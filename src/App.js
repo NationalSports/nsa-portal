@@ -6708,7 +6708,11 @@ export default function App(){
     const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
     setDashView(map[cu.role]||'warehouse');
   },[cu?.id,cu?.role]);
-  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user));
+    // A tab whose sign-in had expired boots with every table denied (business data is staff-only since
+    // 20261013120000), so the initial load fails and the "load did not complete" banner stays up until
+    // the next poll, up to 5 minutes later. Signing in again is the fix, so load right now.
+    if(!_dbLoadSuccess.current&&_runPollRef.current)_runPollRef.current();};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
   // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
