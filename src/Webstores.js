@@ -12675,12 +12675,15 @@ async function logoIsMulticolor(url) {
       return cols.size >= 2;
     }
     const img = await _loadImg(url);
-    const s = 72;
+    // Sample at 160px with smoothing OFF: a smoothed 72px shrink blends a thin white/black
+    // outline into fake grey that falls under the 8% bar, so a purple+white+black crest read
+    // as single-ink and Autocolor knocked it out to a white silhouette on dark garments.
+    const s = 160;
     const iw = img.naturalWidth || s, ih = img.naturalHeight || s;
     const scale = Math.min(1, s / Math.max(iw, ih));
     const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
     const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+    const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = false; ctx.drawImage(img, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h).data;
     const groups = {}; let opaque = 0;
     for (let i = 0; i < px.length; i += 4) {
