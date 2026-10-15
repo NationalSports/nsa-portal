@@ -77,7 +77,7 @@ test('first manual save stages a new order so the background effect does not dup
   commit.resolve(true);expect(await pending).toBe(true);
 });
 
-afterEach(()=>localStorage.removeItem('nsa_outbox'));
+afterEach(()=>Object.keys(localStorage).filter(k=>k.startsWith('nsa_outbox')).forEach(k=>localStorage.removeItem(k)));
 test('only an acknowledged full save retires an obsolete banner; newer backups and journal drafts remain',async()=>{
   const old={table:'sales_orders',id:'SO-1',revision:'old',payload:{memo:'draft'}};
   const journal={...old,payload:{_draftRecovery:{revision:'other-tab'}}};

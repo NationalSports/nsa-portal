@@ -10,6 +10,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { parseDst } from './lib/dstParser';
 import { THREAD_COLORS, artLiveDsts } from './constants';
+import { threadLineGaps } from './lib/embStitchParser';
 
 const _dstCache = new Map(); // url → Promise<design>
 function loadDst(url) {
@@ -74,7 +75,7 @@ function drawDst(canvas, design, inks, bg, size, palette) {
 // One color way's render. `compact` = sitting beside/under its own color-way card in
 // ColorWaysEditor, so the card already shows the CW badge and thread list — the tile
 // is just the picture plus actions. Otherwise it carries its own header + stop list.
-function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = false, width = 220, palette }) {
+function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, autoLogo = false, busy, compact = false, width = 220, palette }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = cw?.inks || [];
@@ -117,6 +118,8 @@ function DstTile({ design, cw, idx, onEnlarge, onUseAsLogo, busy, compact = fals
       </>}
       <div style={{ display: 'flex', gap: 6 }}>
         {onUseAsLogo && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as this color way's web logo — used on webstores and as the logo detail on mockups and production sheets" onClick={async () => onUseAsLogo(await exportBlob(), cw)}>{busy ? 'Saving…' : '★ Web logo'}</button>}
+        {/* autoLogo: the order editors save this render as the color way's web logo by themselves */}
+        {autoLogo && <span style={{ ...btn, cursor: 'default', color: setCount === stops.length ? '#166534' : '#b45309', background: setCount === stops.length ? '#f0fdf4' : '#fffbeb', borderColor: setCount === stops.length ? '#bbf7d0' : '#fde68a' }} title="This stitch render IS the web logo — it saves automatically once every stop has a thread, and updates when you change a thread">{setCount === stops.length ? '✓ Web logo' : 'Web logo: set all stops'}</span>}
         <button type="button" style={btn} title="Download a transparent PNG to drop into mockups" onClick={download}>⬇ PNG</button>
       </div>
     </div>
@@ -196,8 +199,8 @@ function StitchCanvas({ design, inks, style }) {
   return <canvas ref={ref} style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain', ...style }} />;
 }
 // Full-resolution transparent PNG File of a design in the given threads (for logo uploads).
-function stitchPngFile(design, inks, name) {
-  return new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks || [], null, 1200); c.toBlob(b => res(new File([b], name || 'stitch-render.png', { type: 'image/png' })), 'image/png'); });
+function stitchPngFile(design, inks, name, palette) {
+  return new Promise(res => { const c = document.createElement('canvas'); drawDst(c, design, inks || [], null, 1200, palette); c.toBlob(b => res(new File([b], name || 'stitch-render.png', { type: 'image/png' })), 'image/png'); });
 }
 
 // ── Auto garment mock: the stitch render placed on the garment photo ──
@@ -233,7 +236,26 @@ async function composeStitchMock(design, inks, garmentUrl, { position, artSize, 
   return new File([blob], 'auto-mock-stitch-on-garment.jpg', { type: 'image/jpeg' });
 }
 
-export { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchSourceFor, StitchCanvas, stitchPngFile, composeStitchMock, mockPlacement };
+// Needle stops in an art folder's live DST, or null (no DST / unreadable — callers fail open).
+async function artDstStops(art) {
+  const dst = artLiveDsts(art).slice(-1)[0];
+  const url = dst ? (typeof dst === 'string' ? dst : (dst.url || '')) : '';
+  if (!/^https?:\/\//i.test(url)) return null;
+  try { return (await loadDst(url)).blocks.length; } catch (e) { return null; }
+}
+// Production gate: embroidery designs whose color ways don't list a thread for every DST stop.
+// Returns an error message, or '' when every thread line is filled (or no DST could be read).
+async function threadLinesMissingMsg(artFiles) {
+  const gaps = [];
+  for (const a of (artFiles || [])) {
+    if (!a || a.archived || a.deco_type !== 'embroidery') continue;
+    const g = threadLineGaps(a, await artDstStops(a));
+    if (g.length) gaps.push((a.name || 'Embroidery') + ' — ' + g.map(x => x.label + ' ' + x.filled + ' of ' + x.stops).join(', '));
+  }
+  return gaps.length ? 'Fill in every thread color first (one per DST stop): ' + gaps.join('; ') : '';
+}
+
+export { DstTile, useDstDesign, artDstStops, threadLinesMissingMsg, StitchBadge, StitchNotes, StitchLoading, stitchSourceFor, StitchCanvas, stitchPngFile, composeStitchMock, mockPlacement };
 
 // ── For printed sheets (production sheet, job art sheet) ──
 // Draws each embroidery design's live DST in every color way's threads as a PNG

@@ -1,4 +1,4 @@
-import StockReceiptDialog from './StockReceiptDialog';
+import SalesOrderEditGate from './SalesOrderEditGate';import StockReceiptDialog from './StockReceiptDialog';
 import {buildStockReceiptLabel, saveStockReceiptState} from './lib/stockReceiptLabels';
 import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
@@ -13,7 +13,7 @@ import { planOrderSave } from './lib/artJobsSaveRouting';
 import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
-import ArtRequestCard from './StandaloneArtQueue';
+import { ArtRequestTile } from './StandaloneArtQueue';
 import ClipboardImagePaste from './ClipboardImagePaste';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import { validateAllSchoolBatch, allSchoolWarehouseDestination, allSchoolSourceLines } from './lib/allSchoolBatchGuard';
@@ -74,6 +74,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
+import { repairPdfDashNulls, browserInflate } from './lib/pdfNulRepair';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG, PORTAL_SETTINGS_DEFAULTS } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates, logoReferenceFor } from './lib/logoDetail';
@@ -1814,7 +1815,17 @@ const extractPdfText=async(file,opts={})=>{
   const _extract=async()=>{
   await loadPdfJs();
   const ab=await file.arrayBuffer();
-  const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+  const first=await _extractPdfBytes(new Uint8Array(ab).slice());
+  if(first.fullText.trim())return first;
+  // Empty text: a Wilcom/pdfFactory proof whose NUL-mangled dash patterns make pdf.js drop
+  // the whole page. Repair those streams and read once more; anything else stays empty.
+  try{const fixed=await repairPdfDashNulls(new Uint8Array(ab),browserInflate);if(fixed){const second=await _extractPdfBytes(fixed);if(second.fullText.trim())return second}}catch(e){}
+  return first;
+  };
+  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
+};
+const _extractPdfBytes=async(data)=>{
+  const pdf=await window.pdfjsLib.getDocument({data}).promise;
   let fullText='';
   const pages=[];// per-page text for multi-document splitting
   for(let i=1;i<=pdf.numPages;i++){
@@ -1853,8 +1864,6 @@ const extractPdfText=async(file,opts={})=>{
     fullText+=pageText+'\n';
   }
   return{fullText,pages};
-  };
-  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
 };
 // Render PDF pages to JPEG images for the vision fallback (scanned bills with no text
 // layer — the Sports Inc "Needs Manual Upload" bucket). ~1400px wide keeps line items
@@ -2672,7 +2681,7 @@ export default function App(){
   // stale-rejection path (dbEngine calls back here the moment the server refuses a stale write).
   const[outboxConflicts,setOutboxConflicts]=useState([]);
   const[recoveryReview,setRecoveryReview]=useState(null);
-  _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
+  _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==en.table||x.id!==en.id||x.session!==en.session||x.payload?._draftRecovery),en])});
   React.useEffect(()=>{
     const confirmed=event=>setOutboxConflicts(prev=>reconcileOutboxNotices(prev,_outboxList(),event.detail));
     window.addEventListener('nsa:document-save-confirmed',confirmed);
@@ -3038,7 +3047,8 @@ export default function App(){
               const _obConflicts=[];
               _obEntries.forEach(en=>{
                 const arr=_obTables[en.table];
-                if(!arr||!en.payload){_outboxRemove(en.table,en.id);return}
+                if(!arr||!en.payload){_outboxRemove(en.table,en.id,en);return}
+                if(en.reviewOnly&&_obNoGate[en.table]){_obConflicts.push(en);return;}
                 if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
                   arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
@@ -3048,8 +3058,8 @@ export default function App(){
                   return;
                 }
                 const row=arr.find(r=>r.id===en.id);
-                const verdict=_outboxGate(en,row);
-                if(verdict==='drop'){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
+                const gate=_outboxGate(en,row);const verdict=en.reviewOnly&&gate!=='drop'?'conflict':gate;
+                if(verdict==='drop'){_outboxRemove(en.table,en.id,en);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
                 if(verdict==='apply'){
                   const idx=arr.findIndex(r=>r.id===en.id);
                   if(idx>=0)arr[idx]=en.payload;else arr.push(en.payload);
@@ -12146,7 +12156,7 @@ export default function App(){
   // SALES ORDERS LIST
   function rSO(){
     if(eSO&&_awaitingItems(eSO,'sales_orders'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eSO.id} item lines…</div>;
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><SalesOrderEditGate recoveryEditorRef={recoveryEditorRef} onLeaseLoaded={row=>{stageDocumentBaseline(_dbSnap,'sos',row);setSOs(prev=>prev.map(s=>s.id===row.id?row:s));setESO(row);setESOC(cust.find(c=>c.id===row.customer_id)||null)}} editor={ActiveOrderEditor} ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -24710,12 +24720,12 @@ export default function App(){
                 <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length+requestCards.length}</span>
               </div>
               {colJobs.length===0&&requestCards.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
-              {requestCards.map(request=><div key={request.id} style={{marginBottom:8}}><ArtRequestCard request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/></div>)}
+              {requestCards.map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/>)}
               {colJobs.map(j=>renderArtCard(j,'artist',col))}
             </div>})}
         </div>
 
-        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestCard key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
+        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
         {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
@@ -39400,7 +39410,8 @@ export default function App(){
           const replace=rows=>rows.some(row=>row.id===payload.id)?rows.map(row=>row.id===payload.id?payload:row):[...rows,payload];
           _dbSnap.current[snapKey]=replace(_dbSnap.current[snapKey]||[]);
           (table==='estimates'?setEsts:setSOs)(replace);
-          setOutboxConflicts(previous=>previous.filter(entry=>entry.table!==table||entry.id!==payload.id));
+          if(recoveryReview.revision||recoveryReview.legacySnapshot)_outboxRemove(table,payload.id,recoveryReview);
+          setOutboxConflicts(previous=>previous.filter(entry=>entry.table!==table||entry.id!==payload.id||entry.revision!==recoveryReview.revision));
           setRecoveryReview(null);nf(payload.id+' recovery save confirmed.','success');
         }}/>}
       {visibleOutboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
@@ -39411,7 +39422,7 @@ export default function App(){
         <div style={{padding:'0 16px 10px',fontWeight:400}}>
           {visibleOutboxConflicts.map(en=>{
             const label=en.id+(en.payload?.customer_name?' — '+en.payload.customer_name:(en.payload?.name?' — '+en.payload.name:''));
-            const key=en.table+':'+en.id;
+            const key=en.table+':'+en.id+':'+(en.revision||en.storageKey||'');
             return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontWeight:700,color:'#991b1b'}}>{label}</span>
               <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; saving needs review{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
@@ -39436,14 +39447,14 @@ export default function App(){
                   return[...prev,p];
                 });
                 _dbSaveFailedIds.add(en.id);_persistFailedIds();
-                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id+':'+(x.revision||x.storageKey||'')!==key));
                 nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
               }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>{en.table==='estimates'||en.table==='sales_orders'?'Review changes':'Apply my edit anyway'}</button>
               <button onClick={async()=>{
                 if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
                 if(en.payload?._draftRecovery){try{await draftJournal.acknowledge(en.payload._draftRecovery)}catch{nf('Could not clear the recovery copy. Your draft is still available.','error');return}}
-                if(!en.payload?._draftRecovery){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}
-                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+                if(!en.payload?._draftRecovery){if(!_outboxRemove(en.table,en.id,en)){nf('The draft changed or could not be cleared. It is still kept for review.','error');return;}if(!_outboxList().some(x=>x.id===en.id)){_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}}
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id+':'+(x.revision||x.storageKey||'')!==key));
               }} style={{background:'none',border:'1px solid #991b1b',color:'#991b1b',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Discard my edit</button>
             </div>);
           })}
