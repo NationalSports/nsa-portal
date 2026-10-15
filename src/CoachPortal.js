@@ -1,5 +1,7 @@
 /* eslint-disable */
 import CustomerArtProofs from './ArtRequestProofs';
+import CoachProofCollection from './CoachProofCollection';
+import { buildCoachProofCollection, coachProofStatus, nextPendingCoachProof } from './lib/coachProofCollection';
 import React, { useState, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
@@ -832,6 +834,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // images is blown up, its zoom, and whether the viewer shows the art alone or on the
   // garment. Cleared with itemMarks whenever a different proof opens.
   const[proofSel,setProofSel]=useState(0);
+  const proofEntryRef=useRef(null);
+  const proofDecisionRef=useRef(false);
+  const[proofDecisionBusy,setProofDecisionBusy]=useState(false);
   const[proofView,setProofView]=useState(0);
   const[proofZoom,setProofZoom]=useState(1);
   const[proofMode,setProofMode]=useState('garment');
@@ -889,7 +894,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // ‹ › queue walk, which swaps jobView without unmounting this component). Keyed on the
   // job identity rather than the object so a live-state re-render doesn't wipe them.
   const _openJobKey=jobView?(String(jobView.so?.id||'')+'|'+String(jobView.job?.id||'')):'';
-  useEffect(()=>{setItemMarks({});setProofSel(0);setProofView(0);setProofZoom(1);setProofMode('garment')},[_openJobKey]);
+  useEffect(()=>{
+    const target=proofEntryRef.current;
+    setItemMarks({});
+    setProofSel(target?.key===_openJobKey?target.itemIndex:0);
+    proofEntryRef.current=null;
+    setProofView(0);setProofZoom(1);setProofMode('garment');
+  },[_openJobKey]);
   // Deep-link: emails/texts can point straight at one estimate (?est=<id>), art
   // proof (?so=<id>&job=<id>), or invoice (?inv=<id>) instead of the portal home. The params ride on the
   // portal's own URL when it's opened directly; embedded in the marketing /coach
@@ -1172,7 +1183,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     if(showPay){setShowPay(null);setPayLoading(false);return true;}
     if(contactEdit){setContactEdit(null);return true;}
     if(estView){setEstView(null);return true;}
-    if(jobView){setJobView(null);return true;} // artwork proof → back to its order detail (soView stays)
+    if(jobView){if(proofDecisionRef.current)return true;setJobView(null);return true;} // artwork proof → back to its order detail (soView stays)
     if(soView){setSoView(null);return true;}   // order detail → back to the page
     if(invView){setInvView(null);return true;}
     if(artView){setArtView(null);return true;}
@@ -1686,6 +1697,32 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const mockups=(()=>{const _g=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));return _g.length>0?_g:_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.prod_files||[]))})();
     const _hasAnyItemMockup=gi=>{const src=_linkOfC(gi);if(src)return _filterDisplayable(mockLinkSourceFiles(_jobArtFiles,src)).length>0;return _jobArtFiles.some(_af=>_filterDisplayable(itemMockFiles(_af?.item_mockups,_lineOf(gi))).length>0)};
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
+    const _collection=buildCoachProofCollection({orderId:so.id,jobs:safeJobs(so),items:safeItems(so),currentJobId:j.id});
+    const _activeCollectionKey=JSON.stringify([so.id,j.id,Math.min(proofSel,Math.max(0,items.length-1))]);
+    const _proofApproved=coachProofStatus(j)==='Approved';
+    const _openCollectionProof=(entry,afterDecision=false)=>{
+      if(!entry?.canOpen||(!afterDecision&&proofDecisionRef.current))return;
+      const sameDesign=entry.jobId===j.id;
+      if(!sameDesign&&!afterDecision&&(comment.trim()||Object.keys(itemMarks).length)&&!window.confirm('Leave this design? Your unsent note and change marks will be cleared.'))return;
+      if(sameDesign){setProofSel(entry.itemIndex);setProofView(0);setProofZoom(1);setProofMode('garment');return;}
+      proofEntryRef.current={key:String(so.id)+'|'+String(entry.jobId),itemIndex:entry.itemIndex};
+      setSoView(so);setJobView({job:entry.job,so});setComment('');setItemMarks({});
+    };
+    // Thumbnail ownership matches the selected proof: mixed-decoration jobs may
+    // share a garment, but never borrow an unsent sibling design's artwork.
+    const _collectionPreview=entry=>{
+      if(!entry.canOpen)return null;
+      const owned=new Set((entry.job._art_ids||[entry.job.art_file_id].filter(Boolean)).filter(Boolean));
+      const line=entry.line,gi=entry.garment;
+      if(line){const indices=jobItemDecoIdxs(gi);safeDecos(line).forEach((deco,di)=>{if(indices&&!indices.includes(di))return;if(deco.kind==='art'&&deco.art_file_id&&deco.art_file_id!=='__tbd')owned.add(deco.art_file_id);});}
+      const files=[...owned].map(id=>safeArt(so).find(art=>art.id===id)).filter(Boolean);
+      const linked=line?resolveMockLink(files,mockSkuOf(line),gi?.color||line.color):null;
+      const candidates=linked?mockLinkSourceFiles(files,linked):files.flatMap(art=>line?itemMockFiles(art.item_mockups,line):[]);
+      const fallback=files.flatMap(art=>artProofFallback(art));
+      const file=_filterDisplayable(candidates.length?candidates:fallback).find(f=>{const u=typeof f==='string'?f:f?.url;return isUrl(u)&&_isImgUrl(u,f);});
+      return file?(typeof file==='string'?file:file.url):null;
+    };
+
     // ── Per-garment approve / request-changes marking ──
     // The coach decides ONE garment at a time, but the JOB still moves as a unit: art_status
     // is a single column, so a job can't be half-approved without splitting it. A mixed
@@ -1879,10 +1916,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{position:'relative',maxWidth:1440,margin:'0 auto',padding:'18px 24px',display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:24,flexWrap:'wrap'}}>
           <div style={{minWidth:0}}>
             <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:8,flexWrap:'wrap'}}>
-              <span {...kbActivate(()=>{const _backSO=soView?sos.find(s=>s.id===jobView.so.id):null;setJobView(null);if(_backSO)setSoView(_backSO)})}
+              <span {...kbActivate(()=>{if(proofDecisionRef.current)return;const _backSO=soView?sos.find(s=>s.id===jobView.so.id):null;setJobView(null);if(_backSO)setSoView(_backSO)})}
                 style={{fontFamily:_DISP,fontWeight:700,fontSize:13,letterSpacing:'1.4px',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',cursor:'pointer'}}>← Back</span>
               {_canDecide&&<span style={{background:_RD,transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Needs your approval</span>}
-              {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<span style={{background:'rgba(255,255,255,0.16)',transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Approved</span>}
+              {_proofApproved&&<span style={{background:'rgba(255,255,255,0.16)',transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Approved</span>}
               {(j.art_status==='art_requested'&&j.coach_rejected)&&<span style={{background:'rgba(255,255,255,0.16)',transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Changes requested</span>}
             </div>
             <h1 style={{margin:0,fontFamily:_DISP,fontWeight:800,fontSize:40,lineHeight:0.98,letterSpacing:'0.5px',textTransform:'uppercase'}}>
@@ -1893,30 +1930,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {!!ptDateLabel(j.sent_to_coach_at)&&<> · Proof sent {ptDateLabel(j.sent_to_coach_at)}</>}
             </div>
           </div>
-          {/* Queue walk — art is sent one job at a time, so a coach with several designs open
-              can page straight through instead of returning to the portal home between each.
-              Reads off live state: an approved job leaves waitingArtJobs and this disappears. */}
-          {_canDecide&&(()=>{
-            const _q=waitingArtJobs;const _qi=_q.findIndex(w=>w.so&&w.so.id===so.id&&w.id===j.id);
-            if(_qi<0||_q.length<2)return null;
-            const _go=t=>{setSoView(t.so);setJobView({job:t,so:t.so});setComment('');setItemMarks({})};
-            const _prev=_q[_qi-1],_next=_q[_qi+1];
-            return<div style={{display:'flex',alignItems:'center',gap:10}}>
-              <div style={{textAlign:'right',marginRight:6}}>
-                <div style={{fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.3px',textTransform:'uppercase',color:'rgba(255,255,255,0.65)'}}>Design</div>
-                <div style={{fontFamily:_DISP,fontWeight:800,fontSize:24,letterSpacing:'0.5px'}}>{_qi+1} of {_q.length}</div>
-              </div>
-              <button disabled={!_prev} onClick={()=>_prev&&_go(_prev)} style={{width:44,height:44,border:'2px solid rgba(255,255,255,0.45)',background:'rgba(255,255,255,0.08)',color:'#fff',fontSize:18,cursor:_prev?'pointer':'default',opacity:_prev?1:0.35,transform:'skewX(-3deg)'}}>←</button>
-              {/* One button, not a Skip AND a Next doing the same thing: on a proof still
-                  awaiting a decision, moving on IS skipping it. It stays in the queue. */}
-              <button disabled={!_next} onClick={()=>_next&&_go(_next)} style={{padding:'0 22px',height:44,border:'2px solid #fff',background:'#fff',color:_NV,fontFamily:_DISP,fontWeight:700,fontSize:15,letterSpacing:'1px',textTransform:'uppercase',cursor:_next?'pointer':'default',opacity:_next?1:0.35,transform:'skewX(-3deg)'}}>
-                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>Skip for now →</span></button>
-            </div>;
-          })()}
+
         </div>
       </div>
 
-      <div style={{maxWidth:1440,margin:'0 auto',padding:'24px 24px 56px',display:'grid',gridTemplateColumns:'minmax(0,1.85fr) minmax(320px,1fr)',gap:24,alignItems:'start'}}>
+      <CoachProofCollection orderLabel={[so.memo,so.id].filter(Boolean).join(' · ')} entries={_collection} activeKey={_activeCollectionKey}
+        onSelect={_openCollectionProof} previewFor={_collectionPreview} busy={proofDecisionBusy} />
+
+      <div className="cp-order-proof-body" style={{maxWidth:1440,margin:'0 auto',padding:'24px 24px 56px',display:'grid',gridTemplateColumns:'minmax(0,1.85fr) minmax(320px,1fr)',gap:24,alignItems:'start'}}>
 
         {/* ══ LEFT: the artwork itself ══ */}
         <div style={{minWidth:0,display:'flex',flexDirection:'column',gap:16}}>
@@ -2128,7 +2149,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {/* Hidden once a garment is flagged: approving and requesting changes in the same
                   submission is the one combination that can't exist, so don't offer it. The
                   live re-check below stays regardless — this is a UI gate, not the safety gate. */}
-              {_flaggedItems.length===0&&_missingMockSkus.size===0&&<button style={{width:'100%',padding:'16px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:18,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
+              {_flaggedItems.length===0&&_missingMockSkus.size===0&&<button disabled={proofDecisionBusy} style={{width:'100%',padding:'16px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:18,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
+                if(proofDecisionRef.current)return;proofDecisionRef.current=true;setProofDecisionBusy(true);
+                try {
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 // A coach must never approve a proof with unmocked garments — they'd be
                 // approving art they can't see. Same per-garment gate the rep side enforces
@@ -2172,9 +2195,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(!_res.ok){alert(_res.error||'Could not save your approval — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
-              }}><span style={{display:'inline-block',transform:'skewX(3deg)'}}>✓ {items.length>1?'Approve All '+items.length+' Garments':'Approve This Proof'}</span></button>}
-              <button style={{width:'100%',padding:'14px 20px',background:_RD,color:'#fff',border:'2px solid '+_RD,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
+                setComment('');
+                const next=nextPendingCoachProof(_collection,_activeCollectionKey,j.id);
+                if(next)_openCollectionProof(next,true);
+                } catch(error) {alert('Could not save your approval — please try again or contact your rep.');} finally {proofDecisionRef.current=false;setProofDecisionBusy(false);}
+              }}><span style={{display:'inline-block',transform:'skewX(3deg)'}}>✓ {items.length>1?'Approve All '+items.length+' Garments':'Approve This Proof'}{nextPendingCoachProof(_collection,_activeCollectionKey,j.id)?' & Continue →':''}</span></button>}
+              <button disabled={proofDecisionBusy} style={{width:'100%',padding:'14px 20px',background:_RD,color:'#fff',border:'2px solid '+_RD,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
+                if(proofDecisionRef.current)return;proofDecisionRef.current=true;setProofDecisionBusy(true);
+                try {
                 // A note is required, but it can come from EITHER box — a coach who flags three
                 // garments and explains all three in one place shouldn't be blocked for leaving
                 // the per-garment fields empty.
@@ -2213,12 +2241,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setItemMarks({});// stay on the job view — it re-renders from live state to show the "changes requested" banner
+                } catch(error) {alert('Could not send your request — please try again or contact your rep.');} finally {proofDecisionRef.current=false;setProofDecisionBusy(false);}
               }}><span style={{display:'inline-block',transform:'skewX(3deg)'}}>{_flaggedItems.length>0?'Send Feedback ('+_approvedItems.length+' approved · '+_flaggedItems.length+' to change)':'Request Changes'}</span></button>
             </div>
           </div>}
 
           {/* Post-decision states */}
-          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{..._card,borderTop:'5px solid '+_NV,padding:18}}>
+          {_proofApproved&&<div style={{..._card,borderTop:'5px solid '+_NV,padding:18}}>
             <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
               <span style={{width:42,height:42,flex:'0 0 auto',borderRadius:'50%',background:_NV,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>✓</span>
               <div style={{minWidth:0}}>
@@ -2237,11 +2266,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
             </div>
           </div>}
-          {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
-            const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
+          {(_proofApproved||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
+            const _next=nextPendingCoachProof(_collection,_activeCollectionKey,j.id);
             return<div style={{display:'flex',flexDirection:'column',gap:10}}>
-              {_next&&<button style={{width:'100%',padding:'14px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={()=>{setSoView(_next.so);setJobView({job:_next,so:_next.so});setComment('')}}>
-                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>Review next artwork ({waitingArtJobs.length}) →</span></button>}
+              {_next&&<button style={{width:'100%',padding:'14px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={()=>_openCollectionProof(_next)}>
+                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>Review next design in this order →</span></button>}
               <button style={{width:'100%',padding:'14px 20px',background:'transparent',color:_NV,border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={()=>{setJobView(null);setSoView(null);setComment('')}}>
                 <span style={{display:'inline-block',transform:'skewX(3deg)'}}>← Back to all artwork</span></button>
             </div>;
