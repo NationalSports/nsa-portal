@@ -7,7 +7,9 @@ const newSession=()=>{
   return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
 };
 export function createSalesOrderEditLease({client,id,onChange=()=>{},session=newSession(),now=()=>performance.now()}) {
-  let state={phase:'view',session},deadline=0,closed=false,pending=null;
+  let state={phase:'view',session},deadline=0,closed=false,pending=null,accessToken=null;
+  const authSubscription=client.auth?.onAuthStateChange?.((_,current)=>{accessToken=current?.access_token||null})?.data?.subscription;
+  client.auth?.getSession?.()?.then(({data})=>{if(!closed)accessToken=data?.session?.access_token||null}).catch(()=>{});
   const emit=next=>{state={...state,...next};if(!closed)onChange(state);return state};
   const rpc=async(action,generation)=>{
     const started=now();
@@ -67,9 +69,26 @@ export function createSalesOrderEditLease({client,id,onChange=()=>{},session=new
     },
     async close(){
       const generation=state.generation;closed=true;deadline=0;
+      authSubscription?.unsubscribe();
       // Serialize release after any renewal so late responses cannot resurrect a lease.
       if(pending)await pending.catch(()=>{});
       if(generation!=null)try{await rpc('release',generation)}catch{/* Expiry is the fallback. */}
+    },
+    closeOnPageHide(){
+      if(closed||state.phase!=='editing'||state.generation==null)return;
+      const generation=state.generation;
+      lose('Editing stopped when this tab left the page. Reopen the saved order to continue.');
+      closed=true;deadline=0;authSubscription?.unsubscribe();
+      // A normal Supabase RPC can be cancelled as the browser tears down this
+      // page. keepalive lets the fenced release finish after navigation.
+      if(!accessToken||!client.supabaseUrl||!client.supabaseKey||typeof fetch!=='function')return;
+      try{
+        fetch(`${client.supabaseUrl}/rest/v1/rpc/sales_order_edit_lease`,{
+          method:'POST',keepalive:true,
+          headers:{'Content-Type':'application/json',apikey:client.supabaseKey,Authorization:`Bearer ${accessToken}`},
+          body:JSON.stringify({p_so_id:id,p_session:session,p_action:'release',p_generation:generation}),
+        }).catch(()=>{});
+      }catch{/* The 120-second expiry remains the fallback. */}
     },
   };
 }

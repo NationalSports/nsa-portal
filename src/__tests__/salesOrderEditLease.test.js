@@ -55,3 +55,23 @@ test('closing waits for in-flight renewal, then releases without resurrecting ow
  const renewing=lease.renew();const closing=lease.close();resolve({data:owned});await Promise.all([renewing,closing]);
  expect(client.rpc.mock.calls.map(([,a])=>a.p_action)).toEqual(['acquire','renew','release']);expect(lease.canSave()).toBe(false);
 });
+test('page close sends a fenced keepalive release after editing, without starting another claim',async()=>{
+ const previousFetch=global.fetch;global.fetch=jest.fn().mockResolvedValue({ok:true});
+ try{
+  client.supabaseUrl='https://staging.example.supabase.co';client.supabaseKey='public-key';
+  client.auth={onAuthStateChange:callback=>{
+    callback('INITIAL_SESSION',{access_token:'test-access-token'});
+    return {data:{subscription:{unsubscribe:jest.fn()}}};
+  }};
+  const pageLease=createSalesOrderEditLease({client,id:'SO-1',session:'tab-a',now:()=>clock});
+  pageLease.closeOnPageHide();expect(global.fetch).not.toHaveBeenCalled();
+  await pageLease.acquire();pageLease.closeOnPageHide();pageLease.closeOnPageHide();
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  const [url,request]=global.fetch.mock.calls[0];
+  expect(url).toBe('https://staging.example.supabase.co/rest/v1/rpc/sales_order_edit_lease');
+  expect(request).toMatchObject({method:'POST',keepalive:true,headers:{apikey:'public-key',Authorization:'Bearer test-access-token'}});
+  expect(JSON.parse(request.body)).toEqual({p_so_id:'SO-1',p_session:'tab-a',p_action:'release',p_generation:1});
+  expect(pageLease.canSave()).toBe(false);
+  await pageLease.renew();expect(client.rpc).toHaveBeenCalledTimes(1);
+ }finally{global.fetch=previousFetch}
+});
