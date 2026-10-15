@@ -66,7 +66,7 @@ async function search(admin, body) {
       stock.push(...rows.slice(0,300).map(r=>({...r,feed:r.source,source})));
     } catch { warnings.push(`${source.toUpperCase()} stock sync could not be read. Availability is unknown.`); }
   }
-  return { matches, stock, warnings, limited: matches.length===20 };
+  return { query, matches, stock, warnings, limited: matches.length===20 };
 }
 exports.handler = async (event) => {
   if (event.httpMethod==='OPTIONS') return reply(200,{});

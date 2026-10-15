@@ -74,3 +74,11 @@ test('ready files outside their date window do not claim to be searchable',async
  expect(screen.getByText('Expired')).toBeInTheDocument();
  expect(screen.getByText('0 searchable')).toBeInTheDocument();
 });
+test('spreadsheet search presents the matching item and hides surrounding source rows',()=>{
+ render(<PriceListResults result={{query:'kas',matches:[{document_id:'d',vendor_name:'Athletic Specialties',file_name:'list.xlsx',location:'Sheet1 · rows 604–605',content:'Column labels:\nRow 1: Item | Description | Price\nSource rows:\nRow 604: KAL | ADULT PAD | 8.37\nRow 605: KAS | LIGHTWEIGHT KNEE PAD | 2.15'}]}}/>);
+ expect(screen.getByRole('cell',{name:'KAS'})).toBeInTheDocument();
+ expect(screen.getByRole('cell',{name:'2.15'})).toBeInTheDocument();
+ expect(screen.queryByRole('cell',{name:'KAL'})).not.toBeInTheDocument();
+ expect(screen.getByText(/Source details/).closest('details')).not.toHaveAttribute('open');
+ expect(screen.queryByText('Synced availability')).not.toBeInTheDocument();
+});

@@ -49,3 +49,24 @@
 .vpl-file-info{flex-basis:65%}
 }
 
+.vpl-evidence{font-size:14px;color:#24354b;overflow-wrap:anywhere;min-width:0}
+.vpl-result-card{background:#fff;border:1px solid #dce4ef;border-radius:12px;overflow:hidden;margin:12px 0 16px}
+.vpl-result-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px}
+.vpl-source-location{color:#64748b;font-size:12px;margin-top:5px}
+.vpl-table-scroll{overflow-x:auto;max-width:100%}
+.vpl-price-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}
+.vpl-price-table th{padding:12px 16px;background:#f4f7fb;color:#54647c;font-size:12px;font-weight:600;white-space:nowrap;text-align:left}
+.vpl-price-table td{padding:16px;vertical-align:top;border-top:1px solid #e5ebf3;min-width:75px;line-height:1.6}
+.vpl-price-table td:first-child{font-weight:700}
+.vpl-price-table .vpl-price-cell{font-size:18px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.vpl-matched-row{background:#f1f7ff}
+.vpl-source-details{border-top:1px solid #e5ebf3;padding:12px 18px;color:#61718a;font-size:12px}
+.vpl-source-details summary{cursor:pointer;line-height:1.6}
+.vpl-source-details pre{white-space:pre-wrap;max-height:280px;overflow:auto;background:#f6f8fb;padding:12px;font-size:12px;line-height:1.7}
+.vpl-text-excerpt{white-space:pre-wrap;padding:16px 18px;line-height:1.8;background:#f8fafd;max-height:340px;overflow:auto}
+.vpl-match-note{font-size:12px;color:#47668f;padding:10px 18px;margin:0}
+.vpl-result-note{color:#64748b;font-size:12px;line-height:1.6;margin:8px 0}
+.vpl-stock{border-top:1px solid #e1e8f2;padding-top:16px;margin-top:18px}
+.vpl-result-empty{padding:20px;background:#f8fafd;border-radius:8px;line-height:1.6}
+.vpl-library{min-width:0}
+@media(max-width:600px){.vpl-result-header{align-items:flex-start;flex-wrap:wrap;padding:14px}.vpl-price-table td,.vpl-price-table th{padding:10px}.vpl-price-table .vpl-price-cell{font-size:16px}}

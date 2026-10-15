@@ -1,29 +1,37 @@
 import React,{useEffect,useRef,useState} from 'react';
 import './VendorPriceLists.css';
+import {priceListTable} from './lib/priceListTable';
 import {priceListCall,openPriceList,uploadPriceList} from './lib/vendorPriceLists';
 
 export function PriceListResults({result}) {
   const [error,setError]=useState('');
   const stocks=new Map();
   (result.stock||[]).forEach(r=>{const key=r.source+':'+r.sku;if(!stocks.has(key))stocks.set(key,[]);stocks.get(key).push(r);});
-  return <div style={{fontSize:12,overflowWrap:'anywhere'}}>
+  const matches=result.matches||[];
+  const stockRelevant=stocks.size>0||matches.some(m=>/^(adidas|under armour|under armor|ua)$/i.test(m.vendor_name));
+  return <div className="vpl-evidence">
     {error&&<p role="alert">{error}</p>}
-    {!(result.matches||[]).length&&<p>No matching current price-list text found. Try a SKU or fewer product keywords.</p>}
-    {(result.matches||[]).map((m,i)=><article key={m.document_id+':'+i} style={{borderBottom:'1px solid #e2e8f0',padding:'10px 0'}}>
-      <strong>{m.vendor_name}</strong> · <button className="btn btn-sm btn-secondary" onClick={()=>openPriceList(m.document_id).catch(e=>setError(e.message))}>{m.file_name}</button>
-      <div>{m.location} · {m.effective_date?`Effective ${m.effective_date}`:'Effective date not supplied'} · Uploaded {new Date(m.created_at).toLocaleDateString()}</div>
-      <pre style={{whiteSpace:'pre-wrap',fontFamily:'inherit',maxHeight:250,overflow:'auto',background:'#f8fafc',padding:8}}>{m.content}</pre>
-    </article>)}
+    {!matches.length&&<div className="vpl-result-empty">No matching current price-list text found. Try a SKU or fewer product keywords.</div>}
+    {matches.map((m,i)=>{
+      const table=priceListTable(m.content,result.query);
+      return <article key={m.document_id+':'+i} className="vpl-result-card">
+        <header className="vpl-result-header"><div><strong>{m.vendor_name}</strong><div className="vpl-source-location">{m.location}{m.effective_date?` · Effective ${m.effective_date}`:''}</div></div><button className="btn btn-sm btn-secondary" onClick={()=>openPriceList(m.document_id).catch(e=>setError(e.message))}>Open original</button></header>
+        {table?<><div className="vpl-table-scroll"><table className="vpl-price-table"><thead><tr>{table.columns.map(c=><th key={c.index} scope="col">{c.label}</th>)}</tr></thead><tbody>{table.rows.map(row=><tr key={row.number} className={table.matched?'vpl-matched-row':''}>{table.columns.map(c=><td key={c.index} className={/price|cost|retail|msrp|net|wholesale/i.test(c.label)?'vpl-price-cell':''}>{row.cells[c.index]||'—'}</td>)}</tr>)}</tbody></table></div>{table.hidden>0&&<p className="vpl-match-note">{table.rows.length} matching {table.rows.length===1?'row':'rows'} · {table.hidden} surrounding rows in source details</p>}</>:<div className="vpl-text-excerpt">{m.content}</div>}
+        <details className="vpl-source-details"><summary>Source details · {m.file_name}</summary><p>{m.created_at?`Uploaded ${new Date(m.created_at).toLocaleDateString()} · `:''}{m.effective_date?`Effective ${m.effective_date}`:'Effective date not supplied'}</p>{table&&<pre>{m.content}</pre>}</details>
+      </article>;
+    })}
     {result.limited&&<p>Showing the first 20 sections. Narrow the search for more precise results.</p>}
-    <p>Prices are source excerpts; check currency, cost versus retail, quantity breaks and terms in the original. No price is saved to a product or order.</p>
-    <strong>Adidas / UA synced availability</strong>
-    {!stocks.size&&<p>No exact SKU match in the available sync data. Availability is unknown; this does not mean out of stock. For UA, include the style-color code.</p>}
-    {[...stocks].map(([key,rows])=><div key={key} style={{margin:'10px 0'}}>
-      <strong>{rows[0].source==='ua'?'Under Armour':'Adidas'} · {rows[0].sku}</strong>{rows[0].feed&&<span> · {rows[0].feed}</span>}
-      <table style={{fontSize:11,width:'100%'}}><thead><tr><th>Size</th><th>Qty</th><th>Incoming</th><th>Synced</th></tr></thead><tbody>
-        {rows.map((r,i)=><tr key={i}><td>{r.size}</td><td>{r.stock_qty??'Unknown'}</td><td>{r.future_delivery_qty>0?`${r.future_delivery_qty} · ${r.future_delivery_date||'date unknown'}`:'—'}</td><td>{r.last_synced?new Date(r.last_synced).toLocaleString():'Unknown'}{(!r.last_synced||Date.now()-new Date(r.last_synced).getTime()>86400000)&&' · stale'}</td></tr>)}
-      </tbody></table>
-    </div>)}
+    {matches.length>0&&<p className="vpl-result-note">Prices shown as listed. Confirm currency, quantity breaks and terms in the original before quoting. Product and order prices are unchanged.</p>}
+    {stockRelevant&&<div className="vpl-stock"><h4>Synced availability</h4>
+      {!stocks.size&&<p>No exact SKU match in the available sync data. Availability is unknown; this does not mean out of stock. For UA, include the style-color code.</p>}
+      {[...stocks].map(([key,rows])=><div key={key}>
+        <strong>{rows[0].source==='ua'?'Under Armour':'Adidas'} · {rows[0].sku}</strong>{rows[0].feed&&<span> · {rows[0].feed}</span>}
+        <div className="vpl-table-scroll"><table className="vpl-price-table"><thead><tr><th>Size</th><th>Qty</th><th>Incoming</th><th>Synced</th></tr></thead><tbody>
+          {rows.map((r,i)=><tr key={i}><td>{r.size}</td><td>{r.stock_qty??'Unknown'}</td><td>{r.future_delivery_qty>0?`${r.future_delivery_qty} · ${r.future_delivery_date||'date unknown'}`:'—'}</td><td>{r.last_synced?new Date(r.last_synced).toLocaleString():'Unknown'}{(!r.last_synced||Date.now()-new Date(r.last_synced).getTime()>86400000)&&' · stale'}</td></tr>)}
+        </tbody></table></div>
+      </div>)}
+    </div>}
+    {!stockRelevant&&matches.length>0&&<p className="vpl-result-note">Availability: confirm with the vendor.</p>}
     {(result.warnings||[]).map(w=><p key={w} role="alert">{w}</p>)}
   </div>;
 }
@@ -44,7 +52,7 @@ export default function VendorPriceLists({vendor}) {
     if(effective&&expires&&expires<effective){setError('Expiry date must be on or after the effective date.');return;}
     uploadLock.current=true;setBusy(true);setStatus(`Reading ${file.name}…`);try{await uploadPriceList(vendor.id,file,{effective_date:effective,expires_on:expires},setStatus);await refresh();setResult(null);setStatus('Price list is searchable. Archive an older file below if this replaces it.');}catch(e){setError(e.message);setStatus('');}finally{uploadLock.current=false;setBusy(false);}}
   async function archive(doc){if(!window.confirm(`Archive ${doc.file_name}? It will no longer appear in assistant searches.`))return;setBusy(true);setError('');try{await priceListCall('archive',{id:doc.id});await refresh();setResult(null);}catch(e){setError(e.message);}finally{setBusy(false);}}
-  async function search(e){e.preventDefault();setBusy(true);setError('');try{setResult(await priceListCall('search',{query,vendor_id:vendor.id}));}catch(err){setError(err.message);}finally{setBusy(false);}}
+  async function search(e){e.preventDefault();setBusy(true);setError('');try{setResult({...await priceListCall('search',{query:query.trim(),vendor_id:vendor.id}),query:query.trim()});}catch(err){setError(err.message);}finally{setBusy(false);}}
   const today=new Date().toISOString().slice(0,10);
   function availability(doc){
     if(doc.status==='archived')return 'Archived';
@@ -58,6 +66,7 @@ export default function VendorPriceLists({vendor}) {
     <div className="vpl-layout">
       <div className="vpl-library">
         <form onSubmit={search} className="vpl-search"><label htmlFor={`price-search-${vendor.id}`}>Search {vendor.name} pricing</label><div><input id={`price-search-${vendor.id}`} className="form-input" aria-label="Search this vendor price lists" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Enter a SKU or product keywords"/><button className="btn btn-primary" disabled={busy||!query.trim()}>Search</button></div></form>
+        {result&&<div className="vpl-results"><h4>Results for “{result.query}”</h4><PriceListResults result={result}/></div>}
         <div className="vpl-files-title">Uploaded files <span>{docs.length}</span></div>
         {loading&&<p role="status">Loading price lists…</p>}
         {!loading&&!docs.length&&!error&&<div className="vpl-empty">No price list uploaded. Add a PDF or Excel file to search this vendor’s pricing.</div>}
@@ -89,7 +98,6 @@ export default function VendorPriceLists({vendor}) {
       </aside>
     </div>
     {status&&<p role="status" className="vpl-notice">{status}</p>}{error&&<p role="alert" className="vpl-error">{error}</p>}
-    {result&&<div className="vpl-results"><h4>Search results</h4><PriceListResults result={result}/></div>}
     <footer className="vpl-help"><strong>Use it in the portal assistant</strong><p>Ask: “Search {vendor.name}’s price list for [SKU or product].” Results include the source file and page or spreadsheet rows. Prices do not automatically update products or orders. Synced stock is available for Adidas and Under Armour; other vendor availability must be confirmed.</p></footer>
   </div></section>;
 }
