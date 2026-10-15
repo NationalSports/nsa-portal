@@ -80,6 +80,7 @@ import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground,
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, soLineQty, splitInvoiceLine, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stitchPreviewsFor, stitchSourceFor } from './DstPreview';
+import { loadPdfJs } from './lib/pdfjs';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
 import { nextSalesOrderId, salesOrderSequenceNumber } from './lib/salesOrderIds';
@@ -1801,43 +1802,7 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
 // ImgGallery moved to components.js so OrderEditor can share it
-// ── PDF.js Setup (for NetSuite PDF import) ──
-const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
-let _pdfjsLoaded=false;
-let _pdfjsLoadPromise=null;
-// Load pdf.js from the CDN. Hardened against the "Parsing PDFs… forever" freeze:
-//  • a throw inside script.onload (e.g. the pdfjsLib global is missing) now REJECTS instead of
-//    leaving the promise unsettled — the old onload accessed window.pdfjsLib.GlobalWorkerOptions
-//    with no guard, so if that threw, neither resolve nor reject ever ran and every caller hung,
-//  • a 30s watchdog rejects if the script never fires load or error (offline / blocked CDN),
-//  • concurrent callers share one in-flight promise (and one <script>); a failed load clears the
-//    cache so a later attempt can retry.
-const loadPdfJs=()=>{
-  if(_pdfjsLoaded&&window.pdfjsLib)return Promise.resolve();
-  if(_pdfjsLoadPromise)return _pdfjsLoadPromise;
-  _pdfjsLoadPromise=new Promise((resolve,reject)=>{
-    let timer=null;
-    const finish=(err)=>{
-      if(timer){clearTimeout(timer);timer=null}
-      if(err){_pdfjsLoadPromise=null;reject(err)}else{_pdfjsLoaded=true;resolve()}
-    };
-    if(window.pdfjsLib){
-      try{window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js'}catch(e){/* already configured */}
-      finish();return;
-    }
-    timer=setTimeout(()=>finish(new Error('PDF.js failed to load (timed out after 30s) — check your network connection and retry')),30000);
-    const script=document.createElement('script');
-    script.src=PDFJS_CDN+'/pdf.min.js';
-    script.onload=()=>{try{
-      if(!window.pdfjsLib)throw new Error('PDF.js loaded but the pdfjsLib global is missing');
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js';
-      finish();
-    }catch(e){finish(e)}};
-    script.onerror=()=>finish(new Error('Failed to load PDF.js from the CDN'));
-    document.head.appendChild(script);
-  });
-  return _pdfjsLoadPromise;
-};
+// ── PDF.js Setup (for NetSuite PDF import) — loader lives in lib/pdfjs (shared with .ai art previews) ──
 // _withTimeout (src/utils.js) bounds the extraction below so one corrupt / encrypted /
 // scanned-image / huge file can't freeze the whole import on "Parsing PDFs…". It lets the
 // UI recover; any orphaned pdf.js work left running is harmless.

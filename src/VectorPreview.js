@@ -1,0 +1,225 @@
+/* eslint-disable */
+// Art preview for a print art folder (screen print, DTF, heat transfer…): draws the
+// uploaded .svg — or an .ai converted to SVG on the fly — in each color way's inks.
+// Every color the art uses is listed; for each one the rep picks: keep it, swap it for
+// one of the color way's inks, or drop it out (transparent — e.g. a DTF white box).
+// The vector-art counterpart of DstPreview's stitch preview.
+//
+// Shared by OrderEditorClassic and OrderEditor through ColorWaysEditor (CLAUDE.md: both
+// editors), so the logic lives in one place; each editor only wires the props.
+//
+// The uploaded file is never changed. Choices are saved on the color way (cw.art_recolor,
+// inside the existing color_ways JSON — no new column); with no color way they last for the
+// session. The recolored art leaves the portal only as a web logo / PNG / SVG exported here.
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap } from './lib/svgRecolor';
+import { aiToSvg } from './lib/aiToSvg';
+import { pantoneHex, threadHex, isStaleFile } from './constants';
+
+const _ext = f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase().split('?')[0]; const m = n.match(/\.(\w+)$/); return m ? m[1] : ''; };
+const _url = f => (typeof f === 'string' ? f : (f && f.url) || '');
+
+// The art folder's newest live .svg, else its newest live .ai: { url, name, kind } or null.
+// An SVG wins because it needs no conversion (and an artist's own SVG export is exact).
+function vectorSourceFor(art) {
+  if (!art || art.deco_type === 'embroidery') return null;
+  const live = [...(art.files || []), ...(art.prod_files || [])].filter(f => !isStaleFile(f) && /^https?:\/\//i.test(_url(f)));
+  for (const kind of ['svg', 'ai']) {
+    const f = live.filter(x => _ext(x) === kind).slice(-1)[0];
+    if (f) return { url: _url(f), name: (typeof f === 'object' && f.name) || _url(f).split('?')[0].split('/').pop(), kind };
+  }
+  return null;
+}
+
+// url → Promise<{ svg, palette, kind }> — fetched, converted and analyzed once per file.
+const _cache = new Map();
+function loadVector(url, kind) {
+  if (!_cache.has(url)) {
+    const p = fetch(url, { mode: 'cors' })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return kind === 'ai' ? r.arrayBuffer().then(aiToSvg) : r.text(); })
+      .then(text => {
+        if (!/<(?:[\w-]+:)?svg\b/i.test(text)) throw new Error('Not a readable SVG');
+        const svg = withDefaultFill(text);
+        return { svg, palette: svgPalette(svg), kind };
+      });
+    p.catch(() => _cache.delete(url));
+    _cache.set(url, p);
+  }
+  return _cache.get(url);
+}
+function useVectorArt(src) {
+  const [state, setState] = useState({ art: null, err: '' });
+  const url = src ? src.url : '', kind = src ? src.kind : '';
+  useEffect(() => {
+    let live = true; setState({ art: null, err: '' });
+    if (url) loadVector(url, kind).then(a => live && setState({ art: a, err: '' }), e => live && setState({ art: null, err: e.message || 'failed' }));
+    return () => { live = false; };
+  }, [url, kind]);
+  return state;
+}
+
+// Ink name → '#rrggbb': an explicit hex, a Pantone code, a common color name, or the
+// customer's own saved Pantone/thread colors ([{code|name, hex}]). Unknown → null.
+function inkToHex(ink, palette) {
+  const s = String(ink || '').trim();
+  if (!s) return null;
+  const hex = s.match(/#([0-9a-f]{6}|[0-9a-f]{3})\b/i);
+  if (hex) return '#' + hex[1];
+  const known = pantoneHex(s) || threadHex(s);
+  if (known) return known;
+  const n = s.toLowerCase().replace(/^pms\s*/, '');
+  const own = (palette || []).find(p => p && [p.code, p.name].some(v => v && String(v).trim().toLowerCase().replace(/^pms\s*/, '') === n));
+  return own && own.hex ? (own.hex[0] === '#' ? own.hex : '#' + own.hex) : null;
+}
+
+// Give the root <svg> an explicit pixel size so an <img> renders it at that resolution.
+function sizedSvg(svg, longest) {
+  const m = svg.match(/<(?:[\w-]+:)?svg\b[^>]*>/i);
+  if (!m) return svg;
+  const tag = m[0];
+  const vb = (tag.match(/viewBox\s*=\s*["']([^"']+)["']/i) || [])[1];
+  const num = a => parseFloat((tag.match(new RegExp('\\s' + a + '\\s*=\\s*["\']([\\d.]+)', 'i')) || [])[1]);
+  let w = num('width'), h = num('height');
+  if (vb) { const p = vb.trim().split(/[\s,]+/).map(Number); if (p.length === 4 && p[2] > 0 && p[3] > 0) { w = p[2]; h = p[3]; } }
+  if (!(w > 0 && h > 0)) { w = 1; h = 1; }
+  const s = longest / Math.max(w, h);
+  let t = tag.replace(/\s(width|height)\s*=\s*(["'])[^"']*\2/gi, '');
+  if (!vb) t = t.replace(/(\/?>)$/, ` viewBox="0 0 ${w} ${h}"$1`);
+  t = t.replace(/(\/?>)$/, ` width="${Math.round(w * s)}" height="${Math.round(h * s)}"$1`);
+  return svg.slice(0, m.index) + t + svg.slice(m.index + tag.length);
+}
+
+// SVG text → a decoded <img>. Shown only through <img>/canvas — never inserted into the
+// page — so an uploaded SVG can't run script.
+function svgImage(svg, longest) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([sizedSvg(svg, longest)], { type: 'image/svg+xml' }));
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not draw the SVG')); };
+    img.src = url;
+  });
+}
+// Where the visible art sits, as fractions of the artboard ({x,y,w,h}) — artboards often carry
+// empty margin, so the art is trimmed to this before it's drawn. Found on a small render.
+async function inkBounds(svg) {
+  const img = await svgImage(svg, 512);
+  const t = document.createElement('canvas'); t.width = img.width; t.height = img.height;
+  const tc = t.getContext('2d'); tc.drawImage(img, 0, 0);
+  let data;
+  try { data = tc.getImageData(0, 0, t.width, t.height).data; } catch (e) { return { x: 0, y: 0, w: 1, h: 1 }; }
+  let x0 = t.width, y0 = t.height, x1 = -1, y1 = -1;
+  for (let y = 0; y < t.height; y++) for (let x = 0; x < t.width; x++) if (data[(y * t.width + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) return null; // nothing visible (every color dropped out)
+  x0 = Math.max(0, x0 - 1); y0 = Math.max(0, y0 - 1); x1 = Math.min(t.width - 1, x1 + 1); y1 = Math.min(t.height - 1, y1 + 1);
+  return { x: x0 / t.width, y: y0 / t.height, w: (x1 - x0 + 1) / t.width, h: (y1 - y0 + 1) / t.height };
+}
+// Draw the trimmed art centered in a size×size canvas. bg null = transparent (exports).
+// The full artboard is rendered just large enough that the trimmed art fills `size` sharply.
+// isLive() false = a newer draw has started; this one stops before touching the canvas.
+async function drawVector(canvas, svg, bg, size, isLive = () => true) {
+  const box = await inkBounds(svg);
+  const img = box ? await svgImage(svg, Math.min(8192, Math.ceil(size / Math.max(box.w, box.h)))) : null;
+  if (!isLive()) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = size; canvas.height = size;
+  ctx.clearRect(0, 0, size, size);
+  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, size, size); }
+  if (!img) return;
+  const sx = box.x * img.width, sy = box.y * img.height, w = box.w * img.width, h = box.h * img.height;
+  const pad = size * 0.06, s = (size - pad * 2) / Math.max(w, h);
+  ctx.drawImage(img, sx, sy, w, h, (size - w * s) / 2, (size - h * s) / 2, w * s, h * s);
+}
+const _checker = 'repeating-conic-gradient(#e2e8f0 0% 25%, #ffffff 0% 50%) 50% / 10px 10px';
+
+// The recolored SVG text for one color way.
+function recolored(art, cw, dropouts, palette) {
+  return recolorSvg(art.svg, recolorMap(art.palette, cw, dropouts, ink => inkToHex(ink, palette)));
+}
+
+// One color way's render + its color list. No garment color → a checkerboard shows through, so
+// dropped-out areas read as transparent. cw null = the art with no color way (e.g. DTF): colors
+// can only be kept or dropped, held by the caller for the session.
+//   onRecolor(next art_recolor) — save this color way's picks
+//   onDropouts(next [hex…])     — the no-color-way drop-outs
+function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, onUseAsLogo, busy, compact = false, width = 220, palette, name }) {
+  const ref = useRef(null);
+  const [hover, setHover] = useState(false);
+  const inks = (cw && cw.inks) || [];
+  const garmentHex = cw ? inkToHex(cw.garment_color) : null;
+  const plan = recolorPlan(art.palette, cw, dropouts);
+  // Recoloring rewrites the whole file (can be MBs for traced art) — only when a choice changes.
+  const svg = useMemo(() => recolored(art, cw, dropouts, palette),
+    [art, inks.join('|'), JSON.stringify((cw && cw.art_recolor) || {}), (dropouts || []).join('|'), JSON.stringify(palette || [])]);
+  useEffect(() => { let live = true; if (ref.current) drawVector(ref.current, svg, garmentHex, 520, () => live).catch(() => {}); return () => { live = false; }; }, [svg, garmentHex]);
+  const base = String(name || 'art').replace(/\.\w+$/, '').replace(/[^\w-]+/g, '_') + (cw ? '_' + String(cw.garment_color || 'cw' + (idx + 1)).replace(/[^\w-]+/g, '_') : '');
+  const pngBlob = size => new Promise((res, rej) => { const c = document.createElement('canvas'); drawVector(c, svg, null, size).then(() => c.toBlob(res, 'image/png'), rej); });
+  const save = (blob, file) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); };
+  const pick = (hex, v) => {
+    if (cw) { onRecolor && onRecolor({ ...(cw.art_recolor || {}), [hex]: v }); return; }
+    const d = new Set(dropouts || []); if (v === 'drop') d.add(hex); else d.delete(hex);
+    onDropouts && onDropouts([...d]);
+  };
+  const dropped = art.palette.filter(c => plan[c.hex] === 'drop').length;
+  const btn = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'white', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 10, fontWeight: 700, color: '#475569', padding: '5px 6px', cursor: 'pointer' };
+  return <div style={{ width, flexShrink: 0, background: 'white', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f6' }}>
+      {!compact && <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: '#475569', borderRadius: 6, padding: '2px 7px', flexShrink: 0 }}>{cw ? `CW ${idx + 1}` : 'All garments'}</span>}
+      <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, whiteSpace: 'nowrap' }}>Art preview</span>
+      {dropped > 0 && <span title={cw ? undefined : 'Not saved — add a color way to keep these picks'} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#b45309', whiteSpace: 'nowrap' }}>{dropped} dropped{cw ? ' out' : ' · not saved'}</span>}
+    </div>
+    <div style={{ position: 'relative', cursor: onEnlarge ? 'zoom-in' : 'default', background: garmentHex ? undefined : _checker }} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      onClick={() => onEnlarge && ref.current && onEnlarge(ref.current.toDataURL('image/png'))} title={onEnlarge ? 'Click to enlarge' : undefined}>
+      <canvas ref={ref} style={{ width: '100%', aspectRatio: '1 / 1', display: 'block' }} />
+      {onEnlarge && <span style={{ position: 'absolute', right: 8, bottom: 8, fontSize: 10, fontWeight: 700, color: 'white', background: 'rgba(15,23,42,0.6)', borderRadius: 6, padding: '2px 7px', opacity: hover ? 1 : 0, transition: 'opacity 0.15s' }}>⤢ Enlarge</span>}
+    </div>
+    <div style={{ padding: '8px 10px', borderTop: '1px solid #eef2f6' }}>
+      <div style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Colors in this art</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
+        {art.palette.map((c, ci) => {
+          const p = plan[c.hex];
+          const to = p === 'drop' ? null : p >= 0 ? (inkToHex(inks[p], palette) || '#9ca3af') : c.hex;
+          return <div key={c.hex} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+            <span style={{ fontSize: 10, color: '#94a3b8', width: 12, textAlign: 'right', flexShrink: 0 }}>{ci + 1}</span>
+            <span title={'In the file: ' + c.hex + (c.members.length > 1 ? ' (+' + (c.members.length - 1) + ' similar shades)' : '')} style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: c.hex }} />
+            <span style={{ color: '#cbd5e1', fontSize: 10 }}>→</span>
+            <span style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: to || _checker }} />
+            <select value={String(p)} onChange={e => { const v = e.target.value; pick(c.hex, v === 'drop' ? 'drop' : parseInt(v, 10)); }}
+              style={{ flex: 1, minWidth: 0, fontSize: 11, padding: '2px 4px', border: '1px solid #e2e8f0', borderRadius: 4, background: p === 'drop' ? '#fffbeb' : 'white', color: '#334155' }}>
+              <option value="-1">Keep as is</option>
+              {inks.map((ink, ii) => String(ink || '').trim() ? <option key={ii} value={String(ii)}>{ii + 1}. {ink}</option> : null)}
+              <option value="drop">Drop out (no ink)</option>
+            </select>
+          </div>;
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {onUseAsLogo && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as this color way's web logo — used on webstores and as the logo detail on mockups and production sheets" onClick={async () => onUseAsLogo(await pngBlob(1200), cw)}>{busy ? 'Saving…' : '★ Web logo'}</button>}
+        <button type="button" style={btn} title="Download a high-res transparent PNG (3000px) with these colors" onClick={async () => save(await pngBlob(3000), base + '.png')}>⬇ PNG</button>
+        <button type="button" style={btn} title="Download the art as an SVG with these colors — opens in Illustrator, Inkscape, Canva…" onClick={() => save(new Blob([svg], { type: 'image/svg+xml' }), base + '.svg')}>⬇ SVG</button>
+      </div>
+    </div>
+  </div>;
+}
+
+const _note = (bg, bd, c) => ({ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, fontWeight: 600, color: c, background: bg, border: '1px solid ' + bd, borderRadius: 6, padding: '7px 10px', marginTop: 8 });
+// Badge for the section header: "🎨 3 colors · from .ai".
+function VectorBadge({ art }) {
+  if (!art) return null;
+  const n = art.palette.length;
+  return <span title={art.kind === 'ai' ? 'Converted from the uploaded .ai' : 'Read from the uploaded SVG'} style={{ fontSize: 9, fontWeight: 700, color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 8, padding: '0 7px', lineHeight: '16px' }}>🎨 {n} color{n === 1 ? '' : 's'}{art.kind === 'ai' ? ' · from .ai' : ''}</span>;
+}
+function VectorNotes({ art, err, colorWays, palette }) {
+  if (err) return <div style={_note('#fffbeb', '#fde68a', '#b45309')}>⚠ Couldn't show the art preview ({err}). The file is still attached.</div>;
+  if (!art) return null;
+  const grouped = art.palette.some(c => c.members.length > 1);
+  const unknown = [...new Set((colorWays || []).flatMap(cw => (cw && cw.inks) || []).filter(x => String(x || '').trim() && !inkToHex(x, palette)))];
+  return <>
+    {art.kind === 'ai' && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>Preview converted from the .ai — Pantone spot colors show as close screen colors. The .ai stays the production file.</div>}
+    {grouped && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>This art has many shades (traced or shaded art) — look-alike shades are grouped, so each color above may cover several.</div>}
+    {unknown.length > 0 && <div style={_note('#f8fafc', '#e2e8f0', '#64748b')}>No swatch for {unknown.join(', ')} — those colors stay as they are in the file. Use a PMS code (e.g. 186 C), a common color name, or a hex code like #1b5e20.</div>}
+  </>;
+}
+const VectorLoading = ({ width = 220, kind }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>{kind === 'ai' ? 'Converting .ai…' : 'Loading art…'}</div>;
+
+export { vectorSourceFor, useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };
