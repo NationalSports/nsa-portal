@@ -23,6 +23,7 @@ import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
 import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
+import { detectFloorRosterChanges, stampRosterChanges, describeRosterChange } from './lib/rosterChangeAlert';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
@@ -7433,6 +7434,9 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,pending_shipping:updatedRows,pending_shipping_usage:[...(cc.pending_shipping_usage||[]),...newUsages]}:cc));
     setSelC(s=>s&&s.id===c.id?{...s,pending_shipping:updatedRows,pending_shipping_usage:[...(s.pending_shipping_usage||[]),...newUsages]}:s);
   };
+  // Back-to-back saves of one edit (onSave + savSONow) can both see the old roster before state
+  // settles — remember what was already announced so production gets one message, not two.
+  const _rosterAlertSeen=useRef(new Map());
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
@@ -7456,6 +7460,33 @@ export default function App(){
       if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
     if(prev)_recordHistory('so_history',sl.id,prev);
+    // Numbers/names edited after a job was lined up: the printed sheet is now wrong (SO-2506).
+    // Keep an unacknowledged flag across saves from editors that never loaded it, flag newly
+    // changed jobs, and tell production. Only the production board's "Reprinted" clears it.
+    if(prev&&Array.isArray(sl.jobs)){
+      const _prevJobs=new Map(safeJobs(prev).map(j=>[j.id,j]));
+      sl.jobs=sl.jobs.map(j=>{
+        if(!j)return j;
+        if(j._rosterAck){const{_rosterAck,...rest}=j;return{...rest,roster_change:null}}
+        const pr=_prevJobs.get(j.id)?.roster_change;
+        return pr&&!j.roster_change?{...j,roster_change:pr}:j;
+      });
+      const _rc=detectFloorRosterChanges(prev,sl);
+      if(_rc.length){
+        sl.jobs=stampRosterChanges(sl,_rc,{by:cu?.name||''}).jobs;
+        const _sig=sl.id+'|'+JSON.stringify(_rc);const _now=Date.now();
+        const _dup=_now-(_rosterAlertSeen.current.get(_sig)||0)<60000;_rosterAlertSeen.current.set(_sig,_now);
+        if(!_dup){
+        const _stLabel=st=>st==='in_process'?'In Process':'In Line';
+        const _jobIds=_rc.map(r=>r.jobId);
+        const _assigned=new Set(sl.jobs.filter(j=>_jobIds.includes(j.id)).map(j=>j.assigned_to).filter(Boolean));
+        const _tag=REPS.filter(r=>r.is_active!==false&&(r.role==='prod_manager'||_assigned.has(r.name))).map(r=>r.id);
+        const _txt='⚠️ Numbers/names changed after the sheet was printed — reprint before pressing.\n'+_rc.map(r=>r.jobId+' ('+_stLabel(r.status)+'): '+r.changes.slice(0,8).map(describeRosterChange).join('; ')+(r.changes.length>8?' (+'+(r.changes.length-8)+' more)':'')).join('\n')+(cu?.name?'\nChanged by '+cu.name+'.':'');
+        setMsgs(p=>[...p,{id:'m'+Date.now()+'-rc',so_id:sl.id,author_id:cu?.id,text:_txt,ts:new Date().toLocaleString(),read_by:cu?.id?[cu.id]:[],dept:'production',tagged_members:_tag,entity_type:'so',entity_id:sl.id}]);
+        nf('Heads up: '+_jobIds.join(', ')+' '+(_rc.length>1?'are':'is')+' already on the floor. Production was told to reprint the sheet.','warn');
+        }
+      }
+    }
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
     if(!skipMerge&&prev&&sl.items&&prev.items){
@@ -14239,6 +14270,21 @@ export default function App(){
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
     savSO({...so,jobs:updatedJobs});
   };
+  // Numbers/names changed on the SO after this job was lined up (see lib/rosterChangeAlert).
+  // "Reprinted" is the only thing that clears it — savSO carries it across every other save.
+  const ackRosterChange=(j)=>{updateJobField(j,{_rosterAck:true,roster_change:null});setProdJobModal(pm=>pm&&pm.id===j.id?{...pm,roster_change:null}:pm);nf('Marked reprinted — '+j.id)};
+  const rosterChangeBanner=(j,big)=>{
+    const rc=j?.roster_change;if(!rc||!Array.isArray(rc.changes)||!rc.changes.length)return null;
+    const when=rc.at?new Date(rc.at).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    const shown=rc.changes.slice(-(big?20:3));
+    return<div role="alert" style={{background:'#fef2f2',border:'2px solid #dc2626',borderRadius:big?8:6,padding:big?'12px 16px':'6px 8px',margin:big?'12px 20px':'0 0 6px'}} onClick={e=>e.stopPropagation()}>
+      <div style={{fontSize:big?14:10,fontWeight:800,color:'#b91c1c'}}>⚠️ Numbers/names changed — reprint the sheet</div>
+      <div style={{fontSize:big?11:9,color:'#7f1d1d',marginTop:2}}>{[rc.by,when].filter(Boolean).join(' · ')}</div>
+      {shown.map((c,i)=><div key={i} style={{fontSize:big?13:10,fontWeight:700,color:'#991b1b',marginTop:2}}>{describeRosterChange(c)}</div>)}
+      {rc.changes.length>shown.length&&<div style={{fontSize:big?11:9,color:'#7f1d1d'}}>+{rc.changes.length-shown.length} more</div>}
+      <button className="btn btn-sm" style={{marginTop:6,fontSize:big?12:9,padding:big?'6px 12px':'3px 8px',background:'#dc2626',color:'white',border:'none',width:big?'auto':'100%'}} onClick={e=>{e.stopPropagation();ackRosterChange(j)}}>Sheet reprinted ✓</button>
+    </div>;
+  };
   // Set the manual link group on a job living on another sales order (used by OrderEditor when
   // a rep links jobs across sub-customers). Persists via savSO so state + DB stay in sync.
   const setJobLinkGroup=(soId,jobId,groupId)=>{
@@ -14442,6 +14488,7 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
+                  {rosterChangeBanner(j,false)}
                   {/* Dual-run: art + numbers run order */}
                   {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
                     {!j.run_order?<div>
@@ -14912,6 +14959,7 @@ export default function App(){
               </div>})()}
             </div>}
 
+            {rosterChangeBanner(j,true)}
             {/* Compact job-level info: machine + assigned */}
             {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
               {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>
