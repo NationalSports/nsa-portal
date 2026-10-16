@@ -1,16 +1,36 @@
 import React, {useCallback,useEffect,useState,useRef} from 'react';
 import {draftJournal,DRAFT_CHANGE_KEY} from './lib/draftJournal';
+import {supersededDraftReceipts,draftBaseVersion,STALE_DRAFT_MS} from './lib/savedDraftComparison';
 
-export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}) {
+export default function DraftRecoveryPanel({owner,onReview,loadSavedVersions,journal=draftJournal}) {
   const [drafts,setDrafts]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const ownerRef=useRef(owner);ownerRef.current=owner;
+  const loadSavedRef=useRef(loadSavedVersions);loadSavedRef.current=loadSavedVersions;
   const refreshSequence=useRef(0);
+  // Copies stop piling up: drop an older copy a newer one already holds, and a
+  // week-old copy whose order the cloud has since saved past. Best effort only:
+  // a failed version check leaves every copy listed.
+  const clearSuperseded=useCallback(async rows=>{
+    const mine=rows.filter(d=>d.owner===String(owner)),now=Date.now(),saved=new Map();
+    const old=mine.filter(d=>d.durable&&now-d.ts>=STALE_DRAFT_MS&&draftBaseVersion(d)!=null);
+    if(old.length&&loadSavedRef.current){
+      for(const table of ['sales_orders','estimates']){
+        const ids=[...new Set(old.filter(d=>d.table===table).map(d=>d.id))];
+        if(!ids.length)continue;
+        try{(await loadSavedRef.current(table,ids)).forEach(row=>saved.set(table+':'+row.id,row._version));}catch{}
+      }
+    }
+    const receipts=supersededDraftReceipts(mine,saved,now,d=>!!journal.isSaving?.(d));
+    if(!receipts.length||ownerRef.current!==owner)return false;
+    await Promise.all(receipts.map(r=>journal.acknowledge(r).catch(()=>false)));
+    return true;
+  },[owner,journal]);
   const refresh=useCallback(async()=>{
     const sequence=++refreshSequence.current;
     if(!owner){setDrafts([]);return;}
-    try{const rows=await journal.list(String(owner));if(ownerRef.current===owner&&sequence===refreshSequence.current){setDrafts(rows);setError('');}}
+    try{let rows=await journal.list(String(owner));if(await clearSuperseded(rows))rows=await journal.list(String(owner));if(ownerRef.current===owner&&sequence===refreshSequence.current){setDrafts(rows);setError('');}}
     catch{if(ownerRef.current===owner&&sequence===refreshSequence.current)setError('Draft recovery is unavailable. Keep unsaved work open until its cloud save is confirmed.');}
-  },[owner,journal]);
+  },[owner,journal,clearSuperseded]);
   useEffect(()=>{
     setDrafts([]);setError('');
     refresh();
@@ -40,7 +60,7 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}
   return <details style={{background:'#fff7ed',border:'1px solid #fed7aa',padding:'10px 16px',fontSize:12}}>
     <summary style={{cursor:'pointer',fontWeight:600}}>Draft recovery{visibleDrafts.length?' ('+visibleDrafts.length+')':''}</summary>
     {error&&<p role="alert">{error}</p>}
-    <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. Download a backup first if you are unsure.</p>
+    <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. A copy clears itself once a newer copy holds the same edits, or once it is a week old and the order has been saved since. Download a backup first if you are unsure.</p>
     <button onClick={refresh}>Refresh drafts</button>{' '}
     {!!visibleDrafts.length&&<button onClick={download}>Download recovery copy</button>}
     {visibleDrafts.length>1&&<>{' '}<button disabled={busy} onClick={async()=>{

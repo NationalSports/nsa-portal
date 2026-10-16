@@ -104,3 +104,44 @@ test('download & clear all saves a file first, then clears every listed copy in 
  expect(confirm).toHaveBeenCalledTimes(1);
  URL.createObjectURL=origCreate;URL.revokeObjectURL=origRevoke;click.mockRestore();confirm.mockRestore();
 });
+
+test('an older copy a newer copy already holds clears itself',async()=>{
+ const older={...draft,key:'old',revision:'r-old',ts:1},newer={...draft,key:'new',revision:'r-new',ts:2};
+ const journal={list:jest.fn().mockResolvedValueOnce([newer,older]).mockResolvedValue([newer]),acknowledge:jest.fn(async()=>true)};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('Draft recovery (1)');
+ expect(journal.acknowledge).toHaveBeenCalledWith({key:'old',owner:'staff-a',revision:'r-old'});
+ expect(journal.acknowledge).toHaveBeenCalledTimes(1);
+});
+
+test('a different older copy of the same order stays listed',async()=>{
+ const older={...draft,key:'old',revision:'r-old',ts:Date.now()-1000,payload:{...draft.payload,memo:'Edit A'}};
+ const newer={...draft,key:'new',revision:'r-new',ts:Date.now(),payload:{...draft.payload,memo:'Edit B'}};
+ const journal={list:jest.fn().mockResolvedValue([newer,older]),acknowledge:jest.fn()};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('Draft recovery (2)');
+ expect(journal.acknowledge).not.toHaveBeenCalled();
+});
+
+test('a week-old copy clears once the saved order moved past its base version',async()=>{
+ const week=8*24*60*60*1000,now=Date.now();
+ const stale={...draft,key:'stale',revision:'r1',ts:now-week,payload:{...draft.payload,_version:12,_obBaseVersion:10}};
+ const fresh={...draft,key:'fresh',revision:'r2',id:'SO-2',ts:now-1000,payload:{...draft.payload,id:'SO-2',_version:3}};
+ const current={...draft,key:'current',revision:'r3',id:'SO-3',ts:now-week,payload:{...draft.payload,id:'SO-3',_version:7}};
+ const noVersion={...draft,key:'nov',revision:'r4',id:'EST-4',table:'estimates',ts:now-week,payload:{id:'EST-4',memo:'x'}};
+ const journal={list:jest.fn().mockResolvedValueOnce([fresh,stale,current,noVersion]).mockResolvedValue([fresh,current,noVersion]),acknowledge:jest.fn(async()=>true)};
+ const loadSavedVersions=jest.fn(async(table,ids)=>ids.map(id=>({id,_version:{'SO-1':11,'SO-2':9,'SO-3':7}[id]})));
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} loadSavedVersions={loadSavedVersions} onReview={()=>{}}/>);
+ await screen.findByText('Draft recovery (3)');
+ expect(journal.acknowledge).toHaveBeenCalledTimes(1);
+ expect(journal.acknowledge).toHaveBeenCalledWith({key:'stale',owner:'staff-a',revision:'r1'});
+ expect(loadSavedVersions).toHaveBeenCalledWith('sales_orders',['SO-1','SO-3']);
+});
+
+test('a failed version check keeps every copy',async()=>{
+ const stale={...draft,ts:Date.now()-8*24*60*60*1000,payload:{...draft.payload,_version:2}};
+ const journal={list:jest.fn().mockResolvedValue([stale]),acknowledge:jest.fn()};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} loadSavedVersions={async()=>{throw new Error('offline')}} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');
+ expect(journal.acknowledge).not.toHaveBeenCalled();
+});

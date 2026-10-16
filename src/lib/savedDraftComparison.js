@@ -69,3 +69,24 @@ export async function reconcileSavedDocumentDrafts({owner, drafts, documents, ta
   }).map(({key, owner: draftOwner, revision}) => ({key, owner: draftOwner, revision}));
   await Promise.all(receipts.map(receipt => currentOwner() === owner ? journal.acknowledge(receipt) : false));
 }
+
+// Recovery copies that no longer need a person: an older copy whose content a
+// newer stored copy of the same document already holds, or a copy at least a
+// week old whose document the cloud has since saved past the version that copy
+// was edited from. Never touches a copy being saved now, a copy held only in
+// tab memory, or a copy whose versions cannot be compared.
+export const STALE_DRAFT_MS = 7 * 24 * 60 * 60 * 1000;
+const finiteVersion = value => value != null && value !== '' && isFinite(Number(value)) ? Number(value) : null;
+export const draftBaseVersion = draft => finiteVersion(draft.payload?._obBaseVersion ?? draft.payload?._version);
+export function supersededDraftReceipts(drafts, savedVersions = new Map(), now = Date.now(), isSaving = () => false) {
+  return drafts.filter(draft => {
+    if (!draft.durable || isSaving(draft)) return false;
+    const duplicate = drafts.some(other => other !== draft && other.durable && other.owner === draft.owner &&
+      other.table === draft.table && other.id === draft.id && other.ts > draft.ts &&
+      savedDocumentMatchesDraft(draft.payload, other.payload));
+    if (duplicate) return true;
+    if (!['sales_orders', 'estimates'].includes(draft.table) || now - draft.ts < STALE_DRAFT_MS) return false;
+    const base = draftBaseVersion(draft), saved = finiteVersion(savedVersions.get(draft.table + ':' + draft.id));
+    return base != null && saved != null && saved > base;
+  }).map(({key, owner, revision}) => ({key, owner, revision}));
+}
