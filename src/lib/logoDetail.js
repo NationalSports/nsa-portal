@@ -1,3 +1,4 @@
+import { hasArtPicks } from './svgRecolor';
 import { artLiveDsts } from '../constants';
 import { hasConfirmedDstThreadOrder } from './dstThreadOrder';
 import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit, artSlotMocks } from '../safeHelpers';
@@ -152,7 +153,9 @@ export const setLogoDetail = (arts, artId, colorWayId, file) => {
   if (!url || !artId) return safeArr(arts);
   const name = typeof file === 'object' && file?.name ? file.name : undefined;
   // stitch_sig: the thread list an auto-saved stitch render was drawn with (DST web logos).
-  const meta = { ...(name ? { name } : {}), ...(typeof file === 'object' && file?.stitch_sig ? { stitch_sig: file.stitch_sig } : {}) };
+  // art_sig: the file + color picks an auto-saved art render was drawn with (.svg/.ai web logos).
+  const meta = { ...(name ? { name } : {}), ...(typeof file === 'object' && file?.stitch_sig ? { stitch_sig: file.stitch_sig } : {}),
+    ...(typeof file === 'object' && file?.art_sig ? { art_sig: file.art_sig } : {}) };
   return safeArr(arts).map(a => {
     if (!a || a.id !== artId) return a;
     const entry = colorWayId
@@ -185,6 +188,22 @@ export const stitchLogoNeedsSave = (art, colorWayId, inks) => {
   const entry = safeArr(art.web_logos).find(w => w && w.url === url && w.color_way_id === colorWayId);
   if (!entry || !(entry.stitch_sig || /^stitch render/i.test(safeStr(entry.name)))) return false;
   return entry.stitch_sig !== sig;
+};
+
+// Print art with an .svg/.ai: the art render IS the color way's web logo, saved automatically —
+// the counterpart of stitchLogoNeedsSave. `sig` (artRenderSig in VectorPreview) changes exactly
+// when the render would. Saves once the color way has colors set (an ink line linked to an art
+// color, or a color dropped out — with neither the render is just the uploaded art, which may not
+// suit the garment), re-saves an earlier
+// art render when the picks change, and never replaces a hand-uploaded logo or the shared default.
+export const artLogoNeedsSave = (art, colorWayId, sig) => {
+  const cw = safeArr(art?.color_ways).find(c => c && c.id === colorWayId);
+  if (!art || art.archived || !cw || !sig || !hasArtPicks(cw)) return false;
+  const url = logoDetailUrl(art, colorWayId);
+  if (!url) return true;
+  const entry = safeArr(art.web_logos).find(w => w && w.url === url && w.color_way_id === colorWayId);
+  if (!entry || !(entry.art_sig || /^art render/i.test(safeStr(entry.name)))) return false;
+  return entry.art_sig !== sig;
 };
 
 // Remove one logo detail image (by url) from a design.
