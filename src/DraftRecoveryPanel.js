@@ -8,22 +8,24 @@ export default function DraftRecoveryPanel({owner,onReview,loadSavedVersions,jou
   const loadSavedRef=useRef(loadSavedVersions);loadSavedRef.current=loadSavedVersions;
   const refreshSequence=useRef(0);
   // Copies stop piling up: drop an older copy a newer one already holds, and a
-  // week-old copy whose order the cloud has since saved past. Best effort only:
-  // a failed version check leaves every copy listed.
+  // week-old copy whose order was since saved past it and closed out. Best
+  // effort only: a failed check leaves every copy listed. One pass at a time;
+  // each clear announces a change that would otherwise start another pass.
+  const cleaning=useRef(false);
   const clearSuperseded=useCallback(async rows=>{
-    const mine=rows.filter(d=>d.owner===String(owner)),now=Date.now(),saved=new Map();
-    const old=mine.filter(d=>d.durable&&now-d.ts>=STALE_DRAFT_MS&&draftBaseVersion(d)!=null);
-    if(old.length&&loadSavedRef.current){
-      for(const table of ['sales_orders','estimates']){
-        const ids=[...new Set(old.filter(d=>d.table===table).map(d=>d.id))];
-        if(!ids.length)continue;
-        try{(await loadSavedRef.current(table,ids)).forEach(row=>saved.set(table+':'+row.id,row._version));}catch{}
+    if(cleaning.current)return false;
+    cleaning.current=true;
+    try{
+      const mine=rows.filter(d=>d.owner===String(owner)),now=Date.now(),saved=new Map();
+      const ids=[...new Set(mine.filter(d=>d.durable&&d.table==='sales_orders'&&now-d.ts>=STALE_DRAFT_MS&&draftBaseVersion(d)!=null).map(d=>d.id))];
+      if(ids.length&&loadSavedRef.current){
+        try{(await loadSavedRef.current('sales_orders',ids)).forEach(row=>saved.set('sales_orders:'+row.id,row));}catch{}
       }
-    }
-    const receipts=supersededDraftReceipts(mine,saved,now,d=>!!journal.isSaving?.(d));
-    if(!receipts.length||ownerRef.current!==owner)return false;
-    await Promise.all(receipts.map(r=>journal.acknowledge(r).catch(()=>false)));
-    return true;
+      const receipts=supersededDraftReceipts(mine,saved,now,d=>!!journal.isSaving?.(d));
+      if(!receipts.length||ownerRef.current!==owner)return false;
+      await Promise.all(receipts.map(r=>journal.acknowledge(r).catch(()=>false)));
+      return true;
+    }finally{cleaning.current=false;}
   },[owner,journal]);
   const refresh=useCallback(async()=>{
     const sequence=++refreshSequence.current;
@@ -60,7 +62,7 @@ export default function DraftRecoveryPanel({owner,onReview,loadSavedVersions,jou
   return <details style={{background:'#fff7ed',border:'1px solid #fed7aa',padding:'10px 16px',fontSize:12}}>
     <summary style={{cursor:'pointer',fontWeight:600}}>Draft recovery{visibleDrafts.length?' ('+visibleDrafts.length+')':''}</summary>
     {error&&<p role="alert">{error}</p>}
-    <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. A copy clears itself once a newer copy holds the same edits, or once it is a week old and the order has been saved since. Download a backup first if you are unsure.</p>
+    <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. A copy clears itself once a newer copy holds the same edits, or once it is a week old and the order has since been saved and closed out as complete. Download a backup first if you are unsure.</p>
     <button onClick={refresh}>Refresh drafts</button>{' '}
     {!!visibleDrafts.length&&<button onClick={download}>Download recovery copy</button>}
     {visibleDrafts.length>1&&<>{' '}<button disabled={busy} onClick={async()=>{

@@ -71,22 +71,24 @@ export async function reconcileSavedDocumentDrafts({owner, drafts, documents, ta
 }
 
 // Recovery copies that no longer need a person: an older copy whose content a
-// newer stored copy of the same document already holds, or a copy at least a
-// week old whose document the cloud has since saved past the version that copy
-// was edited from. Never touches a copy being saved now, a copy held only in
-// tab memory, or a copy whose versions cannot be compared.
+// newer stored copy of the same document already holds, or a week-old sales
+// order copy edited from a version the cloud has since saved past AND closed
+// out (status complete) while the copy was not. A newer-version-only test is
+// not enough: SO-1030 kept a real unsaved quantity change behind a single
+// later save. Never touches a copy being saved now, a copy held only in tab
+// memory, or a copy whose saved order cannot be read.
 export const STALE_DRAFT_MS = 7 * 24 * 60 * 60 * 1000;
 const finiteVersion = value => value != null && value !== '' && isFinite(Number(value)) ? Number(value) : null;
 export const draftBaseVersion = draft => finiteVersion(draft.payload?._obBaseVersion ?? draft.payload?._version);
-export function supersededDraftReceipts(drafts, savedVersions = new Map(), now = Date.now(), isSaving = () => false) {
+export function supersededDraftReceipts(drafts, savedRows = new Map(), now = Date.now(), isSaving = () => false) {
   return drafts.filter(draft => {
     if (!draft.durable || isSaving(draft)) return false;
     const duplicate = drafts.some(other => other !== draft && other.durable && other.owner === draft.owner &&
       other.table === draft.table && other.id === draft.id && other.ts > draft.ts &&
       savedDocumentMatchesDraft(draft.payload, other.payload));
     if (duplicate) return true;
-    if (!['sales_orders', 'estimates'].includes(draft.table) || now - draft.ts < STALE_DRAFT_MS) return false;
-    const base = draftBaseVersion(draft), saved = finiteVersion(savedVersions.get(draft.table + ':' + draft.id));
-    return base != null && saved != null && saved > base;
+    if (draft.table !== 'sales_orders' || now - draft.ts < STALE_DRAFT_MS || draft.payload?.status === 'complete') return false;
+    const saved = savedRows.get(draft.table + ':' + draft.id), base = draftBaseVersion(draft), version = finiteVersion(saved?._version);
+    return saved?.status === 'complete' && base != null && version != null && version > base;
   }).map(({key, owner, revision}) => ({key, owner, revision}));
 }
