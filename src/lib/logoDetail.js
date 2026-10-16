@@ -1,3 +1,5 @@
+import { artLiveDsts } from '../constants';
+import { hasConfirmedDstThreadOrder } from './dstThreadOrder';
 import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit, artSlotMocks } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
 import { knownGarmentHex } from './artGrid';
@@ -171,6 +173,9 @@ export const setLogoDetail = (arts, artId, colorWayId, file) => {
 // again is dropped — the newer one is on its way.
 export const stitchLogoNeedsSave = (art, colorWayId, inks) => {
   const cw = safeArr(art?.color_ways).find(c => c && c.id === colorWayId);
+  const dst = artLiveDsts(art).slice(-1)[0];
+  const urlForDst = typeof dst === 'string' ? dst : dst?.url;
+  if (!hasConfirmedDstThreadOrder(cw, urlForDst)) return false;
   const lines = safeArr(inks);
   if (!art || art.archived || !cw || !lines.length || lines.some(x => !safeStr(x).trim())) return false;
   const sig = lines.join('|');

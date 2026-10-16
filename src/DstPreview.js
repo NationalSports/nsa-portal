@@ -8,6 +8,7 @@
 // Shared by OrderEditorClassic and OrderEditor (CLAUDE.md: both editors) so the
 // drawing logic lives in one place; each editor only wires the upload/save.
 import React, { useEffect, useRef, useState } from 'react';
+import { hasConfirmedDstThreadOrder } from './lib/dstThreadOrder';
 import { parseDst } from './lib/dstParser';
 import { THREAD_COLORS, artLiveDsts } from './constants';
 import { threadLineGaps } from './lib/embStitchParser';
@@ -164,7 +165,8 @@ export default function DstPreview({ dstUrl, colorWays, onEnlarge, onUseAsLogo, 
   const { design, err } = useDstDesign(dstUrl);
   const [busy, setBusy] = useState(false);
   if (!dstUrl) return null;
-  const cws = (colorWays || []).length ? colorWays : [null];
+  const cws = (colorWays || []).filter(cw => hasConfirmedDstThreadOrder(cw, dstUrl));
+  if (!cws.length) return null;
   const useAsLogo = onUseAsLogo && (async (blob, cw) => { setBusy(true); try { await onUseAsLogo(blob, cw); } finally { setBusy(false); } });
   return <div style={{ marginBottom: 8 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -188,7 +190,7 @@ function stitchSourceFor(art, colorWayId) {
   if (!/^https?:\/\//i.test(dstUrl)) return null;
   const cw = (art.color_ways || []).find(c => c && c.id === colorWayId) || ((art.color_ways || []).length === 1 ? art.color_ways[0] : null);
   // No resolved color way, or no threads in it → nothing honest to draw (it would be all grey).
-  if (!cw || !(cw.inks || []).some(x => String(x || '').trim())) return null;
+  if (!hasConfirmedDstThreadOrder(cw, dstUrl) || !(cw.inks || []).some(x => String(x || '').trim())) return null;
   return { dstUrl, inks: cw.inks, label: cw.garment_color || '' };
 }
 // Transparent stitch render sized to its box (logo detail frame paints the garment color behind).
@@ -249,7 +251,9 @@ async function threadLinesMissingMsg(artFiles) {
   const gaps = [];
   for (const a of (artFiles || [])) {
     if (!a || a.archived || a.deco_type !== 'embroidery') continue;
-    const g = threadLineGaps(a, await artDstStops(a));
+    const confirmed = (a.color_ways || []).filter(cw => stitchSourceFor(a, cw.id));
+    if (!confirmed.length) continue;
+    const g = threadLineGaps({ ...a, color_ways: confirmed }, await artDstStops(a));
     if (g.length) gaps.push((a.name || 'Embroidery') + ' — ' + g.map(x => x.label + ' ' + x.filled + ' of ' + x.stops).join(', '));
   }
   return gaps.length ? 'Fill in every thread color first (one per DST stop): ' + gaps.join('; ') : '';
@@ -270,9 +274,11 @@ export async function stitchPreviewsFor(artFiles, { size = 520, timeoutMs = 8000
     const dst = artLiveDsts(a).slice(-1)[0];
     const url = dst ? (typeof dst === 'string' ? dst : (dst.url || '')) : '';
     if (!/^https?:\/\//i.test(url)) return;
-    const cws = (a.color_ways || []).length ? a.color_ways : [null];
+    const cws = (a.color_ways || []).filter(cw => hasConfirmedDstThreadOrder(cw, url));
+    if (!cws.length) return;
     jobs.push(Promise.race([loadDst(url), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))])
       .then(design => cws.forEach(cw => {
+        if (cw.inks.length !== design.blocks.length || cw.inks.some(x => !String(x || '').trim())) return;
         const c = document.createElement('canvas');
         drawDst(c, design, cw?.inks || [], null, size);
         // WebP (~56KB vs ~150KB PNG) keeps the server-rendered PDF request small; browsers that
