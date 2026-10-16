@@ -32,7 +32,8 @@ describe('set-aside bills are one entry per bill',()=>{
 describe('the daily pull waits for the set-aside list',()=>{
   it('loads every hold a page at a time instead of the newest 2000',()=>{
     expect(APP).not.toContain(".in('status',['parked','resolved']).order('held_at',{ascending:false}).limit(2000)");
-    expect(APP).toContain(".in('status',['parked','resolved']).order('held_at',{ascending:false}).range(from,from+999)");
+    expect(APP).toContain(".in('status',['parked','resolved']).order('held_at',{ascending:false}).range(from,from+PAGE-1)");
+    expect(APP).not.toContain(".order('held_at',{ascending:false}).range(from,from+999)");
     expect(APP).toContain('const{keep:parkedKeep,drop:dropIds}=collapseParkedHolds(data);');
   });
 

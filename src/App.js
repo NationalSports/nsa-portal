@@ -88,7 +88,7 @@ import { searchSalesOrders } from './lib/searchSalesOrders';
 import { nextSalesOrderId, salesOrderSequenceNumber } from './lib/salesOrderIds';
 import GlobalSearch from './GlobalSearch';
 import { checkUpsTracking } from './lib/upsTracking';
-import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,slimMatchedPO,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -26907,12 +26907,22 @@ export default function App(){
       // just bloat savedBills. Held rows are never capped away below, so the dedup set is complete.
       // Every held row, newest first, a page at a time — a fixed 2000-row cap
       // silently dropped older holds, so their bills pulled back in as new.
-      const data=[];
-      for(let from=0;from<50000;from+=1000){
-        const{data:page,error}=await supabase.from('supplier_bill_holds').select('*').in('status',['parked','resolved']).order('held_at',{ascending:false}).range(from,from+999);
+      // Pages of 200 with retries, like the applied_bills ledger: existing rows
+      // still carry the matched order's copy (~13KB each), and a 1,000-row page
+      // took 5-12s against the 8s statement_timeout (57014) — on the slow loads
+      // the whole worklist silently failed, the Set-aside pile vanished until the
+      // next good load, and a pull meanwhile re-added parked bills (2026-10-16).
+      const data=[];const PAGE=200;
+      for(let from=0;from<50000;from+=PAGE){
+        let page=null,error=null;
+        for(let attempt=0;attempt<3;attempt++){
+          ({data:page,error}=await supabase.from('supplier_bill_holds').select('*').in('status',['parked','resolved']).order('held_at',{ascending:false}).range(from,from+PAGE-1));
+          if(!error)break;
+          await new Promise(r=>setTimeout(r,1000*(attempt+1)));
+        }
         if(error)throw error;
         data.push(...(page||[]));
-        if(!page||page.length<1000)break;
+        if(!page||page.length<PAGE)break;
       }
       // One Set-aside entry per bill: the newest parked row wins; older parked
       // copies of the same document are dropped here and from the local cache.
@@ -26944,7 +26954,7 @@ export default function App(){
         _lsSet('nsa_saved_bills',JSON.stringify(merged));return merged;
       });
       setBillHoldsReady(true);
-    }catch(e){_billHoldsLoaded.current=false;/* let a later import visit retry; localStorage still backs the queue meanwhile */}
+    }catch(e){_billHoldsLoaded.current=false;console.warn('bill holds load failed',e);nf('Set-aside bills could not load from the server — the Set aside pile and pull dedup only cover this computer until they do. Reload the page to try again.','error');/* let a later import visit retry; localStorage still backs the queue meanwhile */}
   };
   // Runtime key format mirrors the applied_bills unique key: the credit bit is
   // part of both document-number spaces, so invoice and credit note #s coexist
@@ -30505,7 +30515,7 @@ export default function App(){
         si_doc_number:p.si_doc_number!=null&&p.si_doc_number!==''?String(p.si_doc_number):null,
         source:p.source||null,vendor:(p.vendor||p.supplier||null),po_number:p.po_number||null,
         doc_total:safeNum(p.doc_total)||null,freight:safeNum(p.freight)||null,
-        parsed:{...p,rawText:undefined},status,
+        parsed:{...p,rawText:undefined,matchedPO:slimMatchedPO(p.matchedPO)},status,
         portal_status:sb.portalStatus||null,resolution:sb.resolution||null,
         held_by:(cu?.name||cu?.email||null),updated_at:new Date().toISOString(),
       };
