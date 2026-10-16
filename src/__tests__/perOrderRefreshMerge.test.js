@@ -3,11 +3,15 @@ import path from 'path';
 
 // The per-order live refresh must merge with exactly the full reload's rules: a save in flight or a
 // failed save keeps the local copy, a newer local _version wins, and the diff baseline equals what goes
-// into state. It falls back to the full reload when it can't be sure. Block taken verbatim from App.js.
+// into state. It falls back to the full reload when it can't be sure. Blocks taken verbatim from App.js:
+// the merge helpers at component scope (shared with the poll's changed-orders refresh), then the live
+// refresh inside the realtime effect.
 const source = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
-const start = source.indexOf('      const _shouldProtect=id=>');
+const helpersStart = source.indexOf('  const _jsonEq=(a,b)=>');
+const helpersEnd = source.indexOf('  // ─── Order save routing', helpersStart);
+const start = source.indexOf('      const _deltaRetried=new Set();');
 const end = source.indexOf('      const reloadAll=async(pendingAll)=>{', start);
-const block = source.slice(start, end);
+const block = source.slice(helpersStart, helpersEnd) + source.slice(start, end);
 
 function setup({fetched, failed = [], pending = []}) {
   let sos;
@@ -16,10 +20,10 @@ function setup({fetched, failed = [], pending = []}) {
   const setSOs = fn => { sos = fn(sos); };
   const load = jest.fn().mockResolvedValue(fetched);
   const api = Function('_dbSaveFailedIds', '_dbSavePendingIds', '_isRecentlyPulled', '_recentlySavedByMe', 'mergeArtFileSuperset',
-    '_dbLoadSalesOrdersByIds', 'cancelled', 'setSOs', 'indexFirstById', '_dbSnap', '_jsonEq', 'debouncedReloadGroups',
+    '_dbLoadSalesOrdersByIds', 'cancelled', 'setSOs', 'indexFirstById', '_dbSnap', '_SO_DELTA_MAX', 'debouncedReloadGroups',
     block + ';return {reloadSalesOrderDelta};')(
     new Set(failed), new Set(pending), () => false, () => false, (a) => a,
-    load, false, setSOs, arr => new Map((arr || []).map(r => [r.id, r])), snap, (a, b) => JSON.stringify(a) === JSON.stringify(b), g => requeued.push(...g));
+    load, false, setSOs, arr => new Map((arr || []).map(r => [r.id, r])), snap, 25, g => requeued.push(...g));
   return {api, load, snap, requeued, get: () => sos, set: v => { sos = v; }};
 }
 const row = (id, v, memo) => ({id, _version: v, memo});

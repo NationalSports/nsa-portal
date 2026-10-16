@@ -5,7 +5,7 @@ import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
 import { decoPoCost } from './lib/decoPoCost';
-import { fetchDataVersions, allUnchanged, changedGroups, markLoaded } from './lib/dataVersions';
+import { fetchDataVersions, changedGroups, markLoaded, loadedVersion } from './lib/dataVersions';
 import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
@@ -573,6 +573,7 @@ import {
   _sbGetMyProfile,
   _dbLoad,
   _dbLoadSalesOrdersByIds,
+  _dbLoadSalesOrderChangesSince,
   _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
@@ -1028,6 +1029,9 @@ const _getPollInterval=()=>Math.min((_realtimeHealthy?_POLL_HEALTHY_INTERVAL:_PO
 // poll actually applies data (past the hasData + _decoTimedOut guards).
 const _FULL_SYNC_MS=1800000;// 30 min
 let _lastFullSyncAt=0;
+// Per-order refreshes (live updates, and the poll's changed-orders read) fetch at most this many orders
+// by id; past that one full group download is the cheaper read.
+const _SO_DELTA_MAX=25;
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
 // Adidas Cowork publishes sizes with garment-specific suffixes that don't match
@@ -2694,6 +2698,34 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // Merge rules shared by the full group reload, the per-order live refresh and the poll's changed-orders
+  // refresh — one copy. Protected ids (a save failed or in flight, or an order just pulled) keep the local
+  // copy. Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): a read that landed
+  // BEFORE this client's save would clobber just-saved scalars. _version is DB-trigger-owned and read back
+  // into the local copy on every confirmed save, so a strictly-newer local _version means the incoming row
+  // is stale — keep the local copy wholesale. No-ops for entities without _version.
+  const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
+  const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+  const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
+  // A stale ~10s-after-save reload (triggered by the art save's own updated_at bump) must not drop a
+  // just-uploaded file: layer the art_files superset for records this client saved recently.
+  const _keepRecentArt=(e,lp)=>{if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e};
+  // Replace rows by id in place; rows not present yet are appended (the full load is id-ordered).
+  const _upsertById=(arr,byId)=>{const seen=new Set();const out=(arr||[]).map(x=>{if(x&&byId.has(x.id)){seen.add(x.id);return byId.get(x.id)}return x});const added=[...byId.keys()].filter(id=>!seen.has(id)).map(id=>byId.get(id));return added.length?[...out,...added]:out};
+  // Put freshly read orders (a live per-order refresh, or the poll's changed-orders refresh) into state
+  // and the diff baseline by id, with the rules above. Same rule as the full reload: these rows' diff
+  // baseline equals what goes into state.
+  const _applySalesOrderRows=rows=>{
+    if(!rows||!rows.length)return;
+    setSOs(prev=>{
+      const localById=indexFirstById(prev);
+      const merged=new Map();
+      rows.forEach(e=>{const lp=localById.get(e.id);const base=_shouldProtect(e.id)?(lp||e):_newerLocalWins(e,localById);merged.set(e.id,_keepRecentArt(base,lp))});
+      _dbSnap.current={..._dbSnap.current,sos:_upsertById(_dbSnap.current.sos,merged)};
+      const next=_upsertById(prev,merged);
+      return _jsonEq(prev,next)?prev:next;
+    });
+  };
   // ─── Order save routing (SO-2444, 2026-10-12) ───
   // Every order save in this component goes through here: the [sos] diff save, savSONow, and the Art
   // Dashboard's direct calls. A save that changes ONLY art files and/or jobs relative to the last
@@ -3263,26 +3295,13 @@ export default function App(){
     const channels=[];
     let stopRealtimeReload=()=>{};
     if(supabase){
-      const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       // Selective reload bookkeeping: realtime events queue their entity group here and the
       // debounced reload fetches only those groups. '__all__' (tab-visibility regain / unknown
       // table) forces a full reload. Pending groups are consumed only once a load actually
       // starts, so deferred reloads (save in flight) keep accumulating events.
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
-      // Merge rules shared by the full group reload and the per-order refresh below — one copy.
-      // Protected ids (a save failed or in flight, or an order just pulled) keep the local copy.
-      // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): a read that landed
-      // BEFORE this client's save would clobber just-saved scalars. _version is DB-trigger-owned and read
-      // back into the local copy on every confirmed save, so a strictly-newer local _version means the
-      // incoming row is stale — keep the local copy wholesale. No-ops for entities without _version.
-      const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
-      const _newerLocalWins=(e,localById)=>{const lp=localById.get(e.id);return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
-      // A stale ~10s-after-save reload (triggered by the art save's own updated_at bump) must not drop a
-      // just-uploaded file: layer the art_files superset for records this client saved recently.
-      const _keepRecentArt=(e,lp)=>{if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e};
-      // Replace rows by id in place; rows not present yet are appended (the full load is id-ordered).
-      const _upsertById=(arr,byId)=>{const seen=new Set();const out=(arr||[]).map(x=>{if(x&&byId.has(x.id)){seen.add(x.id);return byId.get(x.id)}return x});const added=[...byId.keys()].filter(id=>!seen.has(id)).map(id=>byId.get(id));return added.length?[...out,...added]:out};
-      // Per-order live refresh (2026-10-14). A sales-order change used to make every open tab re-download
+      // Per-order live refresh (2026-10-14). Merge rules: _applySalesOrderRows (component scope, shared
+      // with the poll's changed-orders refresh). A sales-order change used to make every open tab re-download
       // all orders with all their lines, POs, picks, jobs and art; on slow connections that crowded out
       // the rep's own saves. Fetch only the changed orders (same assembly as the full load) and merge them
       // with the same rules as the full reload. Returns false when the full reload must run instead: too
@@ -3291,7 +3310,6 @@ export default function App(){
       // on the queue's next pass, about a second later) rather than going straight to the heavy full
       // reload on the same bad connection; a second failure for the same keys falls back to the full
       // reload exactly as before. A key superseded by a queued full reload simply drops its retry mark.
-      const _SO_DELTA_MAX=25;
       const _deltaRetried=new Set();
       const reloadSalesOrderDelta=async(soIds,itemIds)=>{
         if(soIds.length>_SO_DELTA_MAX)return false;
@@ -3305,16 +3323,7 @@ export default function App(){
         }
         keys.forEach(k=>_deltaRetried.delete(k));
         if(res.tooMany||res.missing.length)return false;
-        if(!res.sales_orders.length)return true;
-        setSOs(prev=>{
-          const localById=indexFirstById(prev);
-          const merged=new Map();
-          res.sales_orders.forEach(e=>{const lp=localById.get(e.id);const base=_shouldProtect(e.id)?(lp||e):_newerLocalWins(e,localById);merged.set(e.id,_keepRecentArt(base,lp))});
-          // Same rule as the full reload: these rows' diff baseline equals what goes into state.
-          _dbSnap.current={..._dbSnap.current,sos:_upsertById(_dbSnap.current.sos,merged)};
-          const next=_upsertById(prev,merged);
-          return _jsonEq(prev,next)?prev:next;
-        });
+        _applySalesOrderRows(res.sales_orders);
         return true;
       };
       const reloadAll=async(pendingAll)=>{
@@ -3613,16 +3622,48 @@ export default function App(){
           }
         }
         const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
-        // A core poll re-downloads every order, estimate, invoice and message. Skip it when nothing has
-        // written to any of them since this tab last loaded them (src/lib/dataVersions.js); full syncs
-        // always run. The app_state counter tracks only the six keys applied below — keep that list in
-        // step with migration 20261014220000_data_versions.
+        // A core poll downloads only the groups written to since this tab last loaded them
+        // (src/lib/dataVersions.js) — nothing when nothing moved; full syncs load everything. The app_state
+        // counter tracks only the six keys applied below — keep that list in step with migration
+        // 20261014220000_data_versions. `_loadGroups` null = every group (a full sync, or no counters).
         const _POLL_GROUPS=['estimates','sales_orders','invoices','messages','app_state'];
         const _pollVersions=await fetchDataVersions(supabase);
         if(cancelled)return;
-        if(coreOnly&&allUnchanged(_pollVersions,_POLL_GROUPS)){_pollConsecutiveFailures=0;schedulePoll();return}
-        const d=await _dbLoad({coreOnly});
-        if(!d||!d.hasData){
+        const _changed=coreOnly&&_pollVersions?changedGroups(_pollVersions,_POLL_GROUPS):null;
+        if(_changed&&!_changed.length){_pollConsecutiveFailures=0;schedulePoll();return}
+        // Orders: when the database can name the orders written since this tab's last load (migration
+        // 20261016150000_so_changes) and there are few, fetch just those by id — the same read and merge
+        // as a live update — instead of the whole order book. Anything else (no cursor yet, the lookup
+        // failing, too many orders, or a deleted one) loads the group exactly as before.
+        let _soDelta=false;
+        if(_changed&&_changed.includes('sales_orders')){
+          const since=loadedVersion('sales_orders');
+          const ch=since==null?null:await _dbLoadSalesOrderChangesSince(since,_SO_DELTA_MAX);
+          if(cancelled)return;
+          if(ch&&!ch.tooMany){
+            const res=ch.ids.length?await _dbLoadSalesOrdersByIds(ch.ids,[],{maxOrders:_SO_DELTA_MAX}):{sales_orders:[],missing:[]};
+            if(cancelled)return;
+            if(res&&!res.tooMany&&!res.missing.length){
+              if(res.sales_orders.length)_applySalesOrderRows(res.sales_orders);
+              // The counter was read before the lookup, so a write landing meanwhile moves it past this mark.
+              // An order whose local copy was kept (save failed / in flight / just pulled) is not current
+              // yet: leave the cursor so the next poll re-reads those few ids once the protection lifts.
+              if(!res.sales_orders.some(r=>_shouldProtect(r.id)))markLoaded(_pollVersions,['sales_orders']);
+              _soDelta=true;
+            }
+          }
+        }
+        const _loadGroups=_changed?new Set(_soDelta?_changed.filter(g=>g!=='sales_orders'):_changed):null;
+        if(_loadGroups&&!_loadGroups.size){
+          // Only orders moved and they came in by id: a successful poll with no group download. It still
+          // counts as reaching the database (see the writes re-enable below, which this return would skip).
+          if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+          _pollConsecutiveFailures=0;schedulePoll();return;
+        }
+        const _loaded=g=>!_loadGroups||_loadGroups.has(g);
+        const d=await _dbLoad(_loadGroups?{coreOnly:true,only:_loadGroups}:{coreOnly});
+        // A group-limited load has no "came back with data" test: its groups may be small or empty (app_state alone).
+        if(!d||(!d.hasData&&!_loadGroups)){
           _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
           if(_pollConsecutiveFailures>1)console.warn('[DB] Poll returned no data (attempt '+_pollConsecutiveFailures+', next in '+Math.round(_getPollInterval()/1000)+'s)');
           schedulePoll();return;
@@ -3679,14 +3720,16 @@ export default function App(){
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
         const _prevSnap=_dbSnap.current;
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
+        // Groups this poll did not load keep their snapshot (and their state, below): a replaced baseline
+        // for rows that were not re-read would diff every one of them as a local edit and re-save it.
+        _dbSnap.current={ests:_loaded('estimates')?pollEsts:_prevSnap.ests,sos:_loaded('sales_orders')?pollSOs:_prevSnap.sos,invs:_loaded('invoices')?pollInvs:_prevSnap.invs,msgs:_loaded('messages')?pollMsgs:_prevSnap.msgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:pollOmg,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
-        setEsts(prev=>{const localById=indexFirstById(prev);const mergeEst=e=>{const local=localById.get(e.id);if(local&&_localRowIsNewer(local.updated_at,e.updated_at))return _keepLocalAdoptVersion(local,e);/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(localById.get(e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
-        setSOs(prev=>{const localById=indexFirstById(prev);const mergeSO=s=>{const local=localById.get(s.id);if(!local)return s;
+        if(_loaded('estimates'))setEsts(prev=>{const localById=indexFirstById(prev);const mergeEst=e=>{const local=localById.get(e.id);if(local&&_localRowIsNewer(local.updated_at,e.updated_at))return _keepLocalAdoptVersion(local,e);/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(localById.get(e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
+        if(_loaded('sales_orders'))setSOs(prev=>{const localById=indexFirstById(prev);const mergeSO=s=>{const local=localById.get(s.id);if(!local)return s;
           // Scalar-clobber guard (EST-1227 lineage — the SO twin of _recentEstStatusChange): a 60s poll
           // that read the DB BEFORE this client's save landed would otherwise overwrite just-saved scalars
           // (status/tax_rate/deco_pos/...) via m={...s} below — the child-collection guards don't cover them,
@@ -3736,12 +3779,12 @@ export default function App(){
           const _protect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(localById.get(s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
-        setInvs(prev=>{const localById=indexFirstById(prev);const mergeInv=i=>{const local=localById.get(i.id);if(!local)return i;/* Scalar-clobber guard (EST-1227 lineage, same rule as mergeSO above): invoices carry _version since 00180 and _dbSaveInvoiceInner bumps the local copy in place on every confirmed save, so a poll row with a LOWER _version was read before this client's save landed — keep local wholesale instead of last-write-wins on total/paid/status. */if(local._version!=null&&i._version!=null&&Number(local._version)>Number(i._version))return local;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(localById.get(i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
+        if(_loaded('invoices'))setInvs(prev=>{const localById=indexFirstById(prev);const mergeInv=i=>{const local=localById.get(i.id);if(!local)return i;/* Scalar-clobber guard (EST-1227 lineage, same rule as mergeSO above): invoices carry _version since 00180 and _dbSaveInvoiceInner bumps the local copy in place on every confirmed save, so a poll row with a LOWER _version was read before this client's save landed — keep local wholesale instead of last-write-wins on total/paid/status. */if(local._version!=null&&i._version!=null&&Number(local._version)>Number(i._version))return local;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(localById.get(i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         // Customer reload is a wholesale replace (no per-field merge like SOs/estimates). Library art lives in
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
         if(d.customers.length)setCust(prev=>{const localById=indexFirstById(prev);const _mcArt=c=>{const lp=localById.get(c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(localById.get(c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
-        if(d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
+        if(_loaded('messages')&&d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         // Advancing _dbSnap.current.omg WITHOUT advancing this state is a data-loss bug: the
         // omgStores auto-save effect writes every row where state !== snapshot, treating state as
