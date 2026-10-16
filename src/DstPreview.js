@@ -8,6 +8,7 @@
 // Shared by OrderEditorClassic and OrderEditor (CLAUDE.md: both editors) so the
 // drawing logic lives in one place; each editor only wires the upload/save.
 import React, { useEffect, useRef, useState } from 'react';
+import { requiredDstThreadMessage } from './lib/dstThreadPolicy';
 import { hasConfirmedDstThreadOrder } from './lib/dstThreadOrder';
 import { parseDst } from './lib/dstParser';
 import { THREAD_COLORS, artLiveDsts } from './constants';
@@ -247,7 +248,9 @@ async function artDstStops(art) {
 }
 // Production gate: embroidery designs whose color ways don't list a thread for every DST stop.
 // Returns an error message, or '' when every thread line is filled (or no DST could be read).
-async function threadLinesMissingMsg(artFiles) {
+async function threadLinesMissingMsg(artFiles, job) {
+  const required = requiredDstThreadMessage(artFiles, job);
+  if (required) return required;
   const gaps = [];
   for (const a of (artFiles || [])) {
     if (!a || a.archived || a.deco_type !== 'embroidery') continue;

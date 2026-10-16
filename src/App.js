@@ -28,7 +28,7 @@ import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
 import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { detectFloorRosterChanges, stampRosterChanges, describeRosterChange } from './lib/rosterChangeAlert';
-import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
+import { isJobReady, missingJobMocks, mockAwareProductionStatus, jobThreadOrderMessage } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
 import { setEmailBlockRegistry, deliveryFailureAdvice } from './lib/emailRouting';
@@ -14295,6 +14295,7 @@ export default function App(){
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
     const liveJob=safeJobs(so).find(x=>x.id===j.id)||j;
+    if(['ready','staging','in_process'].includes(newStatus)){const msg=jobThreadOrderMessage(liveJob,so);if(msg){nf(msg,'error');return}}
     if(['ready','staging','in_process'].includes(newStatus)&&missingJobMocks(liveJob,so).length){nf(missingMockupsMsg(missingJobMocks(liveJob,so)),'error');return}
     // ── Move the run-together group as one ──
     // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
