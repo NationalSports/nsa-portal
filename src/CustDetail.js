@@ -14,6 +14,7 @@ import { artWriteMatches } from './lib/artIdentity';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays } from './lib/embStitchParser';
 import DstPreview from './DstPreview';
 import { VectorArtPreview, vectorSourceFor } from './VectorPreview';
+import { removeInkLine } from './lib/svgRecolor';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, decoSplitQty, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
@@ -1814,7 +1815,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   {(cw.inks||[]).map((ink,ii)=><div key={ii} style={{display:'flex',gap:6,alignItems:'center',marginBottom:5}}>
                     <span style={{width:16,height:16,borderRadius:4,background:pantoneHex(ink)||'#f1f5f9',border:'1px solid #d1d5db',flexShrink:0}}/>
                     <input value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};setCwsLocal(n)}} onBlur={()=>persistColorWays(cws)} placeholder={art.deco_type==='embroidery'?'Thread color':'Ink color'} style={{flex:1,minWidth:0,fontSize:12,padding:'4px 8px',border:'1px solid #e5e7eb',borderRadius:6,background:'#fff',outline:'none'}}/>
-                    <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:(cw.inks||[]).filter((_,x)=>x!==ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,flexShrink:0,display:'flex'}} title="Remove color"><Icon name="x" size={12}/></button>
+                    <button onClick={()=>{const n=[...cws];n[ci]={...cw,...removeInkLine(cw,ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,flexShrink:0,display:'flex'}} title="Remove color"><Icon name="x" size={12}/></button>
                   </div>)}
                   <div style={{marginTop:6}}>{art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
                   :<PantoneQuickPicks colors={mergeColors(customer,allCustomers,'pantone_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>}</div>
@@ -1832,7 +1833,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             swapped or dropped out, and the picks save on the color way (library + every order using this art) */}
         {(()=>{const src=vectorSourceFor(art,[...(art.files||[]),...prodFiles.map(m=>m.file||m.url)].filter(Boolean));if(!src)return null;
           return<div style={{marginBottom:16}}><VectorArtPreview src={src} colorWays={cws} onEnlarge={setMockupLightbox} palette={mergeColors(customer,allCustomers,'pantone_colors')}
-            onRecolor={saveArt?(ci,m)=>persistColorWays(cws.map((c,x)=>x===ci?{...c,art_recolor:m}:c)):undefined}
+            onPatch={saveArt?(ci,p)=>persistColorWays(cws.map((c,x)=>x===ci?{...c,...p}:c)):undefined} onBind={saveArt?next=>persistColorWays(next):undefined}
             onUseAsLogo={saveArt?(blob,cw)=>saveRenderLogo(blob,cw,'art'):undefined}/></div>})()}
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>

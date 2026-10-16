@@ -1,3 +1,4 @@
+import { hasArtPicks } from './svgRecolor';
 import { artLiveDsts } from '../constants';
 import { hasConfirmedDstThreadOrder } from './dstThreadOrder';
 import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit, artSlotMocks } from '../safeHelpers';
@@ -191,12 +192,13 @@ export const stitchLogoNeedsSave = (art, colorWayId, inks) => {
 
 // Print art with an .svg/.ai: the art render IS the color way's web logo, saved automatically —
 // the counterpart of stitchLogoNeedsSave. `sig` (artRenderSig in VectorPreview) changes exactly
-// when the render would. Saves once the rep has picked any color for the color way (with nothing
-// picked the render is just the uploaded art, which may not suit the garment), re-saves an earlier
+// when the render would. Saves once the color way has colors set (an ink line linked to an art
+// color, or a color dropped out — with neither the render is just the uploaded art, which may not
+// suit the garment), re-saves an earlier
 // art render when the picks change, and never replaces a hand-uploaded logo or the shared default.
 export const artLogoNeedsSave = (art, colorWayId, sig) => {
   const cw = safeArr(art?.color_ways).find(c => c && c.id === colorWayId);
-  if (!art || art.archived || !cw || !sig || !Object.keys(cw.art_recolor || {}).length) return false;
+  if (!art || art.archived || !cw || !sig || !hasArtPicks(cw)) return false;
   const url = logoDetailUrl(art, colorWayId);
   if (!url) return true;
   const entry = safeArr(art.web_logos).find(w => w && w.url === url && w.color_way_id === colorWayId);

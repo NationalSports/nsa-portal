@@ -147,21 +147,70 @@ function recolorSvg(svgText, map) {
 
 // What happens to each palette color for one color way (cw null = the art with no color way):
 // an ink line index, -1 = keep the file's own color, or 'drop' = drop it out (transparent).
-//   1. the color way's own choice, cw.art_recolor = { paletteHex: inkIndex | -1 | 'drop' }
-//   2. else a drop-out from `dropouts` ([paletteHex…] — the session-only picks for art with no
-//      color way, e.g. dropping a DTF white background)
-//   3. else keep the file's color. Nothing is swapped until a rep picks it — an ink list's order
-//      says nothing about which file color each ink belongs to, so guessing showed wrong colors.
+//   1. dropped: in cw.art_drop ([paletteHex…]), or in `dropouts` (the session-only drop-outs for
+//      art with no color way, e.g. a DTF white background). An older 'drop' in art_recolor counts too.
+//   2. else the ink line the color is linked to, cw.art_recolor = { paletteHex: inkIndex } (see
+//      bindInks) — so changing that line's ink recolors every part of the art in that color.
+//   3. else keep the file's color (no ink line matches it, or the linked line is empty).
 function recolorPlan(palette, cw, dropouts) {
-  const inks = (cw && cw.inks) || [], set = (cw && cw.art_recolor) || {}, drop = new Set(dropouts || []);
+  const inks = (cw && cw.inks) || [], set = (cw && cw.art_recolor) || {};
+  const drop = new Set([...(dropouts || []), ...((cw && cw.art_drop) || [])]);
   const ok = i => Number.isInteger(i) && i >= 0 && !!String(inks[i] || '').trim();
   const out = {};
   (palette || []).forEach(c => {
     const own = Object.prototype.hasOwnProperty.call(set, c.hex) ? set[c.hex] : undefined;
-    if (own === 'drop' || (own === undefined && drop.has(c.hex))) out[c.hex] = 'drop';
-    else out[c.hex] = own !== undefined && ok(own) ? own : -1;
+    if (own === 'drop' || drop.has(c.hex)) out[c.hex] = 'drop';
+    else out[c.hex] = ok(own) ? own : -1;
   });
   return out;
+}
+
+// Link a color way's ink lines to the art's colors: each line not linked yet goes to the closest
+// art color not linked yet (closest pairs first), if it's close enough to plausibly be that color
+// (≈40 per RGB channel) — "PMS 123" finds the gold, "PMS White" the white. Links are saved on the
+// color way and then stay put, so retyping a line ("PMS 123" → "PMS 186") recolors that part of the
+// art instead of re-linking. inkHex(name) → '#rrggbb' | null. Returns the new art_recolor, or null
+// when nothing new links.
+const LINK_DIST = 130;
+function bindInks(palette, cw, inkHex) {
+  const inks = (cw && cw.inks) || [], cur = { ...((cw && cw.art_recolor) || {}) };
+  const isLink = v => Number.isInteger(v) && v >= 0;
+  const usedLines = new Set(Object.values(cur).filter(isLink));
+  const free = (palette || []).filter(c => !isLink(cur[c.hex]) && cur[c.hex] !== 'drop');
+  const pairs = [];
+  inks.forEach((ink, i) => {
+    if (usedLines.has(i)) return;
+    const c = parseColor(inkHex(ink));
+    if (c) free.forEach(f => { const d = colorDist(f.hex, c.hex); if (d <= LINK_DIST) pairs.push([d, i, f.hex]); });
+  });
+  pairs.sort((x, y) => x[0] - y[0]);
+  const lines = new Set(), colors = new Set();
+  for (const [, i, hex] of pairs) {
+    if (lines.has(i) || colors.has(hex)) continue;
+    cur[hex] = i; lines.add(i); colors.add(hex);
+  }
+  return lines.size ? cur : null;
+}
+
+// Whether a color way has any art color linked to an ink line or dropped out — i.e. the rep has
+// set colors for it (used to decide when its art render can stand as the web logo).
+const hasArtPicks = cw => !!cw && ((cw.art_drop || []).length > 0
+  || Object.values(cw.art_recolor || {}).some(v => v === 'drop' || (Number.isInteger(v) && v >= 0)));
+
+// Remove ink line ii from a color way, keeping the art links on the right lines: the removed
+// line's color is unlinked (keeps its file color until another line links to it) and later lines
+// shift up by one. Returns the patch { inks, art_recolor? }.
+function removeInkLine(cw, ii) {
+  const inks = ((cw && cw.inks) || []).filter((_, x) => x !== ii);
+  const rc = cw && cw.art_recolor;
+  if (!rc) return { inks };
+  const next = {};
+  Object.keys(rc).forEach(k => {
+    const v = rc[k];
+    if (!(Number.isInteger(v) && v >= 0)) next[k] = v;
+    else if (v !== ii) next[k] = v > ii ? v - 1 : v;
+  });
+  return { inks, art_recolor: next };
 }
 
 // The member-level swap map for recolorSvg: every shade in a group → its ink's hex, or 'none'.
@@ -175,4 +224,4 @@ function recolorMap(palette, cw, dropouts, inkHex) {
   return map;
 }
 
-export { parseColor, svgColors, svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap };
+export { parseColor, svgColors, svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap, bindInks, removeInkLine, hasArtPicks };

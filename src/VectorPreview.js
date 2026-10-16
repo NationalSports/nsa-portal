@@ -1,8 +1,10 @@
 /* eslint-disable */
 // Art preview for a print art folder (screen print, DTF, heat transfer…): draws the
 // uploaded .svg — or an .ai converted to SVG on the fly — in each color way's inks.
-// Every color the art uses is listed; for each one the rep picks: keep it, swap it for
-// one of the color way's inks, or drop it out (transparent — e.g. a DTF white box).
+// Each ink line in a color way links to the matching color in the art (bindInks — "PMS 123"
+// finds the gold), so changing that line recolors that part of the art. Below the picture every
+// art color is listed with the line it follows, and can be dropped out (transparent — e.g. a DTF
+// white box).
 // The vector-art counterpart of DstPreview's stitch preview.
 //
 // Shared by OrderEditorClassic and OrderEditor through ColorWaysEditor (CLAUDE.md: both
@@ -12,7 +14,7 @@
 // inside the existing color_ways JSON — no new column); with no color way they last for the
 // session. The recolored art leaves the portal only as a web logo / PNG / SVG exported here.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap } from './lib/svgRecolor';
+import { svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap, bindInks, hasArtPicks } from './lib/svgRecolor';
 import { aiToSvg } from './lib/aiToSvg';
 import { pantoneHex, threadHex, isStaleFile } from './constants';
 
@@ -147,9 +149,30 @@ function recolored(art, cw, dropouts, palette) {
 }
 
 // ── Auto web logo (order editors) — the counterpart of the stitch render's ──
-// A color way is ready once the rep has picked anything for it; with nothing picked the render is
-// just the uploaded art, which may not suit the garment (the ★ button still saves it by hand).
-const artLogoReady = cw => !!cw && Object.keys(cw.art_recolor || {}).length > 0;
+// A color way is ready once it has colors set (a linked ink line or a drop-out); with neither the
+// render is just the uploaded art, which may not suit the garment (the ★ button still saves it).
+const artLogoReady = hasArtPicks;
+
+// Links each color way's new ink lines to the art's matching colors (bindInks) and saves the links
+// with one onBind(nextColorWays). Runs once the color ways have been still for 2s, so a half-typed
+// ink name can't link to the wrong color and nothing edited meanwhile is overwritten.
+function useInkBinding(art, cws, palette, onBind) {
+  const list = cws || [];
+  const sig = art && onBind ? JSON.stringify(list) + JSON.stringify(palette || []) : '';
+  useEffect(() => {
+    if (!sig) return;
+    const t = setTimeout(() => {
+      let changed = false;
+      const next = list.map(cw => {
+        const rc = cw && bindInks(art.palette, cw, ink => inkToHex(ink, palette));
+        if (!rc) return cw;
+        changed = true; return { ...cw, art_recolor: rc };
+      });
+      if (changed) onBind(next);
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [sig, art]); // eslint-disable-line react-hooks/exhaustive-deps
+}
 // What a color way's render shows, as text — the design file plus each color's outcome. It changes
 // exactly when the render would, so an auto-saved logo is re-saved only when it changed.
 function artRenderSig(src, art, cw) {
@@ -170,10 +193,10 @@ async function artPngFile(art, cw, palette, name) {
 // One color way's render + its color list. No garment color → a checkerboard shows through, so
 // dropped-out areas read as transparent. cw null = the art with no color way (e.g. DTF): colors
 // can only be kept or dropped, held by the caller for the session.
-//   onRecolor(next art_recolor) — save this color way's picks
-//   onDropouts(next [hex…])     — the no-color-way drop-outs
+//   onPatch({ art_drop, art_recolor? }) — save this color way's drop-outs
+//   onDropouts(next [hex…])             — the no-color-way drop-outs
 // autoLogo: the order editors save this render as the color way's web logo by themselves.
-function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, onUseAsLogo, autoLogo = false, busy, compact = false, width = 220, palette, name }) {
+function VectorTile({ art, cw, idx, dropouts, onPatch, onDropouts, onEnlarge, onUseAsLogo, autoLogo = false, busy, compact = false, width = 220, palette, name }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = (cw && cw.inks) || [];
@@ -181,15 +204,19 @@ function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, 
   const plan = recolorPlan(art.palette, cw, dropouts);
   // Recoloring rewrites the whole file (can be MBs for traced art) — only when a choice changes.
   const svg = useMemo(() => recolored(art, cw, dropouts, palette),
-    [art, inks.join('|'), JSON.stringify((cw && cw.art_recolor) || {}), (dropouts || []).join('|'), JSON.stringify(palette || [])]);
+    [art, inks.join('|'), JSON.stringify((cw && cw.art_recolor) || {}), ((cw && cw.art_drop) || []).join('|'), (dropouts || []).join('|'), JSON.stringify(palette || [])]);
   useEffect(() => { let live = true; if (ref.current) drawVector(ref.current, svg, garmentHex, 520, () => live).catch(() => {}); return () => { live = false; }; }, [svg, garmentHex]);
   const base = String(name || 'art').replace(/\.\w+$/, '').replace(/[^\w-]+/g, '_') + (cw ? '_' + String(cw.garment_color || 'cw' + (idx + 1)).replace(/[^\w-]+/g, '_') : '');
   const pngBlob = size => new Promise((res, rej) => { const c = document.createElement('canvas'); drawVector(c, svg, null, size).then(() => c.toBlob(res, 'image/png'), rej); });
   const save = (blob, file) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); };
-  const pick = (hex, v) => {
-    if (cw) { onRecolor && onRecolor({ ...(cw.art_recolor || {}), [hex]: v }); return; }
-    const d = new Set(dropouts || []); if (v === 'drop') d.add(hex); else d.delete(hex);
-    onDropouts && onDropouts([...d]);
+  // Drop a color out (or bring it back). A color way keeps them in art_drop, apart from the ink-line
+  // links, so bringing a color back restores the ink it was linked to.
+  const toggleDrop = (hex, on) => {
+    if (!cw) { const d = new Set(dropouts || []); if (on) d.add(hex); else d.delete(hex); onDropouts && onDropouts([...d]); return; }
+    const d = new Set(cw.art_drop || []); if (on) d.add(hex); else d.delete(hex);
+    const patch = { art_drop: [...d] };
+    if (!on && (cw.art_recolor || {})[hex] === 'drop') { const rc = { ...cw.art_recolor }; delete rc[hex]; patch.art_recolor = rc; }
+    onPatch && onPatch(patch);
   };
   const dropped = art.palette.filter(c => plan[c.hex] === 'drop').length;
   const btn = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'white', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 10, fontWeight: 700, color: '#475569', padding: '5px 6px', cursor: 'pointer' };
@@ -217,12 +244,12 @@ function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, 
             <span title={'In the file: ' + c.hex + (c.members.length > 1 ? ' (+' + (c.members.length - 1) + ' similar shades)' : '')} style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: c.hex }} />
             <span style={{ color: '#cbd5e1', fontSize: 10 }}>→</span>
             <span style={{ width: 12, height: 12, borderRadius: 3, flexShrink: 0, border: '1px solid #d1d5db', background: to || _checker }} />
-            <select value={String(p)} onChange={e => { const v = e.target.value; pick(c.hex, v === 'drop' ? 'drop' : parseInt(v, 10)); }}
-              style={{ flex: 1, minWidth: 0, fontSize: 11, padding: '2px 4px', border: '1px solid #e2e8f0', borderRadius: 4, background: p === 'drop' ? '#fffbeb' : 'white', color: '#334155' }}>
-              <option value="-1">Keep as is</option>
-              {inks.map((ink, ii) => String(ink || '').trim() ? <option key={ii} value={String(ii)}>{ii + 1}. {ink}</option> : null)}
-              <option value="drop">Drop out (no ink)</option>
-            </select>
+            {/* Which ink line this color follows — change that line above to recolor it */}
+            <span title={p === 'drop' ? 'Dropped out — no ink' : p >= 0 ? 'Follows ink line ' + (p + 1) + ' — change that line to recolor this part of the art' : (cw ? 'No ink line matches this color — it stays as it is in the file' : 'As it is in the file')}
+              style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: p >= 0 ? '#334155' : '#94a3b8', fontWeight: p >= 0 ? 600 : 400, fontStyle: p === 'drop' ? 'italic' : undefined }}>
+              {p === 'drop' ? 'Dropped out' : p >= 0 ? 'Line ' + (p + 1) + ' · ' + inks[p] : 'Original color'}</span>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0, fontSize: 10, fontWeight: 600, color: p === 'drop' ? '#b45309' : '#64748b', cursor: 'pointer' }}>
+              <input type="checkbox" checked={p === 'drop'} onChange={e => toggleDrop(c.hex, e.target.checked)} style={{ margin: 0 }} />Drop out</label>
           </div>;
         })}
       </div>
@@ -257,28 +284,29 @@ function VectorNotes({ art, err, colorWays, palette }) {
   </>;
 }
 // Standalone block (customer Art Library): header + one tile per color way + notes — the
-// counterpart of DstPreview's default export. onRecolor(ci, art_recolor) saves a color way's
-// picks; without it (read-only view) picks last for the session.
-function VectorArtPreview({ src, colorWays, onRecolor, onEnlarge, onUseAsLogo, palette }) {
+// counterpart of DstPreview's default export. onPatch(ci, patch) saves a color way's drop-outs and
+// onBind(nextColorWays) its ink-line links; without them (read-only view) picks last for the session.
+function VectorArtPreview({ src, colorWays, onPatch, onBind, onEnlarge, onUseAsLogo, palette }) {
   const { art, err } = useVectorArt(src);
   const [busy, setBusy] = useState(false);
   const [drops, setDrops] = useState([]); // no-color-way drop-outs (session only)
-  const [local, setLocal] = useState({}); // cw id → picks, when there's no onRecolor
+  const [local, setLocal] = useState({}); // cw id → patch, when there's no onPatch
+  useInkBinding(art, colorWays, palette, onBind);
   if (!src) return null;
   const cws = (colorWays || []).length ? colorWays : [null];
   const useAsLogo = onUseAsLogo && (async (blob, cw) => { setBusy(true); try { await onUseAsLogo(blob, cw); } finally { setBusy(false); } });
   return <div style={{ marginBottom: 8 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: 0.3 }}>ART PREVIEW</span>
-      <span style={{ fontSize: 9, color: '#94a3b8' }}>Drawn from the {src.kind === 'ai' ? '.ai' : 'SVG'} — pick an ink for each color, or drop it out</span>
+      <span style={{ fontSize: 9, color: '#94a3b8' }}>Drawn from the {src.kind === 'ai' ? '.ai' : 'SVG'} — colors follow each color way's ink lines; drop out any you don't print</span>
       <VectorBadge art={art} />
     </div>
     {!err && !art && <VectorLoading kind={src.kind} />}
     {art && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
       {cws.map((cw, ci) => {
-        const c = cw && !onRecolor && local[cw.id] ? { ...cw, art_recolor: local[cw.id] } : cw;
+        const c = cw && !onPatch && local[cw.id] ? { ...cw, ...local[cw.id] } : cw;
         return <VectorTile key={cw?.id || ci} art={art} cw={c} idx={ci} width={240} dropouts={cw ? [] : drops} onDropouts={setDrops}
-          onRecolor={m => (onRecolor ? onRecolor(ci, m) : setLocal(l => ({ ...l, [cw.id]: m })))}
+          onPatch={p => (onPatch ? onPatch(ci, p) : setLocal(l => ({ ...l, [cw.id]: { ...(l[cw.id] || {}), ...p } })))}
           onEnlarge={onEnlarge} onUseAsLogo={useAsLogo} busy={busy} palette={palette} name={src.name} />;
       })}
     </div>}
@@ -287,4 +315,4 @@ function VectorArtPreview({ src, colorWays, onRecolor, onEnlarge, onUseAsLogo, p
 }
 const VectorLoading = ({ width = 220, kind }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>{kind === 'ai' ? 'Converting .ai…' : 'Loading art…'}</div>;
 
-export { vectorSourceFor, useVectorArt, VectorArtPreview, VectorTile, artLogoReady, artRenderSig, artPngFile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };
+export { vectorSourceFor, useVectorArt, useInkBinding, VectorArtPreview, VectorTile, artLogoReady, artRenderSig, artPngFile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };

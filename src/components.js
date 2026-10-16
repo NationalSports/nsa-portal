@@ -3,7 +3,8 @@ import { dstThreadOrderKey, hasConfirmedDstThreadOrder } from './lib/dstThreadOr
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchPngFile } from './DstPreview';
-import { useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading, artLogoReady, artRenderSig, artPngFile } from './VectorPreview';
+import { useVectorArt, useInkBinding, VectorTile, VectorBadge, VectorNotes, VectorLoading, artLogoReady, artRenderSig, artPngFile } from './VectorPreview';
+import { removeInkLine } from './lib/svgRecolor';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -731,14 +732,15 @@ function ThreadQuickPicks({colors,onPick}){
 // best-effort lookup (threadHex covers common apparel + thread names, pantoneHex for inks).
 
 // A new color way starts from an earlier one, so the rep only changes what differs. Embroidery copies
-// CW 1's threads (same DST stops); print art copies the previous color way's inks and its art color
-// picks (art_recolor), so its art preview starts out looking the same. Nothing to copy → one blank line.
+// CW 1's threads (same DST stops); print art copies the previous color way's inks, their links to
+// the art's colors (art_recolor) and its drop-outs (art_drop), so its art preview starts out the same. Nothing to copy → one blank line.
 const newColorWay=(cws,decoType)=>{
   const base={id:'cw'+Date.now(),garment_color:''},has=cw=>(cw?.inks||[]).some(x=>String(x||'').trim());
   if(decoType==='embroidery')return{...base,inks:has(cws[0])?[...cws[0].inks]:['']};
   const prev=(cws||[])[(cws||[]).length-1],picks=prev&&prev.art_recolor&&Object.keys(prev.art_recolor).length?prev.art_recolor:null;
-  if(!prev||(!has(prev)&&!picks))return{...base,inks:['']};
-  return{...base,inks:has(prev)?[...prev.inks]:[''],...(picks?{art_recolor:{...picks}}:{})};
+  const drops=prev&&(prev.art_drop||[]).length?prev.art_drop:null;
+  if(!prev||(!has(prev)&&!picks&&!drops))return{...base,inks:['']};
+  return{...base,inks:has(prev)?[...prev.inks]:[''],...(picks?{art_recolor:{...picks}}:{}),...(drops?{art_drop:[...drops]}:{})};
 };
 
 // `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
@@ -787,6 +789,8 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   const vAutoSig=vArt&&onAutoArtLogo?cws.map(cw=>cw.id+':'+artLogoReady(cw)+':'+artRenderSig(vector.src,vArt,cw)).join(';'):'';
   useEffect(()=>{if(!vAutoSig)return;const t=setTimeout(()=>{cws.forEach(cw=>{if(!artLogoReady(cw))return;
     onAutoArtLogo(cw,artRenderSig(vector.src,vArt,cw),name=>artPngFile(vArt,cw,pantoneColors,name))})},1500);return()=>clearTimeout(t)},[vAutoSig]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Print art: each ink line links to the matching color in the art, so retyping a line recolors it.
+  useInkBinding(showVector?vArt:null,cws,pantoneColors,showVector?onChange:null);
   // vector.onAutoSvg(src, svg): an .ai just converted for this preview is saved into the folder as an
   // SVG, so the next load (and anyone downloading production files) has the SVG ready.
   useEffect(()=>{if(vArt&&showVector&&vector.src.kind==='ai'&&vector.onAutoSvg)vector.onAutoSvg(vector.src,vArt.svg)},[vArt]);// eslint-disable-line react-hooks/exhaustive-deps
@@ -794,7 +798,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   // One color way → preview to the right of the card; several → each preview under its own card.
   const stSide=showPrev&&cws.length<=1;
   const stTile=(cw,ci,width)=>showVector
-    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onRecolor={m=>updCw(ci,{art_recolor:m})} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} autoLogo={!!onAutoArtLogo&&!!cw} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
+    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onPatch={p=>updCw(ci,p)} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} autoLogo={!!onAutoArtLogo&&!!cw} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
     :!confirmed(cw)?<div style={{fontSize:11,padding:12,color:'#64748b'}}>Using saved artwork and rep thread colors. Confirm the sewing order to enable DST coloring.</div>:stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={onAutoLogo?null:stUseAsLogo} autoLogo={!!onAutoLogo&&!!cw} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
@@ -831,7 +835,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:10,color:isActive?'#6d28d9':extra||required?'#dc2626':'#cbd5e1',fontWeight:isActive||required?700:400,width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...lines];inks[ii]=v;updCw(ci,{inks})}} placeholder={required?'Required — thread for stop '+(ii+1):isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px',...(required?{borderColor:'#fca5a5',background:'#fef2f2'}:{})}}/>
-              {virtual?<span style={{width:15,flexShrink:0}}/>:<button onClick={()=>{setActive(null);updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>}
+              {virtual?<span style={{width:15,flexShrink:0}}/>:<button onClick={()=>{setActive(null);updCw(ci,removeInkLine(cw,ii))}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>}
             </div>})}
             {showStitch&&stDesign&&<label style={{display:'block',fontSize:11,margin:'8px 0',color:'#475569'}}><input type="checkbox" checked={confirmed(cw)} disabled={!confirmed(cw)&&((cw.inks||[]).length!==stDesign.blocks.length||(cw.inks||[]).some(x=>!String(x||'').trim()))} onChange={e=>updCw(ci,{dst_thread_order:e.target.checked?dstThreadOrderKey(cw,stitch.dstUrl):null})}/> Use DST coloring: I verified one thread per stop in sewing order ({stDesign.blocks.length} stops).</label>}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}

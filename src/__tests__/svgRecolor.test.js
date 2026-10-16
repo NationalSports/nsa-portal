@@ -1,4 +1,4 @@
-import { parseColor, svgColors, svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap } from '../lib/svgRecolor';
+import { parseColor, svgColors, svgPalette, withDefaultFill, recolorSvg, recolorPlan, recolorMap, bindInks, removeInkLine, hasArtPicks } from '../lib/svgRecolor';
 
 // Illustrator-style export: classes in a <style> block, plus an inline style and an attribute.
 const AI_EXPORT = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><style>.st0{fill:#1B365D;}.st1{fill:#FFFFFF;stroke:#C8A24A;}</style>
@@ -111,10 +111,10 @@ describe('recolorPlan / recolorMap', () => {
     const cw = { inks: ['Maroon', 'Gold'], art_recolor: { '#1b365d': 1, '#ffffff': 'drop', '#c8a24a': -1 } };
     expect(recolorPlan(pal, cw)).toEqual({ '#1b365d': 1, '#ffffff': 'drop', '#c8a24a': -1 });
   });
-  test('artwork-wide drop-outs apply with no color way and to every color way that has not overridden them', () => {
+  test('drop-outs (session ones for art with no color way, or a color way\'s art_drop) always win', () => {
     expect(recolorPlan(pal, null, ['#ffffff'])).toEqual({ '#1b365d': -1, '#ffffff': 'drop', '#c8a24a': -1 });
     expect(recolorPlan(pal, { inks: ['Maroon', 'Gold'] }, ['#ffffff'])['#ffffff']).toBe('drop');
-    expect(recolorPlan(pal, { inks: ['Maroon', 'Gold'], art_recolor: { '#ffffff': -1 } }, ['#ffffff'])['#ffffff']).toBe(-1);
+    expect(recolorPlan(pal, { inks: ['Maroon', 'Gold'], art_recolor: { '#ffffff': 1 } }, ['#ffffff'])['#ffffff']).toBe('drop');
   });
   test('a pick pointing at a removed / empty ink line falls back to keep', () => {
     expect(recolorPlan(pal, { inks: ['Maroon'], art_recolor: { '#ffffff': 3 } })['#ffffff']).toBe(-1);
@@ -122,5 +122,40 @@ describe('recolorPlan / recolorMap', () => {
   test('recolorMap expands groups to every member shade; unknown ink names keep the file color', () => {
     expect(recolorMap(pal, { inks: ['Maroon', 'Mystery'], art_recolor: { '#1b365d': 0, '#ffffff': 1, '#c8a24a': 'drop' } }, [], hex))
       .toEqual({ '#1b365d': '#8a1538', '#1c375e': '#8a1538', '#c8a24a': 'none' });
+  });
+});
+
+describe('ink lines drive the recolor (bindInks / removeInkLine / art_drop)', () => {
+  // The Lick-Wilmerding tiger: gray detail, gold, dark, white.
+  const pal = [{ hex: '#a5afae', members: ['#a5afae'] }, { hex: '#ffb11c', members: ['#ffb11c'] }, { hex: '#2c2e35', members: ['#2c2e35'] }, { hex: '#ffffff', members: ['#ffffff'] }];
+  const hex = n => ({ 'PMS 123': '#ffc72c', 'PMS White': '#ffffff', 'PMS Black': '#2d2926', 'PMS 186': '#c8102e' }[n] || null);
+  test('each ink line links to the closest art color; colors no line matches stay unlinked', () => {
+    expect(bindInks(pal, { inks: ['PMS Black', 'PMS 123', 'PMS White'] }, hex)).toEqual({ '#2c2e35': 0, '#ffb11c': 1, '#ffffff': 2 });
+    expect(bindInks(pal, { inks: ['PMS 123', 'PMS White'] }, hex)).toEqual({ '#ffb11c': 0, '#ffffff': 1 });
+    expect(bindInks(pal, { inks: ['PMS 186'] }, hex)).toBeNull(); // red matches nothing in the art
+    expect(bindInks(pal, { inks: ['Mystery'] }, hex)).toBeNull();
+  });
+  test('a linked line keeps its link when retyped — so changing the ink recolors that part of the art', () => {
+    const cw = { inks: ['PMS 186', 'PMS White'], art_recolor: { '#ffb11c': 0, '#ffffff': 1 } }; // was PMS 123
+    expect(bindInks(pal, cw, hex)).toBeNull();
+    expect(recolorMap(pal, cw, [], hex)).toEqual({ '#ffb11c': '#c8102e', '#ffffff': '#ffffff' });
+  });
+  test('only new lines link, to colors not taken; old keep (-1) values from the dropdown era are free again', () => {
+    const cw = { inks: ['PMS 123', 'PMS White', 'PMS Black'], art_recolor: { '#ffb11c': 0, '#ffffff': 1, '#2c2e35': -1 } };
+    expect(bindInks(pal, cw, hex)).toEqual({ '#ffb11c': 0, '#ffffff': 1, '#2c2e35': 2 });
+  });
+  test('removing a line unlinks its color and shifts later links up', () => {
+    const cw = { inks: ['PMS Black', 'PMS 123', 'PMS White'], art_recolor: { '#2c2e35': 0, '#ffb11c': 1, '#ffffff': 2, '#a5afae': 'drop' } };
+    expect(removeInkLine(cw, 0)).toEqual({ inks: ['PMS 123', 'PMS White'], art_recolor: { '#ffb11c': 0, '#ffffff': 1, '#a5afae': 'drop' } });
+    expect(removeInkLine({ inks: ['a', 'b'] }, 1)).toEqual({ inks: ['a'] });
+  });
+  test('art_drop drops a color without losing its link; hasArtPicks sees links and drops', () => {
+    const cw = { inks: ['PMS 123', 'PMS White'], art_recolor: { '#ffb11c': 0, '#ffffff': 1 }, art_drop: ['#ffffff'] };
+    expect(recolorPlan(pal, cw)).toEqual({ '#a5afae': -1, '#ffb11c': 0, '#2c2e35': -1, '#ffffff': 'drop' });
+    expect(recolorPlan(pal, { ...cw, art_drop: [] })['#ffffff']).toBe(1);
+    expect(hasArtPicks(cw)).toBe(true);
+    expect(hasArtPicks({ inks: ['PMS 123'], art_drop: ['#ffffff'] })).toBe(true);
+    expect(hasArtPicks({ inks: ['PMS 123'], art_recolor: { '#ffffff': -1 } })).toBe(false);
+    expect(hasArtPicks(null)).toBe(false);
   });
 });
