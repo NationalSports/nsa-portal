@@ -280,6 +280,23 @@ export function writeAllowed(settings, entityType, sourceId) {
   return false;
 }
 
+// Hourly customer batch. Customers already linked to QBO are only revalidated, so they rotate
+// through a fixed-size window (2,600 customers / 25 per run ≈ 4 days per lap). Customers with no
+// QBO link yet go first every run — a new customer's invoices are held (customer_not_verified)
+// until it is created, and waiting a full lap held them for days (2026-10-16: Oakwood HS
+// Baseball). Unlinked customers are capped at the batch limit so they can't crowd out the lap.
+export function customerBatchWindow(activeCustomers = [], customerLinks = {}, settings = {}) {
+  const limit = Number(settings.customer_batch_limit) || 25;
+  const offset = Math.max(0, Number(settings.continuation_cursor?.customer_offset) || 0);
+  const byId = (a, b) => clean(a.id).localeCompare(clean(b.id));
+  const isLinked = row => !!clean(customerLinks?.[String(row.id)]?.qbo_id);
+  const unlinked = activeCustomers.filter(row => !isLinked(row)).sort(byId).slice(0, limit);
+  const linked = activeCustomers.filter(isLinked).sort(byId);
+  if (!linked.length) return unlinked;
+  const start = offset % linked.length;
+  return [...unlinked, ...[...linked.slice(start), ...linked.slice(0, start)].slice(0, Math.min(limit, linked.length))];
+}
+
 export async function sha256(value) {
   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)));
   return [...new Uint8Array(bytes)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
