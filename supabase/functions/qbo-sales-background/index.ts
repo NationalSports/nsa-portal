@@ -5,7 +5,7 @@ import {
   classifySourceInvoice, clean, customerDisplayName, invoiceLineDescription, invoiceResyncUpdate, invoiceStillSettling, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
   linkedInvoiceTotalDrift, looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
   qboPaymentApplications, sha256, standardDueDate, taxPlan, writeAllowed,
-  planReceiptPayment, receiptOwnership, receiptSourceId,
+  planReceiptPayment, receiptOwnership, receiptSourceId, customerBatchWindow,
 } from './logic.js';
 import { writeReceiptPayment } from './receipts.ts';
 import { runStripePayouts } from './stripePayoutRunner.js';
@@ -132,12 +132,6 @@ function phaseSelection<T extends {sourceId:string}>(rows:T[],settings:any,type:
   if(!sorted.length)return[];const start=offset%sorted.length;return [...sorted.slice(start),...sorted.slice(0,start)].slice(0,Math.min(limit,sorted.length));
 }
 
-function boundedWindow<T extends {id?:string;sourceId?:string}>(rows:T[],settings:any,type:string){
-  const sorted=[...rows].sort((a,b)=>clean(a.id||a.sourceId).localeCompare(clean(b.id||b.sourceId)));
-  const limit=Number(settings[`${type}_batch_limit`])||25,offset=Math.max(0,Number(settings.continuation_cursor?.[`${type}_offset`])||0);
-  if(!sorted.length)return[];const start=offset%sorted.length;return [...sorted.slice(start),...sorted.slice(0,start)].slice(0,Math.min(limit,sorted.length));
-}
-
 async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
   const cutoff=new Date().toISOString(),deployment=Deno.env.get('DENO_DEPLOYMENT_ID')||'local';
   const {data:claim,error:claimError}=await admin.rpc('acquire_qbo_sales_run',{
@@ -203,7 +197,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // Customers: durable mappings are revalidated first. Only unmapped, unambiguous
     // rows can become link/create candidates; existing reviewed aliases are retained.
     const activeCustomers:any[]=(snapshot.customers||[]).filter((row:any)=>row.is_active!==false);
-    const customerBatch:any[]=boundedWindow<any>(activeCustomers,settings,'customer');
+    const customerBatch:any[]=customerBatchWindow(activeCustomers,snapshot.customer_links||{},settings);
     const needsMatchPool=customerBatch.some((row:any)=>!clean(snapshot.customer_links?.[String(row.id)]?.qbo_id));
     const qboCustomers=needsMatchPool?await qbo.queryAll('Customer','*',1000,'',slimCustomer):[];
     const qboCustomerById=new Map(qboCustomers.map((row:any)=>[String(row.Id),row])),effectiveCustomerMap=new Map<string,string>(),claimedCustomerIds=new Set<string>();
