@@ -730,6 +730,17 @@ function ThreadQuickPicks({colors,onPick}){
 // sync. `onChange` receives the full updated color_ways array. Garment/ink swatches are a
 // best-effort lookup (threadHex covers common apparel + thread names, pantoneHex for inks).
 
+// A new color way starts from an earlier one, so the rep only changes what differs. Embroidery copies
+// CW 1's threads (same DST stops); print art copies the previous color way's inks and its art color
+// picks (art_recolor), so its art preview starts out looking the same. Nothing to copy → one blank line.
+const newColorWay=(cws,decoType)=>{
+  const base={id:'cw'+Date.now(),garment_color:''},has=cw=>(cw?.inks||[]).some(x=>String(x||'').trim());
+  if(decoType==='embroidery')return{...base,inks:has(cws[0])?[...cws[0].inks]:['']};
+  const prev=(cws||[])[(cws||[]).length-1],picks=prev&&prev.art_recolor&&Object.keys(prev.art_recolor).length?prev.art_recolor:null;
+  if(!prev||(!has(prev)&&!picks))return{...base,inks:['']};
+  return{...base,inks:has(prev)?[...prev.inks]:[''],...(picks?{art_recolor:{...picks}}:{})};
+};
+
 // `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
 // preview beside its card (one color way) or under it (several, so previews line up with their cards).
 // `vector` (print art with an .svg/.ai — see VectorPreview): {src,onEnlarge,onUseAsLogo(blob,cw)} draws each color
@@ -842,8 +853,8 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     </div>
     {showStitch&&cws.every(confirmed)&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws} palette={threadColors}/></div>}
     {showVector&&<div style={{marginTop:-4,marginBottom:8}}><VectorNotes art={vArt} err={vErr} colorWays={cws} palette={pantoneColors}/></div>}
-    {/* Embroidery: a new color way starts with CW 1's threads (same DST stops) — the rep adjusts. */}
-    <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:isEmb&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
+    {/* A new color way starts from an earlier one (newColorWay) — the rep adjusts. */}
+    <button onClick={()=>onChange([...cws,newColorWay(cws,decoType)])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
 
@@ -918,4 +929,4 @@ function TaxExemptModal({ order, customer, docLabel = 'order', promoApplied = fa
   );
 }
 
-export { EmailRouteNotice, Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal };
+export { EmailRouteNotice, Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, newColorWay, TaxExemptModal };

@@ -55,3 +55,24 @@ describe('auto web logo for art renders', () => {
     expect(artLogoNeedsSave({ ...withAuto, archived: true }, 'c1', 'sig2')).toBe(false);
   });
 });
+
+describe('newColorWay — a new color way starts from an earlier one', () => {
+  // eslint-disable-next-line global-require
+  const { newColorWay } = require('../components');
+  test('print art copies the previous color way\'s inks and art color picks (not the garment)', () => {
+    const cws = [{ id: 'a', garment_color: 'Black', inks: ['PMS 123', 'PMS White'], art_recolor: { '#2c2e35': 1, '#ffb11c': 0 } },
+      { id: 'b', garment_color: 'Navy', inks: ['PMS 123', 'Gold'], art_recolor: { '#ffffff': 'drop' } }];
+    const cw = newColorWay(cws, 'screen_print');
+    expect(cw).toMatchObject({ garment_color: '', inks: ['PMS 123', 'Gold'], art_recolor: { '#ffffff': 'drop' } });
+    expect(cw.id).not.toBe('b');
+    cw.inks.push('x'); cw.art_recolor.y = 1; // a copy, not shared with the previous color way
+    expect(cws[1].inks).toHaveLength(2);
+    expect(cws[1].art_recolor.y).toBeUndefined();
+  });
+  test('embroidery keeps copying CW 1\'s threads; nothing to copy gives one blank line', () => {
+    expect(newColorWay([{ id: 'a', inks: ['Navy', 'Gold'] }, { id: 'b', inks: ['Red'] }], 'embroidery').inks).toEqual(['Navy', 'Gold']);
+    expect(newColorWay([], 'screen_print')).toMatchObject({ inks: [''] });
+    expect(newColorWay([{ id: 'a', inks: [''] }], 'dtf')).toMatchObject({ inks: [''] });
+    expect(newColorWay([{ id: 'a', inks: [''], art_recolor: { '#ffffff': 'drop' } }], 'dtf')).toMatchObject({ inks: [''], art_recolor: { '#ffffff': 'drop' } });
+  });
+});
