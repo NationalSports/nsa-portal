@@ -85,6 +85,24 @@ test('one check split across portal + NetSuite invoices, extra stays unapplied',
   expect(nf).toHaveBeenCalledWith(expect.stringMatching(/\$200\.00 left on the account/));
 });
 
+test('credit card payment records the amount received with no surcharge', async () => {
+  const invs0 = [{ id: 'INV-3', customer_id: 'C1', date: '02/01/2026', total: 250, paid: 0, status: 'open', payments: [] }];
+  render(<Harness invs0={invs0} hist0={[]} nf={jest.fn()} />);
+  await waitFor(() => expect(screen.getByText('💰 Receive a Payment').disabled).toBe(false));
+  fireEvent.click(screen.getByText('💰 Receive a Payment'));
+  fireEvent.change(screen.getByPlaceholderText(/customer name/), { target: { value: 'alpha' } });
+  fireEvent.click(screen.getByText('Alpha Athletics'));
+  expect(screen.queryByText(/\+2\.9%/)).toBeNull();
+  fireEvent.click(screen.getByText(/Credit Card/));
+  fireEvent.change(screen.getAllByPlaceholderText('0.00')[0], { target: { value: '250' } });
+  fireEvent.change(screen.getByPlaceholderText(/Card ending/), { target: { value: '1234' } });
+  await act(async () => { fireEvent.click(screen.getByText(/Save payment/)); });
+  expect(mockDb.payment_receipts[0]).toMatchObject({ amount: 250, method: 'cc', ref: '1234' });
+  const inv = latest.invs[0];
+  expect(inv).toMatchObject({ paid: 250, status: 'paid' });
+  expect(inv.payments[0]).toMatchObject({ amount: 250, method: 'cc', cc_fee: 0 });
+});
+
 test('applying leftover re-checks the database and refuses money already used elsewhere', async () => {
   // Receipt for $500; the database already has it fully applied, but this screen's invoices don't show it.
   mockDb.payment_receipts = [{ id: 'RCPT-X', customer_id: 'C1', amount: 500, method: 'check', ref: '9', received_date: '09/01/2026', ns_applications: [], created_at: '2026-09-01T00:00:00Z' }];
