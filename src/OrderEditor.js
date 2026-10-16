@@ -17,7 +17,7 @@ import {shouldAdoptServerCopy,adoptServerCopy,childVersionSig} from './lib/edito
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
 import PriorArtReviewPanel from './PriorArtReviewPanel';
-import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl, stitchLogoNeedsSave } from './lib/logoDetail';
+import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl, stitchLogoNeedsSave, artLogoNeedsSave } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { PRIOR_ART_REVIEW, newJobArtStatus, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
@@ -3842,6 +3842,38 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       else if(!(await saveArtFilesNow(withLogo(oRef.current.art_files),'Web logo')))_autoLogoRuns.current.delete(key);
     }catch(e){_autoLogoRuns.current.delete(key)}
   };
+  // Print art with an .svg/.ai: the art render IS the color way's web logo, the same way as the stitch
+  // render above. ColorWaysEditor calls this once the rep has picked colors for a color way and they
+  // have settled; artLogoNeedsSave skips an unchanged render and never replaces a hand-uploaded logo.
+  const autoArtLogo=async(folderId,cw,sig,makeFile)=>{
+    const cwId=cw&&cw.id,key=folderId+'|'+cwId+'|'+sig;
+    const live=()=>(oRef.current.art_files||[]).find(fa=>fa.id===folderId);
+    if(!cwId||_autoLogoRuns.current.has(key)||!artLogoNeedsSave(live(),cwId,sig))return;
+    _autoLogoRuns.current.add(key);
+    try{const cur=live(),cwName=cw.garment_color||('CW '+((cur.color_ways||[]).findIndex(c=>c.id===cwId)+1));
+      const url=await fileUpload(await makeFile((cur.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_art.png'),'nsa-web-logos');
+      if(!artLogoNeedsSave(live(),cwId,sig))return;
+      const withLogo=list=>setLogoDetail(list||[],folderId,cwId,{url,name:'Art render — '+cwName,art_sig:sig}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+      if(dirtyRef2.current){setO(e=>({...e,art_files:withLogo(e.art_files),updated_at:new Date().toLocaleString()}));setDirty(true)}
+      else if(!(await saveArtFilesNow(withLogo(oRef.current.art_files),'Web logo')))_autoLogoRuns.current.delete(key);
+    }catch(e){_autoLogoRuns.current.delete(key)}
+  };
+  // An .ai converted to SVG for the art preview is saved into the folder's production files (once per
+  // .ai), named after it and tagged from_ai so the preview loads it next time instead of converting.
+  const _autoSvgRuns=useRef(new Set());
+  const autoSaveSvg=async(folderId,src,svg)=>{
+    const live=()=>(oRef.current.art_files||[]).find(fa=>fa.id===folderId);
+    const has=a=>[...(a?.files||[]),...(a?.prod_files||[])].some(f=>f&&typeof f==='object'&&f.from_ai===src.url);
+    if(!svg||_autoSvgRuns.current.has(src.url)||!live()||has(live()))return;
+    _autoSvgRuns.current.add(src.url);
+    try{const name=String(src.name||'art').replace(/\.ai$/i,'')+'.svg';
+      const url=await fileUpload(new File([svg],name,{type:'image/svg+xml'}),'nsa-production');
+      if(has(live()))return;
+      const withSvg=list=>(list||[]).map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name,from_ai:src.url}]}:fa);
+      if(dirtyRef2.current){setO(e=>({...e,art_files:withSvg(e.art_files),updated_at:new Date().toLocaleString()}));setDirty(true)}
+      else if(!(await saveArtFilesNow(withSvg(oRef.current.art_files),'SVG')))_autoSvgRuns.current.delete(src.url);
+    }catch(e){_autoSvgRuns.current.delete(src.url)}
+  };
   // Production gate: every embroidery design on the job lists a thread for each DST stop.
   const _jobThreadMsg=j=>{const cur=oRef.current;return threadLinesMissingMsg([...jobArtFileIds(j,safeItems(cur))].map(id=>(cur.art_files||[]).find(a=>a.id===id)).filter(Boolean),j)};
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
@@ -7432,7 +7464,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                         return{dstUrl,onEnlarge:setMockupLightbox,onAutoLogo:(cw,inks,makeFile)=>autoStitchLogo(art.id,cw,inks,makeFile),onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'stitch')}})():null}
                       vector={(()=>{const src=vectorSourceFor(art);if(!src)return null;
                         // vector: the folder's .svg (or .ai, converted) drawn in each color way's inks; colors can be swapped or dropped out
-                        return{src,onEnlarge:setMockupLightbox,onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'art')}})()}/>
+                        return{src,onEnlarge:setMockupLightbox,onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'art'),
+                          onAutoLogo:(cw,sig,makeFile)=>autoArtLogo(art.id,cw,sig,makeFile),onAutoSvg:(src2,svg)=>autoSaveSvg(art.id,src2,svg)}})()}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>

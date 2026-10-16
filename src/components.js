@@ -3,7 +3,7 @@ import { dstThreadOrderKey, hasConfirmedDstThreadOrder } from './lib/dstThreadOr
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchPngFile } from './DstPreview';
-import { useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading } from './VectorPreview';
+import { useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading, artLogoReady, artRenderSig, artPngFile } from './VectorPreview';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -769,11 +769,21 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   const{art:vArt,err:vErr}=useVectorArt(showVector?vector.src:null);
   const[vDrops,setVDrops]=useState([]);// no-color-way drop-outs (not saved — there's no color way to hold them)
   const vUseAsLogo=vector?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await vector.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  // vector.onAutoLogo(cw, sig, makeFile(name)): like the stitch render, the art render IS the web logo.
+  // Once the rep has picked colors for a color way (and the picks settle), hand the editor a PNG to
+  // save; it skips unchanged renders and never replaces a hand-uploaded logo.
+  const onAutoArtLogo=showVector?vector.onAutoLogo:null;
+  const vAutoSig=vArt&&onAutoArtLogo?cws.map(cw=>cw.id+':'+artLogoReady(cw)+':'+artRenderSig(vector.src,vArt,cw)).join(';'):'';
+  useEffect(()=>{if(!vAutoSig)return;const t=setTimeout(()=>{cws.forEach(cw=>{if(!artLogoReady(cw))return;
+    onAutoArtLogo(cw,artRenderSig(vector.src,vArt,cw),name=>artPngFile(vArt,cw,pantoneColors,name))})},1500);return()=>clearTimeout(t)},[vAutoSig]);// eslint-disable-line react-hooks/exhaustive-deps
+  // vector.onAutoSvg(src, svg): an .ai just converted for this preview is saved into the folder as an
+  // SVG, so the next load (and anyone downloading production files) has the SVG ready.
+  useEffect(()=>{if(vArt&&showVector&&vector.src.kind==='ai'&&vector.onAutoSvg)vector.onAutoSvg(vector.src,vArt.svg)},[vArt]);// eslint-disable-line react-hooks/exhaustive-deps
   const showPrev=showStitch||showVector;
   // One color way → preview to the right of the card; several → each preview under its own card.
   const stSide=showPrev&&cws.length<=1;
   const stTile=(cw,ci,width)=>showVector
-    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onRecolor={m=>updCw(ci,{art_recolor:m})} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
+    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onRecolor={m=>updCw(ci,{art_recolor:m})} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} autoLogo={!!onAutoArtLogo&&!!cw} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
     :!confirmed(cw)?<div style={{fontSize:11,padding:12,color:'#64748b'}}>Using saved artwork and rep thread colors. Confirm the sewing order to enable DST coloring.</div>:stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={onAutoLogo?null:stUseAsLogo} autoLogo={!!onAutoLogo&&!!cw} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>

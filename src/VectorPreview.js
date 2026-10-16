@@ -19,18 +19,23 @@ import { pantoneHex, threadHex, isStaleFile } from './constants';
 const _ext = f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase().split('?')[0]; const m = n.match(/\.(\w+)$/); return m ? m[1] : ''; };
 const _url = f => (typeof f === 'string' ? f : (f && f.url) || '');
 
-// The art folder's newest live .svg, else its newest live .ai: { url, name, kind } or null.
-// An SVG wins because it needs no conversion (and an artist's own SVG export is exact).
+const _name = f => (typeof f === 'object' && f && f.name) || _url(f).split('?')[0].split('/').pop();
+// Separation files (each ink split out, registration marks) aren't the design.
+const _isSeps = f => /\bseps?\b|\bseparations?\b/i.test(_name(f));
+
+// The art folder's design file: its newest live .svg or .ai, skipping separations and the SVGs
+// the portal saved itself. { url, name, kind } or null. An .ai whose SVG the portal already saved
+// (prod file with from_ai = the .ai's url) loads that SVG instead — { kind: 'svg', fromAi }.
 // files: the folder's files when they don't live on art.files/prod_files (customer Art
 // Library gathers production files from every order that uses the design).
 function vectorSourceFor(art, files) {
   if (!art || art.deco_type === 'embroidery') return null;
   const live = (files || [...(art.files || []), ...(art.prod_files || [])]).filter(f => !isStaleFile(f) && /^https?:\/\//i.test(_url(f)));
-  for (const kind of ['svg', 'ai']) {
-    const f = live.filter(x => _ext(x) === kind).slice(-1)[0];
-    if (f) return { url: _url(f), name: (typeof f === 'object' && f.name) || _url(f).split('?')[0].split('/').pop(), kind };
-  }
-  return null;
+  const f = live.filter(x => ['svg', 'ai'].includes(_ext(x)) && !(x && x.from_ai) && !_isSeps(x)).slice(-1)[0];
+  if (!f) return null;
+  if (_ext(f) === 'svg') return { url: _url(f), name: _name(f), kind: 'svg' };
+  const saved = live.find(x => x && x.from_ai === _url(f));
+  return saved ? { url: _url(saved), name: _name(f), kind: 'svg', fromAi: _url(f) } : { url: _url(f), name: _name(f), kind: 'ai' };
 }
 
 // url → Promise<{ svg, palette, kind }> — fetched, converted and analyzed once per file.
@@ -52,10 +57,11 @@ function loadVector(url, kind) {
 }
 function useVectorArt(src) {
   const [state, setState] = useState({ art: null, err: '' });
-  const url = src ? src.url : '', kind = src ? src.kind : '';
+  const url = src ? src.url : '', kind = src ? src.kind : '', fromAi = !!(src && src.fromAi);
   useEffect(() => {
     let live = true; setState({ art: null, err: '' });
-    if (url) loadVector(url, kind).then(a => live && setState({ art: a, err: '' }), e => live && setState({ art: null, err: e.message || 'failed' }));
+    // An SVG the portal saved from an .ai still reads as "from .ai" (spot colors approximated).
+    if (url) loadVector(url, kind).then(a => live && setState({ art: fromAi ? { ...a, kind: 'ai' } : a, err: '' }), e => live && setState({ art: null, err: e.message || 'failed' }));
     return () => { live = false; };
   }, [url, kind]);
   return state;
@@ -140,12 +146,34 @@ function recolored(art, cw, dropouts, palette) {
   return recolorSvg(art.svg, recolorMap(art.palette, cw, dropouts, ink => inkToHex(ink, palette)));
 }
 
+// ── Auto web logo (order editors) — the counterpart of the stitch render's ──
+// A color way is ready once the rep has picked anything for it; with nothing picked the render is
+// just the uploaded art, which may not suit the garment (the ★ button still saves it by hand).
+const artLogoReady = cw => !!cw && Object.keys(cw.art_recolor || {}).length > 0;
+// What a color way's render shows, as text — the design file plus each color's outcome. It changes
+// exactly when the render would, so an auto-saved logo is re-saved only when it changed.
+function artRenderSig(src, art, cw) {
+  const plan = recolorPlan(art.palette, cw, []), inks = (cw && cw.inks) || [];
+  return (src.fromAi || src.url) + '|' + art.palette.map(c => {
+    const p = plan[c.hex];
+    return c.hex + '=' + (p === 'drop' ? 'drop' : p >= 0 ? String(inks[p]).trim() : 'keep');
+  }).join(',');
+}
+// The color way's render as a transparent PNG File (1200px), for the web-logo upload.
+async function artPngFile(art, cw, palette, name) {
+  const c = document.createElement('canvas');
+  await drawVector(c, recolored(art, cw, [], palette), null, 1200);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  return new File([blob], name || 'art-render.png', { type: 'image/png' });
+}
+
 // One color way's render + its color list. No garment color → a checkerboard shows through, so
 // dropped-out areas read as transparent. cw null = the art with no color way (e.g. DTF): colors
 // can only be kept or dropped, held by the caller for the session.
 //   onRecolor(next art_recolor) — save this color way's picks
 //   onDropouts(next [hex…])     — the no-color-way drop-outs
-function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, onUseAsLogo, busy, compact = false, width = 220, palette, name }) {
+// autoLogo: the order editors save this render as the color way's web logo by themselves.
+function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, onUseAsLogo, autoLogo = false, busy, compact = false, width = 220, palette, name }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(false);
   const inks = (cw && cw.inks) || [];
@@ -199,7 +227,9 @@ function VectorTile({ art, cw, idx, dropouts, onRecolor, onDropouts, onEnlarge, 
         })}
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
-        {onUseAsLogo && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as this color way's web logo — used on webstores and as the logo detail on mockups and production sheets" onClick={async () => onUseAsLogo(await pngBlob(1200), cw)}>{busy ? 'Saving…' : '★ Web logo'}</button>}
+        {autoLogo && artLogoReady(cw)
+          ? <span style={{ ...btn, cursor: 'default', color: '#166534', background: '#f0fdf4', borderColor: '#bbf7d0' }} title="This art render IS the web logo — it saves automatically and updates when you change a color">✓ Web logo</span>
+          : onUseAsLogo && <button type="button" disabled={busy} style={{ ...btn, color: '#6d28d9', background: '#f5f3ff', borderColor: '#ddd6fe', opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer' }} title="Save this render (transparent PNG) as this color way's web logo — used on webstores and as the logo detail on mockups and production sheets" onClick={async () => onUseAsLogo(await pngBlob(1200), cw)}>{busy ? 'Saving…' : '★ Web logo'}</button>}
         <button type="button" style={btn} title="Download a high-res transparent PNG (3000px) with these colors" onClick={async () => save(await pngBlob(3000), base + '.png')}>⬇ PNG</button>
         <button type="button" style={btn} title="Download the art as an SVG with these colors — opens in Illustrator, Inkscape, Canva…" onClick={() => save(new Blob([svg], { type: 'image/svg+xml' }), base + '.svg')}>⬇ SVG</button>
       </div>
@@ -257,4 +287,4 @@ function VectorArtPreview({ src, colorWays, onRecolor, onEnlarge, onUseAsLogo, p
 }
 const VectorLoading = ({ width = 220, kind }) => <div style={{ width, height: 120, flexShrink: 0, borderRadius: 10, border: '1px dashed #cbd5e1', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#94a3b8' }}>{kind === 'ai' ? 'Converting .ai…' : 'Loading art…'}</div>;
 
-export { vectorSourceFor, useVectorArt, VectorArtPreview, VectorTile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };
+export { vectorSourceFor, useVectorArt, VectorArtPreview, VectorTile, artLogoReady, artRenderSig, artPngFile, VectorBadge, VectorNotes, VectorLoading, inkToHex, sizedSvg };
