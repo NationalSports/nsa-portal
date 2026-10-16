@@ -3843,7 +3843,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     }catch(e){_autoLogoRuns.current.delete(key)}
   };
   // Production gate: every embroidery design on the job lists a thread for each DST stop.
-  const _jobThreadMsg=j=>{const cur=oRef.current;return threadLinesMissingMsg([...jobArtFileIds(j,safeItems(cur))].map(id=>(cur.art_files||[]).find(a=>a.id===id)).filter(Boolean))};
+  const _jobThreadMsg=j=>{const cur=oRef.current;return threadLinesMissingMsg([...jobArtFileIds(j,safeItems(cur))].map(id=>(cur.art_files||[]).find(a=>a.id===id)).filter(Boolean),j)};
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
   // saveArtFilesNow's failure contract: on a failed persist, keep the editor dirty and tell the user NOT
   // to reload. Uses onSaveNow (App savSONow) which returns true/false; falls back to fire-and-forget onSave.

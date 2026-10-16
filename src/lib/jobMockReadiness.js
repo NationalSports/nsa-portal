@@ -1,3 +1,5 @@
+import { requiredDstThreadMessage } from './dstThreadPolicy';
+import { jobArtFileIds } from '../safeHelpers';
 // Artwork approval and garment mock coverage are separate. Reused approved art
 // can keep its approval while this order still needs a garment mock (SO-2102).
 import { isJobReady as baseIsJobReady } from '../businessLogic';
@@ -12,9 +14,11 @@ export const canReviewJobMocks = (job, so) => {
 };
 
 export const missingJobMocks = (job, so) => skusMissingMockups(job, so);
+export const jobThreadOrderMessage = (job, so) => requiredDstThreadMessage(
+  [...jobArtFileIds(job, safeItems(so))].map(id => safeArr(so?.art_files).find(a => a.id === id)).filter(Boolean), job);
 export const isJobReady = (job, so) => {
   if (so?._artHydrated === false || so?._decosHydrated === false || so?._itemsHydrated === false) return false;
-  return !jobHasUnresolvedArt(job, so) && missingJobMocks(job, so).length === 0 && baseIsJobReady(job, so);
+  return !jobThreadOrderMessage(job, so) && !jobHasUnresolvedArt(job, so) && missingJobMocks(job, so).length === 0 && baseIsJobReady(job, so);
 };
 
 // Prior mocks are optional suggestions, never the predicate for whether a mock
@@ -38,4 +42,4 @@ export const jobMockChecks = (job, so, priorMocks = {}) => {
 // A stale saved "ready" must not bypass the live gate. Do not rewrite actual
 // production progress or approval data when presenting the queue.
 export const mockAwareProductionStatus = (job, so) =>
-  job?.prod_status === 'ready' && missingJobMocks(job, so).length ? 'hold' : job?.prod_status;
+  job?.prod_status === 'ready' && (missingJobMocks(job, so).length || jobThreadOrderMessage(job, so)) ? 'hold' : job?.prod_status;
