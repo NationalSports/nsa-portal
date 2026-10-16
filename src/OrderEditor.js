@@ -1,3 +1,5 @@
+import OrderPriceListSearch from './OrderPriceListSearch';
+import {priceListCustomDraft,priceListLineFields} from './lib/priceListOrderItem';
 import { substitutionPrice, preserveCustomerPrice } from './lib/storeSubstitution';
 import { isStoreSalesOrder } from './lib/storeCloseout';
 import { decoPoCost } from './lib/decoPoCost';
@@ -15,7 +17,7 @@ import {shouldAdoptServerCopy,adoptServerCopy,childVersionSig} from './lib/edito
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
 import PriorArtReviewPanel from './PriorArtReviewPanel';
-import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl } from './lib/logoDetail';
+import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl, stitchLogoNeedsSave } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { PRIOR_ART_REVIEW, newJobArtStatus, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
@@ -90,7 +92,8 @@ import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey, releasedSplitLink } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, parseThreadColors, fillThreadColorWays, artNeedsThreadColors, embStitchTierLabel } from './lib/embStitchParser';
-import { stitchPreviewsFor } from './DstPreview';
+import { stitchPreviewsFor, threadLinesMissingMsg } from './DstPreview';
+import { vectorSourceFor } from './VectorPreview';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
@@ -311,7 +314,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs).filter(j=>!missingJobMocks(j,o).length);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
-  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(isOutsideArtJob(jj)){nf('This is an art-only job for an outside decorator — it never goes on our production floor.','error');return}if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  const moveJobToDeco=async(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(isOutsideArtJob(jj)){nf('This is an art-only job for an outside decorator — it never goes on our production floor.','error');return}if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}{const tm=jj&&await _jobThreadMsg(jj);if(tm){nf(tm,'error');return}}const _cur=oRef.current;const updJobs=safeJobs(_cur).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={..._cur,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
   // Approve a job's art, routing it to either 'art_complete' (a production separation is CONFIRMED)
   // or its production-files stage (the artist still owes the separation). stampProd marks the
   // per-design prod_files_attached flag so a confirmed job stays out of the seps stage on the next
@@ -324,6 +327,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
     const _jb=safeJobs(curO).find(jj=>jj.id===jobId);
     if(_jb&&missingJobMocks(_jb,curO).length){nf(missingMockupsMsg(missingJobMocks(_jb,curO)),'error');return}
+    if(_jb&&targetStatus==='art_complete'){const tm=await _jobThreadMsg(_jb);if(tm){nf(tm,'error');return}}
     // Every approve/complete button funnels through here — a job whose art is still the TBD
     // placeholder has nothing to approve, and letting it through persists a completed status
     // that syncJobs' heal would immediately fight (status flip-flop, stale DB state).
@@ -461,6 +465,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,_setO]=useState(order);const orderEditRevision=useRef(0);const editorSaveSeq=useRef(0);const setO=useCallback(next=>{orderEditRevision.current++;_setO(next)},[]);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);const[multiAddOpen,setMultiAddOpen]=useState(false);const[multiAddQuery,setMultiAddQuery]=useState('');const[addItemMenuOpen,setAddItemMenuOpen]=useState(false);
+  // The isolated ownership pilot uses a completed, unlinked synthetic order. Keep it
+  // unlinked while testing the ordinary save path; all other orders require a customer.
+  const isUnlinkedSavePilot=isSO&&process.env.REACT_APP_SO_EDIT_LEASES==='1'&&o.id===process.env.REACT_APP_SO_EDIT_PILOT_ORDER_ID;
   // Promo dollars are owned by the parent account. Prefer that live record over
   // the child copy so a sub-account never applies a stale/empty local balance.
   const storedPromoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
@@ -3817,6 +3824,26 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     if(onSaveArtFiles||onSaveNow){nf('Saving '+(label||'file')+'...');const ok=await (onSaveArtFiles?onSaveArtFiles(updated):onSaveNow(updated));if(ok){setSaved(true);setDirty(false);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
     onSave(updated);setSaved(true);return true;
   };
+  // Embroidery with a DST: the stitch render IS the color way's web logo. ColorWaysEditor calls this
+  // once a color way's threads are all set and have settled; stitchLogoNeedsSave skips an unchanged
+  // render and never replaces a hand-uploaded logo. With other unsaved edits open, the logo rides the
+  // next Save instead of a background save marking those edits as saved.
+  const _autoLogoRuns=useRef(new Set());
+  const autoStitchLogo=async(folderId,cw,inks,makeFile)=>{
+    const cwId=cw&&cw.id,key=folderId+'|'+cwId+'|'+inks.join('|');
+    const live=()=>(oRef.current.art_files||[]).find(fa=>fa.id===folderId);
+    if(!cwId||_autoLogoRuns.current.has(key)||!stitchLogoNeedsSave(live(),cwId,inks))return;
+    _autoLogoRuns.current.add(key);
+    try{const cur=live(),cwName=cw.garment_color||('CW '+((cur.color_ways||[]).findIndex(c=>c.id===cwId)+1));
+      const url=await fileUpload(await makeFile((cur.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_stitch.png'),'nsa-web-logos');
+      if(!stitchLogoNeedsSave(live(),cwId,inks))return;
+      const withLogo=list=>setLogoDetail(list||[],folderId,cwId,{url,name:'Stitch render — '+cwName,stitch_sig:inks.join('|')}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+      if(dirtyRef2.current){setO(e=>({...e,art_files:withLogo(e.art_files),updated_at:new Date().toLocaleString()}));setDirty(true)}
+      else if(!(await saveArtFilesNow(withLogo(oRef.current.art_files),'Web logo')))_autoLogoRuns.current.delete(key);
+    }catch(e){_autoLogoRuns.current.delete(key)}
+  };
+  // Production gate: every embroidery design on the job lists a thread for each DST stop.
+  const _jobThreadMsg=j=>{const cur=oRef.current;return threadLinesMissingMsg([...jobArtFileIds(j,safeItems(cur))].map(id=>(cur.art_files||[]).find(a=>a.id===id)).filter(Boolean),j)};
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
   // saveArtFilesNow's failure contract: on a failed persist, keep the editor dirty and tell the user NOT
   // to reload. Uses onSaveNow (App savSONow) which returns true/false; falls back to fire-and-forget onSave.
@@ -3862,10 +3889,12 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
     if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
     if(nextArt.color_ways!==art.color_ways)changed.push(specs.threads.length+' thread color'+(specs.threads.length===1?'':'s'));
-    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size, Stitches or the thread colors.');return true;}
+    // Invoiced orders keep their stitch count (it sets the price) — say so instead of "kept".
+    const stLocked=_embInvoicedRef.current&&specs.stitches&&!(Number(art.stitches)>0)?' Stitch count '+Number(specs.stitches).toLocaleString()+' was found but not applied — this order is already invoiced, so its embroidery price is locked. Type it into Stitches if it should change.':'';
+    if(!changed.length){if(verb==='Read')nf((stLocked?'PDF read.':'PDF read; existing values kept. Enter any corrections in Size, Stitches or the thread colors.')+stLocked);return true;}
     const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
     if(!saved)return false;
-    nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
+    nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:'')+(verb==='Read'?stLocked:''));
     return true;
   };
   const _readStitchesFromPdfUrl=async(url)=>{
@@ -3937,6 +3966,19 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
   // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
   const syncLogoLibrary=async change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);const updates=logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change);if(!updates.length||!window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.'))return;for(const c of updates){if((await onSaveCustomer(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');if(cust&&c.id===cust.id)setCust(c)}};
+  // A stitch render (embroidery DST) or art render (recolored .svg/.ai) becomes this color way's web
+  // logo = its logo detail (stores, mockups, production sheet). Same save + Art Library sync as a
+  // logo uploaded from the job. kind: 'stitch' | 'art'.
+  const saveRenderAsWebLogo=async(art,blob,cw,kind)=>{
+    const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
+    const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
+    if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this '+kind+' render?'))return;
+    nf('Saving web logo...');
+    try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_'+kind+'.png',{type:'image/png'}),'nsa-web-logos');
+      const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:(kind==='stitch'?'Stitch':'Art')+' render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
+      if(!(await saveArtFilesNow(arts,'Web logo')))return;
+      await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
+    catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
@@ -5130,7 +5172,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
         const current=oRef.current||o;
-        if(!o.customer_id){nf('Select a customer first','error');return}
+        if(!o.customer_id&&!isUnlinkedSavePilot){nf('Select a customer first','error');return}
         const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
         if(!curMemo){nf('Memo is required','error');return}
         const curPO=isSO?(poInputRef.current?.value??current.po_number??''):current.po_number;
@@ -6802,6 +6844,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
+        <OrderPriceListSearch query={pS} onSelect={candidate=>{setCustItem(priceListCustomDraft(candidate,o.default_markup||1.65));setShowAdd(false);setPS('');setShowCustom(true)}}/>
         <div style={{maxHeight:'65vh',overflow:'auto'}}>
           {allFp.slice(0,40).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
@@ -6939,6 +6982,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
+      {custItem.priceListSource&&<div className="vpl-order-review"><strong>Price-list item · review cost before adding</strong><p>{custItem.priceListSource.file_name} · {custItem.priceListSource.location}. Source column: {custItem.priceListSource.priceLabel} ({custItem.priceListSource.sourceValue||'not identified'}). Confirm this is your per-unit USD vendor cost; check pack quantities and discounts. Sell price starts at the order markup and can be edited. This item will use quantity-only entry.</p>{!(custItem.nsa_cost>0)&&<p>Enter a confirmed cost greater than zero to use this price-list item.</p>}</div>}
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
       <div style={{display:'grid',gridTemplateColumns:'120px 1fr 120px',gap:8,marginBottom:8}}>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor <span style={{color:'#dc2626'}}>*</span></label><SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=vendorList.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
@@ -7013,11 +7057,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             :'Still needed: '+missing.join(', ')+'. Every line needs a vendor and a real SKU so it can be ordered and invoiced.'}
         </div>;})()}
       <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" disabled={!custItem.name.trim()||!custItem.vendor_id||!skuOk(custItem.sku)} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';
+        <button className="btn btn-primary" disabled={!custItem.name.trim()||!custItem.vendor_id||!skuOk(custItem.sku)||(custItem.priceListSource&&!(custItem.nsa_cost>0))} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';
           const itType=custItem.item_type||'apparel';
           const availSz=itType==='footwear'?[...FOOTWEAR_DEFAULT_SIZES]:itType==='osfa'?['OSFA']:['S','M','L','XL','2XL'];
           const cSku=custItem.sku.trim();
-          const newItem={product_id:null,sku:cSku,name:custItem.name.trim(),brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[]};
+          const newItem={product_id:null,sku:cSku,name:custItem.name.trim(),brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[],...priceListLineFields(custItem)};
           if(custItem.saveToCatalog&&onSaveProduct){
             const catCategory=itType==='footwear'?'Footwear':itType==='osfa'?'Hats':'Tees';
             const newProd={id:'p'+Date.now(),vendor_id:custItem.vendor_id||null,sku:cSku,name:custItem.name.trim(),brand:brandName,color:custItem.color||'',
@@ -7381,21 +7425,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
-                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card */}
+                    {/* stitch: the live DST drawn in each color way's threads, beside/under its card (embroidery);
+                        vector: the same for print art from an .svg/.ai (VectorPreview) */}
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}
                       stitch={art.deco_type==='embroidery'?(()=>{const dst=artLiveDsts(art).slice(-1)[0];const dstUrl=dst?(typeof dst==='string'?dst:(dst.url||'')):'';if(!/^https?:\/\//i.test(dstUrl))return null;
-                        return{dstUrl,onEnlarge:setMockupLightbox,onUseAsLogo:async(blob,cw)=>{
-                          // The stitch render becomes this color way's web logo = its logo detail (stores, mockups,
-                          // production sheet). Same save + Art Library sync as a logo uploaded from the job.
-                          const folderId=art.id,cwId=cw?cw.id:null,cwName=cw?(cw.garment_color||('CW '+((art.color_ways||[]).indexOf(cw)+1))):'all garments';
-                          const cur=(oRef.current.art_files||[]).find(fa=>fa.id===folderId);if(!cur)return;
-                          if(logoDetailUrl(cur,cwId)&&!window.confirm('Replace the current web logo for '+cwName+' with this stitch render?'))return;
-                          nf('Saving web logo...');
-                          try{const url=await fileUpload(new File([blob],(art.name||'design').replace(/[^\w-]+/g,'_')+'_'+String(cwName).replace(/[^\w-]+/g,'_')+'_stitch.png',{type:'image/png'}),'nsa-web-logos');
-                            const arts=setLogoDetail(oRef.current.art_files||[],folderId,cwId,{url,name:'Stitch render — '+cwName}).map(fa=>fa.id===folderId&&!fa.preview_url?{...fa,preview_url:url}:fa);
-                            if(!(await saveArtFilesNow(arts,'Web logo')))return;
-                            await syncLogoLibrary({artId:folderId,colorWayId:cwId,url})}
-                          catch(e){nf('Could not save the web logo: '+(e.message||'upload failed'),'error')}}}})():null}/>
+                        return{dstUrl,onEnlarge:setMockupLightbox,onAutoLogo:(cw,inks,makeFile)=>autoStitchLogo(art.id,cw,inks,makeFile),onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'stitch')}})():null}
+                      vector={(()=>{const src=vectorSourceFor(art);if(!src)return null;
+                        // vector: the folder's .svg (or .ai, converted) drawn in each color way's inks; colors can be swapped or dropped out
+                        return{src,onEnlarge:setMockupLightbox,onUseAsLogo:(blob,cw)=>saveRenderAsWebLogo(art,blob,cw,'art')}})()}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
@@ -13108,8 +13145,9 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
               {isOutsideArtJob(j)?<span title="Art-only job: the design goes through the art flow here; the outside decorator produces the garments (Deco PO)" style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:6,padding:'2px 8px'}}>🎨 Outside decorator{outsideArtVendor(o,j)?' · '+outsideArtVendor(o,j):''} — art only</span>
               :j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
-              :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>{const v=e.target.value;
+              :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={async e=>{const v=e.target.value;
                 if(['ready','staging','in_process'].includes(v)&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}
+                if(['ready','staging','in_process'].includes(v)&&!_activeProd(j.prod_status)){const tm=await _jobThreadMsg(j);if(tm){nf(tm,'error');return}}
                 // Leaving staging/in_process for a non-running status bypasses the board's applyJobMove —
                 // stop any running decorator clock through App's shared clock-out (L10).
                 if(v!==j.prod_status&&v!=='in_process'&&_activeProd(j.prod_status)&&onStopJobClock)onStopJobClock(o.id,j.id);

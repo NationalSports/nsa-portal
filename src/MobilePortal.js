@@ -1433,7 +1433,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }else{
       const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(whRcvQty[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0){m[sz]=n;total+=n}});if(Object.keys(m).length)receivedMap[l.idx]=m});
       if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return}
-      setWhSaving(true);try{onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
+      setWhSaving(true);Promise.resolve(onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)).finally(()=>{setWhSaving(false);setWhDetail(null);setWhRcvQty({})})
     }
   };
   // Build the full-open qty map for one PO ({lineIdx:{size:open}}) — powers the "All received" shortcuts.
@@ -1521,10 +1521,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
     // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
     // clobber each other. Inventory POs each target a distinct record, so they fire directly.
-    const soLines={};
+    const soLines={};const stockSaves=[];
     sel.forEach(po=>{const lm=whBatchQty[po.key]||{};
       if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
-      else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
+      else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0&&onReceiveInvPO)stockSaves.push(onReceiveInvPO(po.invId,receivedMap));}
     });
     // Batch handler applies all SOs then prints ONE combined job — separate per-SO calls
     // each open a print window, and iPad Safari blocks every pop-up after the first.
@@ -1538,8 +1538,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(entries.length>0){
       if(onReceiveSOPOBatch)done=onReceiveSOPOBatch(entries,{batchNos});
       else{entries.forEach(e=>onReceiveSOPO&&onReceiveSOPO(e.soId,e.lines));if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''))}
-    }else if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
-    Promise.resolve(done).finally(()=>{
+    }
+    Promise.all([done,...stockSaves]).finally(()=>{
       setWhSaving(false);setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
     });
   };

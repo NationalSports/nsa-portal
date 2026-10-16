@@ -1,3 +1,6 @@
+import { artAssignmentOwner, artistCanSeeWork } from './lib/artAssignment';
+import SalesOrderEditGate from './SalesOrderEditGate';import StockReceiptDialog from './StockReceiptDialog';
+import {buildStockReceiptLabel, saveStockReceiptState} from './lib/stockReceiptLabels';
 import StoreCloseoutReview from './StoreCloseoutReview';
 import FulfillmentPlanning, { DockArrivalButton } from './FulfillmentPlanning';
 import { isQuickPull, compareWarehousePulls } from './lib/warehousePullPriority';
@@ -11,7 +14,7 @@ import { planOrderSave } from './lib/artJobsSaveRouting';
 import { childVersionSig } from './lib/editorServerAdopt';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
-import ArtRequestCard from './StandaloneArtQueue';
+import { ArtRequestTile } from './StandaloneArtQueue';
 import ClipboardImagePaste from './ClipboardImagePaste';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import { validateAllSchoolBatch, allSchoolWarehouseDestination, allSchoolSourceLines } from './lib/allSchoolBatchGuard';
@@ -25,7 +28,7 @@ import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
 import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { detectFloorRosterChanges, stampRosterChanges, describeRosterChange } from './lib/rosterChangeAlert';
-import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
+import { isJobReady, missingJobMocks, mockAwareProductionStatus, jobThreadOrderMessage } from './lib/jobMockReadiness';
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
 import { setEmailBlockRegistry, deliveryFailureAdvice } from './lib/emailRouting';
@@ -72,12 +75,14 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
+import { repairPdfDashNulls, browserInflate } from './lib/pdfNulRepair';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG, PORTAL_SETTINGS_DEFAULTS } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds, productionLogoCandidates, logoReferenceFor } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, soLineQty, splitInvoiceLine, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobUnshippedSizes, jobUnshippedUnits, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stitchPreviewsFor, stitchSourceFor } from './DstPreview';
+import { loadPdfJs } from './lib/pdfjs';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
 import { nextSalesOrderId, salesOrderSequenceNumber } from './lib/salesOrderIds';
@@ -1799,43 +1804,7 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
 // ImgGallery moved to components.js so OrderEditor can share it
-// ── PDF.js Setup (for NetSuite PDF import) ──
-const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
-let _pdfjsLoaded=false;
-let _pdfjsLoadPromise=null;
-// Load pdf.js from the CDN. Hardened against the "Parsing PDFs… forever" freeze:
-//  • a throw inside script.onload (e.g. the pdfjsLib global is missing) now REJECTS instead of
-//    leaving the promise unsettled — the old onload accessed window.pdfjsLib.GlobalWorkerOptions
-//    with no guard, so if that threw, neither resolve nor reject ever ran and every caller hung,
-//  • a 30s watchdog rejects if the script never fires load or error (offline / blocked CDN),
-//  • concurrent callers share one in-flight promise (and one <script>); a failed load clears the
-//    cache so a later attempt can retry.
-const loadPdfJs=()=>{
-  if(_pdfjsLoaded&&window.pdfjsLib)return Promise.resolve();
-  if(_pdfjsLoadPromise)return _pdfjsLoadPromise;
-  _pdfjsLoadPromise=new Promise((resolve,reject)=>{
-    let timer=null;
-    const finish=(err)=>{
-      if(timer){clearTimeout(timer);timer=null}
-      if(err){_pdfjsLoadPromise=null;reject(err)}else{_pdfjsLoaded=true;resolve()}
-    };
-    if(window.pdfjsLib){
-      try{window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js'}catch(e){/* already configured */}
-      finish();return;
-    }
-    timer=setTimeout(()=>finish(new Error('PDF.js failed to load (timed out after 30s) — check your network connection and retry')),30000);
-    const script=document.createElement('script');
-    script.src=PDFJS_CDN+'/pdf.min.js';
-    script.onload=()=>{try{
-      if(!window.pdfjsLib)throw new Error('PDF.js loaded but the pdfjsLib global is missing');
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js';
-      finish();
-    }catch(e){finish(e)}};
-    script.onerror=()=>finish(new Error('Failed to load PDF.js from the CDN'));
-    document.head.appendChild(script);
-  });
-  return _pdfjsLoadPromise;
-};
+// ── PDF.js Setup (for NetSuite PDF import) — loader lives in lib/pdfjs (shared with .ai art previews) ──
 // _withTimeout (src/utils.js) bounds the extraction below so one corrupt / encrypted /
 // scanned-image / huge file can't freeze the whole import on "Parsing PDFs…". It lets the
 // UI recover; any orphaned pdf.js work left running is harmless.
@@ -1847,7 +1816,17 @@ const extractPdfText=async(file,opts={})=>{
   const _extract=async()=>{
   await loadPdfJs();
   const ab=await file.arrayBuffer();
-  const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+  const first=await _extractPdfBytes(new Uint8Array(ab).slice());
+  if(first.fullText.trim())return first;
+  // Empty text: a Wilcom/pdfFactory proof whose NUL-mangled dash patterns make pdf.js drop
+  // the whole page. Repair those streams and read once more; anything else stays empty.
+  try{const fixed=await repairPdfDashNulls(new Uint8Array(ab),browserInflate);if(fixed){const second=await _extractPdfBytes(fixed);if(second.fullText.trim())return second}}catch(e){}
+  return first;
+  };
+  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
+};
+const _extractPdfBytes=async(data)=>{
+  const pdf=await window.pdfjsLib.getDocument({data}).promise;
   let fullText='';
   const pages=[];// per-page text for multi-document splitting
   for(let i=1;i<=pdf.numPages;i++){
@@ -1886,8 +1865,6 @@ const extractPdfText=async(file,opts={})=>{
     fullText+=pageText+'\n';
   }
   return{fullText,pages};
-  };
-  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
 };
 // Render PDF pages to JPEG images for the vision fallback (scanned bills with no text
 // layer — the Sports Inc "Needs Manual Upload" bucket). ~1400px wide keeps line items
@@ -2705,7 +2682,7 @@ export default function App(){
   // stale-rejection path (dbEngine calls back here the moment the server refuses a stale write).
   const[outboxConflicts,setOutboxConflicts]=useState([]);
   const[recoveryReview,setRecoveryReview]=useState(null);
-  _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
+  _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==en.table||x.id!==en.id||x.session!==en.session||x.payload?._draftRecovery),en])});
   React.useEffect(()=>{
     const confirmed=event=>setOutboxConflicts(prev=>reconcileOutboxNotices(prev,_outboxList(),event.detail));
     window.addEventListener('nsa:document-save-confirmed',confirmed);
@@ -2781,6 +2758,10 @@ export default function App(){
     }));
     return[...migrated,...inv];
   });// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const stockReceiptPending=useRef([]);
+  const stockReceiptSaving=useRef(new Map());
+  const stockReceiptWindow=useRef(null);
+  const[stockReceiptLabels,setStockReceiptLabels]=useState([]);
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
     return Math.max(ipo,spo,1001);
@@ -3067,7 +3048,8 @@ export default function App(){
               const _obConflicts=[];
               _obEntries.forEach(en=>{
                 const arr=_obTables[en.table];
-                if(!arr||!en.payload){_outboxRemove(en.table,en.id);return}
+                if(!arr||!en.payload){_outboxRemove(en.table,en.id,en);return}
+                if(en.reviewOnly&&_obNoGate[en.table]){_obConflicts.push(en);return;}
                 if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
                   arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
@@ -3077,8 +3059,8 @@ export default function App(){
                   return;
                 }
                 const row=arr.find(r=>r.id===en.id);
-                const verdict=_outboxGate(en,row);
-                if(verdict==='drop'){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
+                const gate=_outboxGate(en,row);const verdict=en.reviewOnly&&gate!=='drop'?'conflict':gate;
+                if(verdict==='drop'){_outboxRemove(en.table,en.id,en);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
                 if(verdict==='apply'){
                   const idx=arr.findIndex(r=>r.id===en.id);
                   if(idx>=0)arr[idx]=en.payload;else arr.push(en.payload);
@@ -5306,7 +5288,22 @@ export default function App(){
   },[dbLoading]); // eslint-disable-line
   // The URL router (section ?pg= + the open record) is defined together further down, once the
   // invoice view-state it depends on has been declared — search "Record-level URL router".
-  React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
+  React.useEffect(()=>{
+    const pending=stockReceiptPending.current.splice(0);
+    if(!pending.length){_saveAppState('inv_pos',invPOs);return}
+    _lsSet('nsa_inv_pos',JSON.stringify(invPOs));
+    const printWindow=stockReceiptWindow.current;stockReceiptWindow.current=null;
+    const save=_initialLoadDone.current&&_dbLoadSuccess.current
+      ?_dbSavingGuard(()=>saveStockReceiptState(supabase,invPOs)):Promise.resolve(false);
+    Promise.resolve(save).then(ok=>{
+      pending.forEach(p=>{stockReceiptSaving.current.delete(p.poId);p.resolve(ok)});
+      if(!ok){if(printWindow&&!printWindow.closed)printWindow.close();nf('Stock PO save could not be confirmed. No label issued — review the saved quantities before receiving again.','error');return}
+      const labels=pending.map(p=>p.label);
+      setStockReceiptLabels(prev=>[...prev,...labels]);
+      if(printWindow&&!printWindow.closed)try{printQrLabels(labels,printWindow)}catch(_){/* Print button remains available. */}
+      nf('Stock PO check-in saved — labels ready');
+    });
+  },[invPOs]);
   React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
@@ -12160,7 +12157,7 @@ export default function App(){
   // SALES ORDERS LIST
   function rSO(){
     if(eSO&&_awaitingItems(eSO,'sales_orders'))return<div role="status" style={{padding:24,color:'#64748b'}}>Loading {eSO.id} item lines…</div>;
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><SalesOrderEditGate recoveryEditorRef={recoveryEditorRef} onLeaseLoaded={row=>{stageDocumentBaseline(_dbSnap,'sos',row);setSOs(prev=>prev.map(s=>s.id===row.id?row:s));setESO(row);setESOC(cust.find(c=>c.id===row.customer_id)||null)}} editor={ActiveOrderEditor} ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCloseStore={closeStore} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={async(job,soObj)=>{const _so=soObj||eSO;return downloadDoc(buildProdSheetOpts(job,_so,{customers:cust,allOrders:sos,products:prod,reps:REPS,stitchPreviews:await stitchPreviewsFor(_prodJobArtFiles(job,_so))}),(job.id||'job')+'-production')}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} pendingShipAvail={eSO.pending_ship_applied?null:pendingShipBalance(cust.find(x=>x.id===eSO.customer_id))} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -13257,6 +13254,20 @@ export default function App(){
 
   const receiveInvPO=(poId,receivedMap)=>{
     // receivedMap: {itemIdx: {size: qty, ...}, ...}
+    if(stockReceiptSaving.current.has(poId))return stockReceiptSaving.current.get(poId);
+    const po=invPOs.find(p=>p.id===poId);
+    if(!po)return Promise.resolve(false);
+    // Use the same positive quantities for inventory, receipt state, and the printed label.
+    receivedMap=Object.fromEntries(Object.entries(receivedMap||{}).filter(([idx])=>po.items[idx]).map(([idx,sizes])=>[idx,Object.fromEntries(Object.entries(sizes||{}).filter(([,q])=>Number.isFinite(q)&&q>0))]));
+    const label=buildStockReceiptLabel(po,receivedMap,window.location.origin+window.location.pathname);
+    if(!label)return Promise.resolve(false);
+    const saved=new Promise(resolve=>stockReceiptPending.current.push({poId,label,resolve}));
+    stockReceiptSaving.current.set(poId,saved);
+    // Reserve one desktop print window during the click; async window.open is blocked on tablets.
+    if(!mobileMode&&!stockReceiptWindow.current){
+      stockReceiptWindow.current=window.open('','_blank','width=460,height=680');
+      if(stockReceiptWindow.current)stockReceiptWindow.current.document.body.textContent='Saving stock check-in…';
+    }
     setInvPOs(prev=>prev.map(po=>{
       if(po.id!==poId)return po;
       const updatedItems=po.items.map((it,idx)=>{
@@ -13272,8 +13283,6 @@ export default function App(){
       return{...po,items:updatedItems,status:newStatus,received_at:allReceived?new Date().toLocaleString():po.received_at,received_by:allReceived?cu?.name:po.received_by};
     }));
     // Update product inventory
-    const po=invPOs.find(p=>p.id===poId);
-    if(!po)return;
     const adjLogs=[];
     Object.entries(receivedMap).forEach(([idx,szMap])=>{
       const poItem=po.items[parseInt(idx)];if(!poItem)return;
@@ -13290,7 +13299,7 @@ export default function App(){
       setInvAdjLog(prev=>[...adjLogs.map(l=>({...l,id:_newInventoryAdjustmentId()})),...prev].slice(0,2000));
       logChange('po_received','Inventory PO',po.po_number,adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
     }
-    nf('PO '+po.po_number+' items received — inventory updated');
+    return saved;
   };
 
   const printInvPOPackingList=(po)=>{
@@ -14286,6 +14295,7 @@ export default function App(){
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
     const liveJob=safeJobs(so).find(x=>x.id===j.id)||j;
+    if(['ready','staging','in_process'].includes(newStatus)){const msg=jobThreadOrderMessage(liveJob,so);if(msg){nf(msg,'error');return}}
     if(['ready','staging','in_process'].includes(newStatus)&&missingJobMocks(liveJob,so).length){nf(missingMockupsMsg(missingJobMocks(liveJob,so)),'error');return}
     // ── Move the run-together group as one ──
     // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
@@ -24251,22 +24261,10 @@ export default function App(){
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
     const filtered=allArtJobs.filter(j=>{
-      // Artist sees a job when it's assigned to them OR the open art request names them —
-      // assigned_artist can go stale (e.g. it held a deactivated duplicate team-member id
-      // while the request pointed at the live one), and either link should surface the job.
-      // A job whose assignee resolves to NO live artist (never assigned — e.g. approved via
-      // quick-mock/skip-artist and now needing production files — or a stale/deactivated id)
-      // is the shared UNASSIGNED POOL: every artist sees it. Hiding it from all boards is how
-      // artist-actionable work silently vanished. Only a job owned by a DIFFERENT live artist
-      // is hidden from this artist.
-      if(_isArtistUser){const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
-        const _mine=j.assigned_artist===cu.id||_actReq?.artist===cu.id;
-        const _ownedByLiveArtist=artistMembers.some(r=>r.id===j.assigned_artist||r.id===_actReq?.artist);
-        if(!_mine&&_ownedByLiveArtist)return false}
+      if(_isArtistUser&&!artistCanSeeWork(j,cu.id,REPS))return false;
       if(!_isArtistUser&&artFilter!=='all'){
         if(artArtistScopeId){
-          const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
-          if(j.assigned_artist!==artArtistScopeId&&_actReq?.artist!==artArtistScopeId)return false;
+          if(artAssignmentOwner(j,REPS)!==artArtistScopeId)return false;
         }else if(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter)return false;
       }
       if(artSearch){const s=artSearch.toLowerCase();
@@ -24472,7 +24470,9 @@ export default function App(){
     // Card renderer shared between both views
     const renderArtCard=(j,view,col)=>{
       const urgent=j.daysOut!=null&&j.daysOut<=3;
-      const artist=REPS.find(r=>r.id===j.assigned_artist);
+      const ownerId=artAssignmentOwner(j,REPS);
+      const artist=REPS.find(r=>r.id===ownerId);
+      const artistLabel=artist?.name||(ownerId===cu.id?cu.name:null)||(j.art_requests||[]).find(r=>r.artist===ownerId)?.artist_name||'Assigned artist';
       const af=j.artFile;
       const isMethodic=(j.art_requests||[]).some(r=>r?.source==='methodic');
       const cardKey=j.id+j.soId+view;
@@ -24543,17 +24543,15 @@ export default function App(){
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
             <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-              {_isArtistUser?(artistMembers.some(r=>r.id===j.assigned_artist)?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
+              {_isArtistUser?(ownerId?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artistLabel}</span>
               // Unassigned-pool job on an artist's board: one click takes ownership, so it leaves
               // the other artists' boards once someone picks it up.
               :<><span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>
                 <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={e=>{e.stopPropagation();assignArtist(j,cu.id)}}>🎨 Claim</button></>)
-              // Admin/rep: assign (or re-assign) the artist right from the card. The value only
-              // reads as assigned when it resolves to an ACTIVE artist — a stale id (deactivated
-              // duplicate team member) shows as unassigned so it gets fixed instead of hiding the
-              // job from every artist's board.
-              :<select className="form-select" style={{fontSize:10,padding:'2px 6px',maxWidth:170}} value={artistMembers.some(r=>r.id===j.assigned_artist)?j.assigned_artist:''} onClick={e=>e.stopPropagation()} onChange={e=>assignArtist(j,e.target.value)}>
-                <option value="">🎨 {artist?'Unassigned (was '+artist.name+(artist.is_active===false?' — inactive':'')+')':'Unassigned — pick artist'}</option>
+              // Preserve unknown owner IDs in the picker while the roster loads.
+              :<select className="form-select" style={{fontSize:10,padding:'2px 6px',maxWidth:170}} value={ownerId||''} onClick={e=>e.stopPropagation()} onChange={e=>assignArtist(j,e.target.value)}>
+                <option value="">🎨 Unassigned — pick artist</option>
+                {ownerId&&!artistMembers.some(r=>r.id===ownerId)&&<option value={ownerId}>🎨 {artistLabel}</option>}
                 {artistMembers.map(r=><option key={r.id} value={r.id}>🎨 {r.name}</option>)}
               </select>}
             </div>
@@ -24712,12 +24710,12 @@ export default function App(){
                 <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length+requestCards.length}</span>
               </div>
               {colJobs.length===0&&requestCards.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
-              {requestCards.map(request=><div key={request.id} style={{marginBottom:8}}><ArtRequestCard request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/></div>)}
+              {requestCards.map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/>)}
               {colJobs.map(j=>renderArtCard(j,'artist',col))}
             </div>})}
         </div>
 
-        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestCard key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
+        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestTile key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
         {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
@@ -39147,7 +39145,8 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  const stockReceiptDialog=<StockReceiptDialog labels={stockReceiptLabels} onPrint={()=>printQrLabels(stockReceiptLabels)} onClose={()=>setStockReceiptLabels([])}/>;
+  if(mobileMode)return<>{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -39172,7 +39171,7 @@ export default function App(){
     splitModal,setSplitModal,splitInvoice,viewInvoice,setViewInvoice,webstoreSettle,
   };
 
-  return(<AppDataProvider value={appData}><div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
+  return(<AppDataProvider value={appData}><div className="app">{stockReceiptDialog}<Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -39401,7 +39400,8 @@ export default function App(){
           const replace=rows=>rows.some(row=>row.id===payload.id)?rows.map(row=>row.id===payload.id?payload:row):[...rows,payload];
           _dbSnap.current[snapKey]=replace(_dbSnap.current[snapKey]||[]);
           (table==='estimates'?setEsts:setSOs)(replace);
-          setOutboxConflicts(previous=>previous.filter(entry=>entry.table!==table||entry.id!==payload.id));
+          if(recoveryReview.revision||recoveryReview.legacySnapshot)_outboxRemove(table,payload.id,recoveryReview);
+          setOutboxConflicts(previous=>previous.filter(entry=>entry.table!==table||entry.id!==payload.id||entry.revision!==recoveryReview.revision));
           setRecoveryReview(null);nf(payload.id+' recovery save confirmed.','success');
         }}/>}
       {visibleOutboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
@@ -39412,7 +39412,7 @@ export default function App(){
         <div style={{padding:'0 16px 10px',fontWeight:400}}>
           {visibleOutboxConflicts.map(en=>{
             const label=en.id+(en.payload?.customer_name?' — '+en.payload.customer_name:(en.payload?.name?' — '+en.payload.name:''));
-            const key=en.table+':'+en.id;
+            const key=en.table+':'+en.id+':'+(en.revision||en.storageKey||'');
             return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontWeight:700,color:'#991b1b'}}>{label}</span>
               <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; saving needs review{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
@@ -39437,14 +39437,14 @@ export default function App(){
                   return[...prev,p];
                 });
                 _dbSaveFailedIds.add(en.id);_persistFailedIds();
-                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id+':'+(x.revision||x.storageKey||'')!==key));
                 nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
               }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>{en.table==='estimates'||en.table==='sales_orders'?'Review changes':'Apply my edit anyway'}</button>
               <button onClick={async()=>{
                 if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
                 if(en.payload?._draftRecovery){try{await draftJournal.acknowledge(en.payload._draftRecovery)}catch{nf('Could not clear the recovery copy. Your draft is still available.','error');return}}
-                if(!en.payload?._draftRecovery){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}
-                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+                if(!en.payload?._draftRecovery){if(!_outboxRemove(en.table,en.id,en)){nf('The draft changed or could not be cleared. It is still kept for review.','error');return;}if(!_outboxList().some(x=>x.id===en.id)){_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}}
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id+':'+(x.revision||x.storageKey||'')!==key));
               }} style={{background:'none',border:'1px solid #991b1b',color:'#991b1b',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Discard my edit</button>
             </div>);
           })}

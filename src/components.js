@@ -1,7 +1,9 @@
+import { dstThreadOrderKey, hasConfirmedDstThreadOrder } from './lib/dstThreadOrder';
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading } from './DstPreview';
+import { DstTile, useDstDesign, StitchBadge, StitchNotes, StitchLoading, stitchPngFile } from './DstPreview';
+import { useVectorArt, VectorTile, VectorBadge, VectorNotes, VectorLoading } from './VectorPreview';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
@@ -730,33 +732,56 @@ function ThreadQuickPicks({colors,onPick}){
 
 // `stitch` (embroidery with a DST): {dstUrl,onEnlarge,onUseAsLogo(blob,cw)} — draws each color way's stitch
 // preview beside its card (one color way) or under it (several, so previews line up with their cards).
-function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null}){
+// `vector` (print art with an .svg/.ai — see VectorPreview): {src,onEnlarge,onUseAsLogo(blob,cw)} draws each color
+// way's art in its inks the same way; each color can be kept, swapped or dropped out (saved on the color way).
+// With no color way (e.g. DTF) drop-outs are for this session only — enough to export a web logo / PNG / SVG.
+function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false,stitch=null,vector=null}){
   const isEmb=decoType==='embroidery';
   const isDtf=decoType==='dtf';
   const cws=colorWays||[];
   const inkLabel=isEmb?'thread':'ink';
   const updCw=(ci,patch)=>onChange(cws.map((cw,x)=>x===ci?{...cw,...patch}:cw));
   const{design:stDesign,err:stErr}=useDstDesign(isEmb&&stitch?stitch.dstUrl:null);
-  // Embroidery with a DST: exactly one thread line per needle stop — no adding past the stop count.
-  const maxLines=isEmb&&stDesign?stDesign.blocks.length:null;
+  // Legacy rep lists stay unrestricted until their sewing order is explicitly confirmed.
+  const confirmed=cw=>hasConfirmedDstThreadOrder(cw,stitch?.dstUrl);
+  const maxLines=isEmb&&stDesign&&cws.length&&cws.every(confirmed)?stDesign.blocks.length:null;
+  // A color way always SHOWS one line per stop (blank ones are required), so a reused logo arrives
+  // with its thread lines laid out. Blank lines are only written to the data once someone types.
+  const linesOf=cw=>{const inks=cw?.inks||[];return maxLines!=null&&inks.length<maxLines?[...inks,...Array(maxLines-inks.length).fill('')]:inks};
+  // stitch.onAutoLogo(cw, inks, makeFile(name)): the stitch render IS the web logo. Once every stop of a
+  // color way has a thread (and the threads settle), hand the editor a PNG to save; it skips
+  // unchanged renders and never replaces a hand-uploaded logo.
+  const onAutoLogo=isEmb&&stitch?stitch.onAutoLogo:null;
+  const autoSig=stDesign&&onAutoLogo?cws.map(cw=>cw.id+':'+cw.dst_thread_order+':'+(cw.inks||[]).join('|')).join(';'):'';
+  useEffect(()=>{if(!autoSig)return;const t=setTimeout(()=>{cws.forEach(cw=>{const inks=cw.inks||[];
+    if(!confirmed(cw)||inks.length!==stDesign.blocks.length||inks.some(x=>!String(x||'').trim()))return;
+    onAutoLogo(cw,inks,name=>stitchPngFile(stDesign,inks,name,threadColors))})},1500);return()=>clearTimeout(t)},[autoSig]);// eslint-disable-line react-hooks/exhaustive-deps
   // The thread/ink line last clicked into. A quick-pick color REPLACES that line, then moves the
   // highlight to the next line so a rep can click colors in sew order.
   const[active,setActive]=useState(null); // {cwId, ii} — keyed by color-way id so removing a CW can't retarget it
-  const addInk=(ci,v)=>{const inks=[...(cws[ci].inks||[])];const cwId=cws[ci].id;
+  const addInk=(ci,v)=>{const inks=[...linesOf(cws[ci])];const cwId=cws[ci].id;
     if(active&&active.cwId===cwId&&active.ii<inks.length){inks[active.ii]=v;updCw(ci,{inks});setActive(active.ii+1<inks.length?{cwId,ii:active.ii+1}:null);return}
     const e=inks.findIndex(x=>!String(x||'').trim());if(e>=0)inks[e]=v;else if(maxLines==null||inks.length<maxLines)inks.push(v);else return;updCw(ci,{inks})};
   const[stBusy,setStBusy]=useState(false);
   const showStitch=!!(isEmb&&stitch&&stitch.dstUrl);
   const stUseAsLogo=stitch?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await stitch.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  const showVector=!!(!isEmb&&vector&&vector.src);
+  const{art:vArt,err:vErr}=useVectorArt(showVector?vector.src:null);
+  const[vDrops,setVDrops]=useState([]);// no-color-way drop-outs (not saved — there's no color way to hold them)
+  const vUseAsLogo=vector?.onUseAsLogo&&(async(blob,cw)=>{setStBusy(true);try{await vector.onUseAsLogo(blob,cw)}finally{setStBusy(false)}});
+  const showPrev=showStitch||showVector;
   // One color way → preview to the right of the card; several → each preview under its own card.
-  const stSide=showStitch&&cws.length<=1;
-  const stTile=(cw,ci,width)=>stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={stUseAsLogo} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
+  const stSide=showPrev&&cws.length<=1;
+  const stTile=(cw,ci,width)=>showVector
+    ?(vArt?<VectorTile art={vArt} cw={cw} idx={ci} compact={!!cw} width={width} dropouts={cw?[]:vDrops} onRecolor={m=>updCw(ci,{art_recolor:m})} onDropouts={setVDrops} onEnlarge={vector.onEnlarge} onUseAsLogo={vUseAsLogo} busy={stBusy} palette={pantoneColors} name={vector.src.name}/>:(vErr?null:<VectorLoading width={width} kind={vector.src.kind}/>))
+    :!confirmed(cw)?<div style={{fontSize:11,padding:12,color:'#64748b'}}>Using saved artwork and rep thread colors. Confirm the sewing order to enable DST coloring.</div>:stDesign?<DstTile design={stDesign} cw={cw} idx={ci} compact width={width} onEnlarge={stitch.onEnlarge} onUseAsLogo={onAutoLogo?null:stUseAsLogo} autoLogo={!!onAutoLogo&&!!cw} busy={stBusy} palette={threadColors}/>:(stErr?null:<StitchLoading width={width}/>);
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
       <span style={{fontSize:9,color:'#94a3b8'}}>{isDtf?'Full-color — color ways optional':isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
       {cws.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#fff',background:'#94a3b8',borderRadius:8,padding:'0 7px',lineHeight:'16px'}}>{cws.length}</span>}
       {showStitch&&<StitchBadge design={stDesign}/>}
+      {showVector&&<VectorBadge art={vArt}/>}
     </div>
     {cws.length===0&&isDtf&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>DTF prints full-color (CMYK) — no color ways needed. Add one only to note a specific garment color.</div>}
     {cws.length===0&&!isDtf&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
@@ -764,7 +789,9 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
       {cws.map((cw,ci)=>{
         const gHex=threadHex(cw.garment_color);
         const inkCount=(cw.inks||[]).filter(x=>x&&x.trim()).length;
-        const card=<div key={cw.id} style={{flex:showStitch&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
+        const lines=linesOf(cw);
+        const stopsSet=maxLines!=null?lines.slice(0,maxLines).filter(x=>String(x||'').trim()).length:0;
+        const card=<div key={cw.id} style={{flex:showPrev&&!stSide?'1 0 auto':'1 1 240px',minWidth:240,maxWidth:380,background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
           {/* Header bar — CW number, garment color swatch + name, duplicate, remove */}
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
@@ -779,27 +806,32 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));const isActive=active&&active.cwId===cw.id&&active.ii===ii;const extra=maxLines!=null&&ii>=maxLines;return<div key={ii} onFocus={()=>setActive({cwId:cw.id,ii})} title={extra?'The DST has only '+maxLines+' thread stops — remove this line':undefined} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4,borderRadius:6,boxShadow:isActive?'0 0 0 2px #c4b5fd':'none',background:extra?'#fef2f2':isActive?'#f5f3ff':'transparent'}}>
-              <span style={{fontSize:10,color:isActive?'#6d28d9':extra?'#dc2626':'#cbd5e1',fontWeight:isActive?700:400,width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
+            {lines.map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));const isActive=active&&active.cwId===cw.id&&active.ii===ii;const extra=maxLines!=null&&ii>=maxLines;const required=maxLines!=null&&!extra&&!String(ink||'').trim();const virtual=ii>=(cw.inks||[]).length;return<div key={ii} onFocus={()=>setActive({cwId:cw.id,ii})} title={extra?'The DST has only '+maxLines+' thread stops — remove this line':required?'Required — the thread for stop '+(ii+1)+' of the DST':undefined} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4,borderRadius:6,boxShadow:isActive?'0 0 0 2px #c4b5fd':'none',background:extra?'#fef2f2':isActive?'#f5f3ff':'transparent'}}>
+              <span style={{fontSize:10,color:isActive?'#6d28d9':extra||required?'#dc2626':'#cbd5e1',fontWeight:isActive||required?700:400,width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
-              <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...(cw.inks||[])];inks[ii]=v;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
-              <button onClick={()=>{setActive(null);updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
+              <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...lines];inks[ii]=v;updCw(ci,{inks})}} placeholder={required?'Required — thread for stop '+(ii+1):isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px',...(required?{borderColor:'#fca5a5',background:'#fef2f2'}:{})}}/>
+              {virtual?<span style={{width:15,flexShrink:0}}/>:<button onClick={()=>{setActive(null);updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})}} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>}
             </div>})}
+            {showStitch&&stDesign&&<label style={{display:'block',fontSize:11,margin:'8px 0',color:'#475569'}}><input type="checkbox" checked={confirmed(cw)} disabled={!confirmed(cw)&&((cw.inks||[]).length!==stDesign.blocks.length||(cw.inks||[]).some(x=>!String(x||'').trim()))} onChange={e=>updCw(ci,{dst_thread_order:e.target.checked?dstThreadOrderKey(cw,stitch.dstUrl):null})}/> Use DST coloring: I verified one thread per stop in sewing order ({stDesign.blocks.length} stops).</label>}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
             {((isEmb?threadColors:pantoneColors)||[]).length>0&&<div style={{fontSize:9,color:'#94a3b8',margin:'2px 0'}}>{active&&active.cwId===cw.id?'Pick a color to change line '+(active.ii+1):'Click a line, then a color to change it'}</div>}
-            {maxLines==null||(cw.inks||[]).length<maxLines
-              ?<button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color{maxLines!=null?' ('+(cw.inks||[]).length+' of '+maxLines+')':''}</button>
-              :<div style={{fontSize:9,color:'#6d28d9',fontWeight:600,padding:'4px 0'}}>{maxLines} of {maxLines} thread stops — matches the DST</div>}
+            {maxLines==null
+              ?<button onClick={()=>updCw(ci,{inks:[...(cw.inks||[]),'']})} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'4px 0',fontWeight:600}}>+ Add {inkLabel} color</button>
+              :stopsSet===maxLines
+              ?<div style={{fontSize:9,color:'#6d28d9',fontWeight:600,padding:'4px 0'}}>{maxLines} of {maxLines} thread stops — matches the DST</div>
+              :<div style={{fontSize:9,color:'#dc2626',fontWeight:700,padding:'4px 0'}}>{stopsSet} of {maxLines} thread stops filled — required before production</div>}
           </div>
         </div>;
-        if(!showStitch)return card;
+        if(!showPrev)return card;
         if(stSide)return[card,<div key={cw.id+'_st'} style={{alignSelf:'flex-start'}}>{stTile(cw,ci,240)}</div>];
         // Several color ways: card on top, its preview underneath, same column width — columns in a
         // row stretch to equal height so the previews line up.
-        return<div key={cw.id} style={{flex:'1 1 240px',minWidth:240,maxWidth:380,display:'flex',flexDirection:'column',gap:8}}>{card}<div style={{width:'100%',maxWidth:260}}>{stTile(cw,ci,'100%')}</div></div>})}
-      {showStitch&&cws.length===0&&stTile(null,0,240)}
+        // Fixed 260px column so the thread card and its stitch preview are the same width.
+        return<div key={cw.id} style={{flex:'0 0 260px',width:260,display:'flex',flexDirection:'column',gap:8}}>{card}<div style={{width:'100%'}}>{stTile(cw,ci,'100%')}</div></div>})}
+      {showPrev&&cws.length===0&&stTile(null,0,240)}
     </div>
-    {showStitch&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws} palette={threadColors}/></div>}
+    {showStitch&&cws.every(confirmed)&&<div style={{marginTop:-4,marginBottom:8}}><StitchNotes design={stDesign} err={stErr} colorWays={cws} palette={threadColors}/></div>}
+    {showVector&&<div style={{marginTop:-4,marginBottom:8}}><VectorNotes art={vArt} err={vErr} colorWays={cws} palette={pantoneColors}/></div>}
     {/* Embroidery: a new color way starts with CW 1's threads (same DST stops) — the rep adjusts. */}
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:isEmb&&(cws[0]?.inks||[]).some(x=>String(x||'').trim())?[...cws[0].inks]:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}

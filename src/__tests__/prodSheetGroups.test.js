@@ -77,3 +77,17 @@ test('embroidery: threads print numbered in sew order and the stitch preview sit
   // without a render (DST unreachable) the sheet still builds, just without the image
   expect(buildProdSheetOpts(j, so, {}).notes).not.toContain('Stitch preview');
 });
+
+test('legacy Biola job keeps rep proof and White/Red list without inferred DST preview', async () => {
+  const { stitchPreviewsFor } = require('../DstPreview');
+  const emb = { id:'biola', name:'Biola Volleyball 2 color', deco_type:'embroidery',
+    prod_files:[{url:'https://example.com/biola.dst'}], mockup_files:[{url:'rep-approved-biola.png'}],
+    color_ways:[{id:'blue',garment_color:'on blue',inks:['White','Red']}] };
+  const so = {id:'SO-1535',items:[{sku:'CCRC0',color:'Chambray',sizes:{OSFA:1},decorations:[{kind:'art',position:'Front Center',art_file_id:'biola',color_way_id:'blue'}]}],art_files:[emb]};
+  const j = {id:'JOB-1535-01-A',art_file_id:'biola',deco_type:'embroidery',total_units:1,items:[{item_idx:0,deco_idxs:[0]}]};
+  const html = buildProdSheetOpts(j,so,{stitchPreviews:await stitchPreviewsFor(so.art_files)}).notes;
+  expect(html).toContain('rep-approved-biola.png');
+  expect(html).toContain('<b>1.</b> White');
+  expect(html).toContain('<b>2.</b> Red');
+  expect(html).not.toContain('Stitch preview');
+});

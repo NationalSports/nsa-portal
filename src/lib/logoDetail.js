@@ -1,3 +1,5 @@
+import { artLiveDsts } from '../constants';
+import { hasConfirmedDstThreadOrder } from './dstThreadOrder';
 import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit, artSlotMocks } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
 import { knownGarmentHex } from './artGrid';
@@ -149,17 +151,40 @@ export const setLogoDetail = (arts, artId, colorWayId, file) => {
   const url = safeStr(typeof file === 'string' ? file : file?.url);
   if (!url || !artId) return safeArr(arts);
   const name = typeof file === 'object' && file?.name ? file.name : undefined;
+  // stitch_sig: the thread list an auto-saved stitch render was drawn with (DST web logos).
+  const meta = { ...(name ? { name } : {}), ...(typeof file === 'object' && file?.stitch_sig ? { stitch_sig: file.stitch_sig } : {}) };
   return safeArr(arts).map(a => {
     if (!a || a.id !== artId) return a;
     const entry = colorWayId
-      ? { url, ...(name ? { name } : {}), color_way_id: colorWayId, color_way: _cwLabel(a, colorWayId) }
-      : { url, ...(name ? { name } : {}), color_way: '', is_default: true };
+      ? { url, ...meta, color_way_id: colorWayId, color_way: _cwLabel(a, colorWayId) }
+      : { url, ...meta, color_way: '', is_default: true };
     const keep = safeArr(a.web_logos).filter(w => w && w.url && (colorWayId ? w.color_way_id !== colorWayId : !_isDefaultLogo(w)));
     // Newest first (resolvers take the first match), and the replaced entry is marked as an
     // intentional removal so a conflict merge can't bring the old logo back.
     const next = markArtFieldEdit(a, 'web_logos', [entry, ...keep]);
     return colorWayId ? next : markArtFieldEdit(next, 'web_logo_url', url);
   });
+};
+
+// Embroidery with a DST: the stitch render IS the color way's web logo, saved automatically.
+// True when the render drawn in `inks` should be (re)saved for this color way: no logo yet, or the
+// current one is an earlier stitch render of different threads. A hand-uploaded logo (or the
+// shared all-garments default) is never replaced, and a render whose threads have since changed
+// again is dropped — the newer one is on its way.
+export const stitchLogoNeedsSave = (art, colorWayId, inks) => {
+  const cw = safeArr(art?.color_ways).find(c => c && c.id === colorWayId);
+  const dst = artLiveDsts(art).slice(-1)[0];
+  const urlForDst = typeof dst === 'string' ? dst : dst?.url;
+  if (!hasConfirmedDstThreadOrder(cw, urlForDst)) return false;
+  const lines = safeArr(inks);
+  if (!art || art.archived || !cw || !lines.length || lines.some(x => !safeStr(x).trim())) return false;
+  const sig = lines.join('|');
+  if (safeArr(cw.inks).slice(0, lines.length).join('|') !== sig) return false;
+  const url = logoDetailUrl(art, colorWayId);
+  if (!url) return true;
+  const entry = safeArr(art.web_logos).find(w => w && w.url === url && w.color_way_id === colorWayId);
+  if (!entry || !(entry.stitch_sig || /^stitch render/i.test(safeStr(entry.name)))) return false;
+  return entry.stitch_sig !== sig;
 };
 
 // Remove one logo detail image (by url) from a design.

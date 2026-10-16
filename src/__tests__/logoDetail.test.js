@@ -279,3 +279,29 @@ describe('logoReferenceFor', () => {
     expect(logoReferenceFor(null)).toEqual({ thumb: '', files: [], source: null });
   });
 });
+
+describe('stitchLogoNeedsSave — the stitch render is the web logo', () => {
+  const { stitchLogoNeedsSave } = require('../lib/logoDetail');
+  const base = { id: 'a', deco_type: 'embroidery', prod_files: [{url:'https://example.com/logo.dst'}], color_ways: [{ id: 'c1', garment_color: 'Black', inks: ['Black', 'Vegas'], dst_thread_order: JSON.stringify(['https://example.com/logo.dst', ['Black', 'Vegas']]) }], web_logos: [] };
+  test('legacy rep list never auto-saves a stitch logo', () => {
+    const legacy = { ...base, color_ways: base.color_ways.map(({dst_thread_order, ...cw}) => cw) };
+    expect(stitchLogoNeedsSave(legacy, 'c1', ['Black', 'Vegas'])).toBe(false);
+  });
+  test('no logo yet → save', () => expect(stitchLogoNeedsSave(base, 'c1', ['Black', 'Vegas'])).toBe(true));
+  test('same threads already saved → skip', () => expect(stitchLogoNeedsSave({ ...base, web_logos: [{ url: 'u', color_way_id: 'c1', stitch_sig: 'Black|Vegas' }] }, 'c1', ['Black', 'Vegas'])).toBe(false));
+  test('threads changed → resave', () => expect(stitchLogoNeedsSave({ ...base, web_logos: [{ url: 'u', color_way_id: 'c1', stitch_sig: 'Black|Gold' }] }, 'c1', ['Black', 'Vegas'])).toBe(true));
+  test('legacy button-saved render → resave once', () => expect(stitchLogoNeedsSave({ ...base, web_logos: [{ url: 'u', name: 'Stitch render — Black', color_way_id: 'c1' }] }, 'c1', ['Black', 'Vegas'])).toBe(true));
+  test('hand-uploaded logo is never replaced', () => {
+    expect(stitchLogoNeedsSave({ ...base, web_logos: [{ url: 'u', name: 'logo.png', color_way_id: 'c1' }] }, 'c1', ['Black', 'Vegas'])).toBe(false);
+    expect(stitchLogoNeedsSave({ ...base, web_logos: [{ url: 'u', is_default: true, color_way: '' }] }, 'c1', ['Black', 'Vegas'])).toBe(false);
+  });
+  test('threads moved on since the render, blank stop, archived → skip', () => {
+    expect(stitchLogoNeedsSave(base, 'c1', ['Black', 'Gold'])).toBe(false);
+    expect(stitchLogoNeedsSave(base, 'c1', ['Black', ''])).toBe(false);
+    expect(stitchLogoNeedsSave({ ...base, archived: true }, 'c1', ['Black', 'Vegas'])).toBe(false);
+  });
+  test('setLogoDetail keeps the stitch signature', () => {
+    const { setLogoDetail } = require('../lib/logoDetail');
+    expect(setLogoDetail([base], 'a', 'c1', { url: 'u', name: 'Stitch render — Black', stitch_sig: 'Black|Vegas' })[0].web_logos[0]).toMatchObject({ url: 'u', stitch_sig: 'Black|Vegas', color_way_id: 'c1' });
+  });
+});
