@@ -3646,12 +3646,20 @@ export default function App(){
             if(res&&!res.tooMany&&!res.missing.length){
               if(res.sales_orders.length)_applySalesOrderRows(res.sales_orders);
               // The counter was read before the lookup, so a write landing meanwhile moves it past this mark.
-              markLoaded(_pollVersions,['sales_orders']);_soDelta=true;
+              // An order whose local copy was kept (save failed / in flight / just pulled) is not current
+              // yet: leave the cursor so the next poll re-reads those few ids once the protection lifts.
+              if(!res.sales_orders.some(r=>_shouldProtect(r.id)))markLoaded(_pollVersions,['sales_orders']);
+              _soDelta=true;
             }
           }
         }
         const _loadGroups=_changed?new Set(_soDelta?_changed.filter(g=>g!=='sales_orders'):_changed):null;
-        if(_loadGroups&&!_loadGroups.size){_pollConsecutiveFailures=0;schedulePoll();return}
+        if(_loadGroups&&!_loadGroups.size){
+          // Only orders moved and they came in by id: a successful poll with no group download. It still
+          // counts as reaching the database (see the writes re-enable below, which this return would skip).
+          if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+          _pollConsecutiveFailures=0;schedulePoll();return;
+        }
         const _loaded=g=>!_loadGroups||_loadGroups.has(g);
         const d=await _dbLoad(_loadGroups?{coreOnly:true,only:_loadGroups}:{coreOnly});
         // A group-limited load has no "came back with data" test: its groups may be small or empty (app_state alone).

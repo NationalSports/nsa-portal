@@ -7,9 +7,13 @@ import {fetchDataVersions as _realFetch, allUnchanged, changedGroups, markLoaded
 // the two are tested together: per-order keys first, then only changed groups go to the full load,
 // and a per-order refresh never marks the sales_orders group as loaded (the next poll still checks).
 const source = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
-const start = source.indexOf('      const _shouldProtect=id=>');
+// The merge helpers sit at component scope (shared with the poll's changed-orders refresh); the
+// live refresh and reloadAll inside the realtime effect.
+const helpersStart = source.indexOf('  const _jsonEq=(a,b)=>');
+const helpersEnd = source.indexOf('  // ─── Order save routing', helpersStart);
+const start = source.indexOf('      const _deltaRetried=new Set();');
 const end = source.indexOf('      // Debounce realtime events', start);
-const block = source.slice(start, end);
+const block = source.slice(helpersStart, helpersEnd) + source.slice(start, end);
 
 function harness({versions, delta}) {
   _resetDataVersionsForTest();
@@ -19,7 +23,7 @@ function harness({versions, delta}) {
     _isRecentlyPulled: () => false, _recentlySavedByMe: () => false, mergeArtFileSuperset: a => a,
     _dbLoadSalesOrdersByIds: async (so, items) => { calls.delta.push([so, items]); return typeof delta === 'function' ? delta() : delta; },
     cancelled: false, indexFirstById: arr => new Map((arr || []).map(r => [r.id, r])),
-    _dbSnap: {current: {sos: [], ests: []}}, _jsonEq: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+    _dbSnap: {current: {sos: [], ests: []}}, _SO_DELTA_MAX: 25,
     debouncedReloadGroups: g => calls.requeued.push(...g),
     fetchDataVersions: async () => { calls.fetchVersions++; return versions; },
     changedGroups, markLoaded, supabase: {},

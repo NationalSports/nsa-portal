@@ -25,6 +25,10 @@
 -- Rows are never deleted: a deleted order keeps its row with a fresh number, so a tab asking for
 -- that order finds no row and falls back to the full reload, which is how deletions reach it.
 -- Read by staff only (same rule as the orders themselves); written only by the trigger.
+--
+-- Not covered (same as data_versions; costs at most one 30-minute full sync of staleness): bulk
+-- loads run with session_replication_role = replica skip all triggers, and TRUNCATE fires no
+-- row trigger (nothing in the app truncates these tables).
 
 begin;
 
@@ -65,8 +69,11 @@ begin
   if v_so is null then return null; end if;
   -- Held until this transaction ends: data_versions() reports the group as in flight meanwhile.
   perform pg_advisory_xact_lock_shared(7421, public.data_version_lock_key('sales_orders'));
+  -- Never move a row backwards: two writers on one order may commit in the other order from the one
+  -- they drew their numbers in (harmless for the cursor — neither number is readable until both
+  -- commit — but the row should still show the highest).
   insert into public.so_changes (so_id, seq) values (v_so, nextval('public.data_version_sales_orders'))
-    on conflict (so_id) do update set seq = excluded.seq;
+    on conflict (so_id) do update set seq = excluded.seq where so_changes.seq < excluded.seq;
   return null;
 end $$;
 revoke all on function public.note_so_change() from public, anon, authenticated;

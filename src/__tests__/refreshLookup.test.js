@@ -77,20 +77,21 @@ test('incomplete initial load still blocks writes and retains changed drafts as 
 
 
 // The poll's decision logic (what to read), with every read mocked. `fullSync` makes it a 30-minute full sync.
-function pollHarness({custCount=1,versions=null,changes=null,orders=null,fullSync=false}={}){
+function pollHarness({custCount=1,versions=null,changes=null,orders=null,fullSync=false,protectedIds=new Set(),loadSuccess=true}={}){
   _resetDataVersionsForTest();
   const start=source.indexOf('    const runPoll=async()=>{');
   const end=source.indexOf('    schedulePoll();\n    // Expose an early-trigger',start);
   const load=jest.fn(),schedule=jest.fn(),fetchDataVersions=jest.fn(async()=>versions);
   const changesSince=jest.fn(async()=>changes),ordersByIds=jest.fn(async()=>orders),apply=jest.fn();
-  const run=Function('_dbLoad','schedulePoll','document','_custCount','fetchDataVersions','changedGroups','markLoaded','loadedVersion','supabase','_dbLoadSalesOrderChangesSince','_dbLoadSalesOrdersByIds','_applySalesOrderRows','_SO_DELTA_MAX',`
+  const dbLoadSuccess={current:loadSuccess},setDbError=jest.fn();
+  const run=Function('_dbLoad','schedulePoll','document','_custCount','fetchDataVersions','changedGroups','markLoaded','loadedVersion','supabase','_dbLoadSalesOrderChangesSince','_dbLoadSalesOrdersByIds','_applySalesOrderRows','_SO_DELTA_MAX','_shouldProtect','_dbLoadSuccess','setDbError',`
     let cancelled=false,pollRunning=false,_pollConsecutiveFailures=0;
     const _dbReady={current:true},_dbSavingCount=0,_lastFullSyncAt=${fullSync?0:'Date.now()'},_FULL_SYNC_MS=1800000;
     const _getPollInterval=()=>300000;
     ${source.slice(start,end)}
     return runPoll;
-  `)(load,schedule,{hidden:false},{current:custCount},fetchDataVersions,changedGroups,markLoaded,loadedVersion,null,changesSince,ordersByIds,apply,25);
-  return {run,load,schedule,fetchDataVersions,changesSince,ordersByIds,apply};
+  `)(load,schedule,{hidden:false},{current:custCount},fetchDataVersions,changedGroups,markLoaded,loadedVersion,null,changesSince,ordersByIds,apply,25,id=>protectedIds.has(id),dbLoadSuccess,setDbError);
+  return {run,load,schedule,fetchDataVersions,changesSince,ordersByIds,apply,dbLoadSuccess,setDbError};
 }
 const GROUPS=['estimates','sales_orders','invoices','messages','app_state'];
 const V={estimates:1,sales_orders:5,invoices:2,messages:9,app_state:3};
@@ -152,6 +153,25 @@ test('orders plus another group: the orders come by id, the other group alone is
   expect(onlyOf(h.load.mock.calls[0][0])).toEqual(['messages']);
   expect(h.load.mock.calls[0][0].coreOnly).toBe(true);
 });
+test('a save still open when the counter was read: the orders already committed are fetched, the cursor is NOT advanced',async()=>{
+  const rows=[{id:'SO-3'}];
+  const h=pollHarness({versions:{...V,sales_orders:null},changes:{ids:['SO-3']},orders:{sales_orders:rows,missing:[]}});markLoaded(V,GROUPS);
+  await h.run();
+  expect(h.changesSince).toHaveBeenCalledWith(5,25);expect(h.apply).toHaveBeenCalledWith(rows);expect(h.load).not.toHaveBeenCalled();
+  expect(loadedVersion('sales_orders')).toBe(5);// the open save's order is read from the same cursor next poll
+});
+test('an order whose local copy is protected (save failed or in flight) leaves the cursor for the next poll',async()=>{
+  const rows=[{id:'SO-1'},{id:'SO-2'}];
+  const h=pollHarness({versions:{...V,sales_orders:6},changes:{ids:['SO-1','SO-2']},orders:{sales_orders:rows,missing:[]},protectedIds:new Set(['SO-2'])});markLoaded(V,GROUPS);
+  await h.run();
+  expect(h.apply).toHaveBeenCalledWith(rows);expect(h.load).not.toHaveBeenCalled();
+  expect(loadedVersion('sales_orders')).toBe(5);
+});
+test('a poll that only refreshed orders by id still counts as reaching the database (writes re-enabled)',async()=>{
+  const h=pollHarness({versions:{...V,sales_orders:6},changes:{ids:['SO-1']},orders:{sales_orders:[{id:'SO-1'}],missing:[]},loadSuccess:false});markLoaded(V,GROUPS);
+  await h.run();
+  expect(h.load).not.toHaveBeenCalled();expect(h.dbLoadSuccess.current).toBe(true);expect(h.setDbError).toHaveBeenCalledWith(null);
+});
 test('a moved counter with no orders named (a rolled-back save) downloads nothing and still advances the cursor',async()=>{
   const h=pollHarness({versions:{...V,sales_orders:6},changes:{ids:[]}});markLoaded(V,GROUPS);
   await h.run();
@@ -187,7 +207,7 @@ test('a full sync loads everything, counters or not',async()=>{
 
 // The poll's apply step, with the loaded data supplied: groups a poll did not download must keep both
 // their state and their diff baseline (a replaced baseline would re-save every row of the group).
-function pollApplyHarness({versions,d}){
+function pollApplyHarness({versions,d,changes=null,orders=null}){
   _resetDataVersionsForTest();
   const start=source.indexOf('    const runPoll=async()=>{');
   const end=source.indexOf('    schedulePoll();\n    // Expose an early-trigger',start);
@@ -196,7 +216,7 @@ function pollApplyHarness({versions,d}){
   const overrides={
     _dbLoad:jest.fn(async()=>d),schedulePoll:jest.fn(),document:{hidden:false},_custCount:{current:1},
     fetchDataVersions:async()=>versions,changedGroups,markLoaded,loadedVersion,supabase:null,
-    _dbLoadSalesOrderChangesSince:async()=>null,_dbLoadSalesOrdersByIds:async()=>null,_applySalesOrderRows:jest.fn(),_SO_DELTA_MAX:25,
+    _dbLoadSalesOrderChangesSince:async()=>changes,_dbLoadSalesOrdersByIds:async()=>orders,_applySalesOrderRows:jest.fn(),_SO_DELTA_MAX:25,_shouldProtect:()=>false,setDbError:jest.fn(),
     _dbSnap:snap,indexFirstById,_dbSaveFailedIds:new Set(),_dbSavePendingIds:new Set(),_recentlyPulledSOs:new Set(),
     _dbLoadSuccess:{current:true},_histInvsCount:{current:1},_mergeAssignedTodos:(a)=>a,
     setEsts:setter('ests'),setSOs:setter('sos'),setInvs:setter('invs'),setMsgs:setter('msgs'),setCust:setter('cust'),setProd:setter('prod'),
@@ -230,6 +250,20 @@ test('a poll that downloaded only messages applies messages and leaves the other
     for(const k of ['ests','sos','invs','cust'])expect(h.snap.current[k]).toBe(before[k]);
     expect(h.snap.current.msgs).toEqual([{id:'M2'}]);
     expect(loadedVersion('messages')).toBe(10);
+  }finally{warn.mockRestore()}
+});
+test('orders by id plus a downloaded group: the group apply leaves order state and baseline to the per-order merge',async()=>{
+  const warn=jest.spyOn(console,'warn').mockImplementation(()=>{});
+  try{
+    const rows=[{id:'S9'}];
+    const h=pollApplyHarness({versions:{...V,sales_orders:6,messages:10},d:coreLoad(['messages']),changes:{ids:['S9']},orders:{sales_orders:rows,missing:[]}});markLoaded(V,GROUPS);
+    await h.run();
+    expect(warn).not.toHaveBeenCalled();
+    expect(h.overrides._applySalesOrderRows).toHaveBeenCalledWith(rows);
+    expect([...h.overrides._dbLoad.mock.calls[0][0].only]).toEqual(['messages']);
+    expect(h.set.sos).not.toHaveBeenCalled();expect(h.set.msgs).toHaveBeenCalledTimes(1);
+    expect(h.snap.current.sos).toEqual([{id:'S1'}]);// untouched by the group apply (the per-order merge owns it)
+    expect(loadedVersion('sales_orders')).toBe(6);expect(loadedVersion('messages')).toBe(10);
   }finally{warn.mockRestore()}
 });
 test('a core poll without counters still applies and re-baselines every core group',async()=>{
