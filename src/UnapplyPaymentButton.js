@@ -7,7 +7,9 @@ export default function UnapplyPaymentButton({invoice, payment, user, onSaved, n
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   if (!canReceivePayments(user) || invoice._hist || !payment.ref
-    || !['check','ach','cash','venmo','zelle'].includes(payment.method) || Number(payment.cc_fee)>0) return null;
+    // Card only when it was entered in Receive Payments (has a receipt); Stripe/Pay-button card rows stay blocked.
+    || !(['check','ach','cash','venmo','zelle'].includes(payment.method) || (payment.method==='cc' && payment.receipt_id))
+    || Number(payment.cc_fee)>0) return null;
   const save = async () => {
     if (saving || reason.trim().length<3) return;
     setSaving(true);

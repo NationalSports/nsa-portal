@@ -30,8 +30,10 @@ export default function ReceivePaymentsPage() {
   const [modal, setModal] = useState(null); // {mode:'new'} | {mode:'apply', receipt}
   const [saving, setSaving] = useState(false);
 
-  const methods = (PAY_METHODS || []).filter(m => m.id !== 'cc'); // card payments carry a per-invoice fee — keep on the invoice Pay button
-  const methodLabel = id => (PAY_METHODS || []).find(m => m.id === id)?.label || id || '—';
+  // Card here records money already collected (terminal, phone, Stripe) — no 2.9% surcharge
+  // is added; the surcharge lives on the invoice Pay button. Drop the "(+2.9%)" from its label.
+  const methods = (PAY_METHODS || []).map(m => m.id === 'cc' ? { ...m, label: 'Credit Card' } : m);
+  const methodLabel = id => methods.find(m => m.id === id)?.label || id || '—';
   const custById = useMemo(() => new Map((cust || []).map(c => [String(c.id), c])), [cust]);
   const custName = id => { const c = custById.get(String(id)); return c ? (c.name || c.alpha_tag || c.id) : (id || 'Unknown'); };
 
@@ -378,7 +380,7 @@ function ReceiveModal({ modal, saving, onClose, onSave, cust, invs, histInvs, me
         </div>
         <div className="form-row form-row-2" style={{ marginBottom: 10 }}>
           <div><label className="form-label">Amount received</label><input className="form-input" type="number" min="0" step="0.01" value={amount} onChange={e => { setAmount(e.target.value); setTouched(false); }} placeholder="0.00" /></div>
-          <div><label className="form-label">{method === 'check' ? 'Check #' : 'Reference'}</label><input className="form-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? '4471' : 'Reference…'} /></div>
+          <div><label className="form-label">{method === 'check' ? 'Check #' : 'Reference'}</label><input className="form-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? '4471' : method === 'cc' ? 'Card ending… / auth #' : 'Reference…'} /></div>
         </div>
         <div className="form-row form-row-2" style={{ marginBottom: 12 }}>
           <div><label className="form-label">Date received</label><input className="form-input" type="date" value={dateIso} onChange={e => setDateIso(e.target.value)} /></div>

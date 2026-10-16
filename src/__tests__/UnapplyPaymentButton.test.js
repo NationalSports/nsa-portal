@@ -19,7 +19,17 @@ test('failure preserves invoice state and dialog',async()=>{
  fireEvent.click(screen.getByText('Unapply'));fireEvent.change(screen.getByLabelText('Reason for unapplying'),{target:{value:'Wrong invoice'}});fireEvent.click(screen.getByText('Confirm unapply'));
  await waitFor(()=>expect(props.nf).toHaveBeenCalledWith('Payment changed','error'));expect(props.onSaved).not.toHaveBeenCalled();expect(screen.getByRole('dialog')).toBeTruthy();
 });
-test('cards, imported invoices and unapproved staff have no action',()=>{
+test('a card payment entered in Receive Payments can be unapplied; its receipt goes to the server',async()=>{
+ const payment={...props.payment,method:'cc',receipt_id:'RCPT-1'};
+ authFetch.mockResolvedValue({ok:true,json:async()=>({invoice:{id:'INV-1'},payments:[]})});render(<UnapplyPaymentButton {...props} payment={payment}/>);
+ fireEvent.click(screen.getByText('Unapply'));fireEvent.change(screen.getByLabelText('Reason for unapplying'),{target:{value:'Wrong invoice'}});fireEvent.click(screen.getByText('Confirm unapply'));
+ await waitFor(()=>expect(props.onSaved).toHaveBeenCalled());
+ expect(JSON.parse(authFetch.mock.calls[0][1].body).payment).toMatchObject({method:'cc',receipt_id:'RCPT-1'});
+});
+test('surcharged card payments have no action',()=>{
+ render(<UnapplyPaymentButton {...props} payment={{...props.payment,method:'cc',receipt_id:'RCPT-1',cc_fee:2.9}}/>);expect(screen.queryByText('Unapply')).toBeNull();
+});
+test('cards without a receipt (Stripe / invoice Pay button), imported invoices and unapproved staff have no action',()=>{
  const {rerender}=render(<UnapplyPaymentButton {...props} payment={{...props.payment,method:'cc'}}/>);expect(screen.queryByText('Unapply')).toBeNull();
  rerender(<UnapplyPaymentButton {...props} invoice={{id:'INV-1',_hist:true}}/>);expect(screen.queryByText('Unapply')).toBeNull();
  rerender(<UnapplyPaymentButton {...props} user={{id:'sales'}}/>);expect(screen.queryByText('Unapply')).toBeNull();
