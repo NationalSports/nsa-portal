@@ -846,6 +846,20 @@ const _dbLoadSalesOrdersByIds=async(soIds=[],itemIds=[],{maxOrders=Infinity}={})
     return{sales_orders:d.sales_orders,missing};
   }catch(e){console.warn('[DB] Per-order refresh read failed:',e?.message||e);return null}
 };
+// Orders written since this tab last loaded them all (migration 20261016150000_so_changes): the ids
+// recorded with a change number above `sinceSeq` — the sales_orders counter the tab recorded at that
+// load (src/lib/dataVersions.js), which the same sequence numbers. Returns {ids} (possibly empty),
+// {tooMany:true} past `max` orders, or null when the read failed (table not deployed, no access, a
+// dead connection) — the caller then loads the whole group exactly as before.
+const _dbLoadSalesOrderChangesSince=async(sinceSeq,max)=>{
+  if(!supabase||sinceSeq==null)return null;
+  try{
+    const{data,error}=await _withDeadline(()=>_retryNet(()=>supabase.from('so_changes').select('so_id').gt('seq',sinceSeq).order('seq').range(0,max)));
+    if(error||!Array.isArray(data))return null;
+    if(data.length>max)return{tooMany:true};
+    return{ids:data.map(r=>r.so_id)};
+  }catch(e){console.warn('[DB] Changed-orders lookup failed:',e?.message||e);return null}
+};
 const _dbSeed = async (d) => {
   if (!supabase) return;
   // Seed core tables — team_members MUST succeed first (customers FK to team_members)
@@ -4427,6 +4441,7 @@ export {
   _sbGetMyProfile,
   _dbLoad,
   _dbLoadSalesOrdersByIds,
+  _dbLoadSalesOrderChangesSince,
   _staleWriteAlreadySaved,
   _resolveStaleWrite,
   _rememberSaveAttempt,

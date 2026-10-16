@@ -50,6 +50,19 @@ Harnesses:
   the previous search across 23 queries × 4 limits, charge and invoice-only codes still
   excluded, staff-only, a refresh picks up new imports, one nightly refresh job).
   Self-contained; ends with `ALL_TXN_ITEM_SEARCH_SCENARIOS_PASSED`.
+- `data_versions_scenarios.sql` — migration `20261014220000_data_versions` (one change
+  counter per reload group so tabs skip re-downloading unchanged groups: every write to
+  every table of a group moves exactly that group's counter, app_state only for the six
+  poll keys, an uncommitted writer reads as "in flight", staff-only). Self-contained;
+  needs a second connection (dblink to the same scratch server); ends with
+  `ALL_DATA_VERSION_SCENARIOS_PASSED`.
+- `so_changes_scenarios.sql` — migration `20261016150000_so_changes` (which orders
+  changed, so the backstop poll refreshes just those: every write to any of an order's
+  eight tables records that order with a number above the counter read before the write,
+  "orders since my counter" returns exactly the orders written since, a deleted order is
+  reported, an uncommitted writer can never be missed, staff-only reads, trigger-only
+  writes). Self-contained (applies the data_versions migration first); needs dblink like
+  the harness above; ends with `ALL_SO_CHANGE_SCENARIOS_PASSED`.
 
 ## place_webstore_order (00171)
 

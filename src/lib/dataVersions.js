@@ -40,4 +40,8 @@ export const markLoaded = (versions, groups) => {
   for (const g of groups) if (versions[g] != null) lastLoaded[g] = versions[g];
 };
 
+// The counter recorded at this tab's last successful load of `group` (null when never loaded here).
+// For sales_orders it doubles as the poll's change cursor (migration 20261016150000_so_changes).
+export const loadedVersion = (group) => (lastLoaded[group] != null ? lastLoaded[group] : null);
+
 export const _resetDataVersionsForTest = () => { lastLoaded = {}; };
