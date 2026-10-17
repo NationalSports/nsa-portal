@@ -36,3 +36,13 @@ test('unassigned picker includes null assignments and admin artist scope uses it
   expect(filterArtRequests(rows,{cu:{role:'production'},filter:''}).map(r=>r.id)).toEqual(['pool']);
   expect(filterArtRequests(rows,{cu:{role:'admin'},filter:'artist:artist'}).map(r=>r.id)).toEqual(['assigned']);
 });
+test('saveFiles stores files only on an open request and says so when it was closed',async()=>{
+  const q={update:jest.fn().mockReturnThis(),eq:jest.fn().mockReturnThis(),in:jest.fn().mockReturnThis(),select:jest.fn().mockReturnThis(),
+    maybeSingle:jest.fn().mockResolvedValueOnce({data:{id:'r',result_files:[{name:'a.png',url:'https://f/a.png'}]}}).mockResolvedValueOnce({data:null})};
+  const service=createArtService({from:()=>q});
+  const files=[{name:'a.png',url:'https://f/a.png'}];
+  await expect(service.saveFiles('r',files)).resolves.toEqual({request:expect.objectContaining({id:'r',result_files:files})});
+  expect(q.update).toHaveBeenCalledWith(expect.objectContaining({result_files:files}));
+  expect(q.in).toHaveBeenCalledWith('status',['requested','in_progress']);
+  await expect(service.saveFiles('r',files)).rejects.toThrow(/already completed or cancelled/);
+});

@@ -71,6 +71,16 @@ export function createArtService(supabase) {
       const data = await result(supabase.rpc('create_standalone_art_request', { p_request: payload }));
       changed(); return data;
     },
+    // Save finished files on an open request as they are uploaded, so nothing is lost before
+    // Mark completed. Completion still goes through transition(), which publishes the files.
+    async saveFiles(id, files) {
+      ready();
+      const { data: row, error } = await supabase.from('standalone_art_requests').update({ result_files: files, updated_at: new Date().toISOString() })
+        .eq('id', id).in('status', ['requested', 'in_progress']).select('*').maybeSingle();
+      if (error) throw new Error(error.message || 'Could not save the uploaded files.');
+      if (!row) throw new Error('This request was already completed or cancelled. Refresh to see the latest.');
+      changed(); return { request: row };
+    },
     async transition(id, status, files = []) {
       ready();
       const data = await result(supabase.rpc('transition_standalone_art_request', { p_id: id, p_status: status, p_files: files }));
