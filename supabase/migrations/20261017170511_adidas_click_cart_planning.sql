@@ -93,6 +93,81 @@ $function$;
 revoke all on function public.requeue_ready_adidas_click_tasks() from public, anon, authenticated;
 grant execute on function public.requeue_ready_adidas_click_tasks() to service_role;
 
+-- Browser-safe projection of sync freshness. The reliability run table is
+-- service-role only because it contains errors and lock details; expose only
+-- the last error-free finish time needed by order screens.
+create table if not exists public.adidas_inventory_freshness (
+  source text primary key,
+  last_success_at timestamptz not null
+);
+
+alter table public.adidas_inventory_freshness enable row level security;
+drop policy if exists adidas_inventory_freshness_read on public.adidas_inventory_freshness;
+create policy adidas_inventory_freshness_read
+  on public.adidas_inventory_freshness
+  for select
+  to anon, authenticated
+  using (true);
+
+revoke all on table public.adidas_inventory_freshness from anon, authenticated;
+grant select on table public.adidas_inventory_freshness to anon, authenticated;
+grant all on table public.adidas_inventory_freshness to service_role;
+
+create or replace function public.capture_adidas_inventory_freshness()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $function$
+begin
+  if new.status in ('success', 'completed')
+     and new.error_count = 0
+     and new.finished_at is not null then
+    insert into public.adidas_inventory_freshness (source, last_success_at)
+    values (new.source, new.finished_at)
+    on conflict (source) do update
+      set last_success_at = greatest(
+        public.adidas_inventory_freshness.last_success_at,
+        excluded.last_success_at
+      );
+  end if;
+  return new;
+end;
+$function$;
+
+revoke all on function public.capture_adidas_inventory_freshness() from public, anon, authenticated;
+
+-- PR #2526 owns this service-only table and has already been applied in
+-- production. Keep this migration usable before that PR merges into a fresh
+-- checkout; once both files are present its earlier timestamp runs first.
+do $block$
+begin
+  if to_regclass('public.adidas_inventory_sync_runs') is not null then
+    execute $sql$
+      insert into public.adidas_inventory_freshness (source, last_success_at)
+      select distinct on (source) source, finished_at
+        from public.adidas_inventory_sync_runs
+       where status in ('success', 'completed')
+         and error_count = 0
+         and finished_at is not null
+       order by source, finished_at desc
+      on conflict (source) do update
+        set last_success_at = greatest(
+          public.adidas_inventory_freshness.last_success_at,
+          excluded.last_success_at
+        )
+    $sql$;
+    execute 'drop trigger if exists trg_adidas_inventory_run_freshness on public.adidas_inventory_sync_runs';
+    execute $sql$
+      create trigger trg_adidas_inventory_run_freshness
+      after insert or update of status, error_count, finished_at
+      on public.adidas_inventory_sync_runs
+      for each row execute function public.capture_adidas_inventory_freshness()
+    $sql$;
+  end if;
+end;
+$block$;
+
 select cron.schedule(
   'requeue-ready-adidas-click-tasks',
   '17 * * * *',

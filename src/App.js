@@ -67,6 +67,7 @@ import { _sbAuthLock } from './lib/supabase';
 import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
+import { adidasInventorySizeEntry, aggregateAdidasInventoryRows } from './lib/adidasInventory';
 import { startDeployReloadWatcher, startStaleTabReload } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -1036,44 +1037,21 @@ let _lastFullSyncAt=0;
 const _SO_DELTA_MAX=25;
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
-// Adidas Cowork publishes sizes with garment-specific suffixes that don't match
-// our canonical size-grid labels — e.g. shorts carry an inseam ("S 3\"", "XL4\"",
-// "M11\""), and Adidas uses "2XS"/"2XL" where the grid uses "XXS"/"2XL". A plain
-// string match (adidasInv.sizes[sz]) therefore finds nothing for those styles and
-// the B2B badge renders blank. Collapse each raw code to its base grid label so the
-// quantities actually surface.
-const adidasCanonSize = (raw) => {
-  if (!raw) return raw;
-  let s = String(raw).trim();
-  const footwearSize = normalizeFootwearSize(s);
-  if (footwearSize !== s) return footwearSize;
-  // Strip a trailing inseam/length token ("S 3\"", "XL3\"", "2XS4", "M11\"") — but
-  // only when an alpha size prefix survives, so purely numeric sizes (28, 200, 8.5)
-  // are left untouched.
-  const stripped = s.replace(/\s*\d+"?$/, '');
-  if (stripped && /[A-Za-z]/.test(stripped)) s = stripped;
-  const u = s.toUpperCase();
-  return SZ_NORM[u] || u;
-};
-
-// Aggregate raw adidas_inventory rows into a { sizes, lastSynced } map keyed by
-// canonical grid label, summing all variants that fold onto the same label and
-// keeping a per-code breakdown for the hover tooltip.
-const aggregateAdidasRows = (rows) => {
-  const sizes = {};
-  let lastSynced = null;
-  (rows || []).forEach(row => {
-    const label = adidasCanonSize(row.size);
-    if (!label) return;
-    const qty = row.stock_qty || 0;
-    const e = sizes[label] || (sizes[label] = { qty: 0, futureDate: null, futureQty: null, breakdown: [] });
-    e.qty += qty;
-    if (row.future_delivery_qty) e.futureQty = (e.futureQty || 0) + row.future_delivery_qty;
-    if (row.future_delivery_date && (!e.futureDate || new Date(row.future_delivery_date) < new Date(e.futureDate))) e.futureDate = row.future_delivery_date;
-    e.breakdown.push({ code: String(row.size).trim(), qty });
-    if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
-  });
-  return { sizes, lastSynced };
+// Sync-run freshness is projected into a safe public table by the migration in
+// this PR. Cache briefly because order editors request inventory per SKU.
+let _adidasFreshnessCache={at:0,value:null,promise:null};
+const fetchAdidasRunFreshness=async(force=false)=>{
+  if(!supabase)return{};
+  const now=Date.now();
+  if(!force&&_adidasFreshnessCache.value&&now-_adidasFreshnessCache.at<60000)return _adidasFreshnessCache.value;
+  if(!force&&_adidasFreshnessCache.promise)return _adidasFreshnessCache.promise;
+  const request=supabase.from('adidas_inventory_freshness').select('source,last_success_at').then(({data,error})=>{
+    if(error){console.warn('[Adidas B2B] Run-freshness fetch unavailable; using row timestamps:',error.message);_adidasFreshnessCache={at:Date.now(),value:{},promise:null};return{}}
+    const value={};(data||[]).forEach(row=>{if(row.source&&row.last_success_at)value[row.source]=row.last_success_at});
+    _adidasFreshnessCache={at:Date.now(),value,promise:null};return value;
+  }).catch(error=>{console.warn('[Adidas B2B] Run-freshness fetch failed; using row timestamps:',error?.message||error);_adidasFreshnessCache={at:Date.now(),value:{},promise:null};return{}});
+  _adidasFreshnessCache.promise=request;
+  return request;
 };
 
 // Reads the synced B2B inventory union (adidas Cowork CLICK + Agron + Under
@@ -1083,15 +1061,17 @@ const aggregateAdidasRows = (rows) => {
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
-    const data = await fetchPublicInventory([sku]);
+    const [data,freshness] = await Promise.all([fetchPublicInventory([sku]),fetchAdidasRunFreshness()]);
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
-    return aggregateAdidasRows(data);
+    return aggregateAdidasInventoryRows(data,freshness);
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
 };
 
-const fetchAdidasGlobalLastSync = async () => {
+const fetchAdidasGlobalLastSync = async (force=false) => {
   if (!supabase) return null;
   try {
+    const freshness=await fetchAdidasRunFreshness(force);
+    if(freshness['api-materials'])return freshness['api-materials'];
     const { data, error } = await supabase.from('adidas_inventory').select('last_synced').order('last_synced', { ascending: false }).limit(1);
     if (error) { console.warn('[Adidas B2B] Last-sync fetch error:', error.message); return null; }
     return data?.[0]?.last_synced || null;
@@ -1101,6 +1081,7 @@ const fetchAdidasGlobalLastSync = async () => {
 const fetchAdidasInventoryBulk = async (skus) => {
   if (!supabase || !skus || skus.length === 0) return {};
   try {
+    const freshness=await fetchAdidasRunFreshness();
     // A single .in() with the whole Adidas catalog overflows the request URL
     // (→ 400 Bad Request) and can exceed PostgREST's row cap. Fetch in small
     // batches (each ~600 rows, URL-safe) with limited concurrency, then merge.
@@ -1122,7 +1103,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
       results.forEach(rows => rows.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); }));
     }
     const result = {};
-    Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasRows(rows); });
+    Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasInventoryRows(rows,freshness); });
     return result;
   } catch (e) { console.error('[Adidas B2B] Bulk fetch failed:', e); return {}; }
 };
@@ -1148,9 +1129,8 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
     <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2,borderLeft:'3px solid #059669',paddingLeft:4}}>Adidas B2B:</div>
     <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
       {(displaySizes||[]).map(sz => {
-        const v = ai.sizes[sz]?.qty || 0;
-        const ft = ai.sizes[sz]?.futureDate;
-        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+        const cell=adidasInventorySizeEntry(ai.sizes,sz);const v=cell?.qty||0;const ft=cell?.futureDate;
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (cell?.futureQty || 0) + ' units)' : ''}>
           <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
         </div>;
       })}
@@ -2677,8 +2657,8 @@ export default function App(){
   const adidasBulkFetched=useRef(false);
   const[adidasSyncUploading,setAdidasSyncUploading]=useState(false);
   const[adidasSyncLog,setAdidasSyncLog]=useState([]);// [{ts,rows,skus,status,error}]
-  const[adidasGlobalLastSync,setAdidasGlobalLastSync]=useState(null);// most recent last_synced across whole adidas_inventory table
-  const refreshAdidasLastSync=React.useCallback(()=>{fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync refresh error:',e))},[]);
+  const[adidasGlobalLastSync,setAdidasGlobalLastSync]=useState(null);// latest successful api-materials run; row timestamp fallback
+  const refreshAdidasLastSync=React.useCallback(()=>{fetchAdidasGlobalLastSync(true).then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync refresh error:',e))},[]);
   // ShipStation integration state
   const[ssConnected,setSSConnected]=useState(false);
   const[ssShipping,setSSShipping]=useState(false);
@@ -2963,12 +2943,14 @@ export default function App(){
     if(!skus.length){setBotAvail(null);return}
     let dead=false;
     Promise.all([
-      supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus),
+      supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source').in('sku',skus),
       supabase.from('adidas_click_size_preferences').select('sku,variant').in('sku',skus),
-    ]).then(([r,prefs])=>{
+      fetchAdidasRunFreshness(),
+    ]).then(([r,prefs,freshness])=>{
       if(dead||r.error||!r.data||!r.data.length){if(!dead)setBotAvail(null);return}
       const map={};let synced=null;
       r.data.forEach(row=>{(map[row.sku]=map[row.sku]||{})[row.size]={stock:row.stock_qty??0,date:row.future_delivery_date||null,fqty:row.future_delivery_qty??null};if(row.last_synced&&(!synced||row.last_synced>synced))synced=row.last_synced});
+      synced=freshness?.['api-materials']||synced;
       const preferences={};if(!prefs.error)(prefs.data||[]).forEach(row=>{preferences[row.sku]=row.variant});
       setBotAvail({rows:r.data,map,synced,preferences});
     });
@@ -13100,7 +13082,7 @@ export default function App(){
           return<div style={{marginTop:3,paddingLeft:2,borderLeft:'3px solid #059675'}}>
             <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:1}}>B2B:</div>
             <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
-            {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
+            {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||((adidasInventorySizeEntry(ai.sizes,sz)?.qty||0)>0)).map(sz=>{const v=adidasInventorySizeEntry(ai.sizes,sz)?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
             <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
           </div></div>})()}
@@ -39623,7 +39605,7 @@ export default function App(){
             </div>;
           }
           if(bp.target==='adidas_click'){
-            return <AdidasClickAssignPanel payload={bp} inventoryRows={botAvail?.rows||[]} savedPreferences={botAvail?.preferences||{}}
+            return <AdidasClickAssignPanel payload={bp} inventoryRows={botAvail?.rows||[]} freshnessAt={botAvail?.synced||null} savedPreferences={botAvail?.preferences||{}}
               value={todoModal.bot_click_config}
               onChange={bot_click_config=>setTodoModal(m=>({...m,bot_click_config}))}
               onSavePreference={saveAdidasClickPreference}/>;

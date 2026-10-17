@@ -44,6 +44,7 @@ export function getAdidasClickConfig(payload, value) {
 export default function AdidasClickAssignPanel({
   payload,
   inventoryRows = [],
+  freshnessAt = null,
   savedPreferences = {},
   value,
   onChange,
@@ -51,17 +52,18 @@ export default function AdidasClickAssignPanel({
 }) {
   const config = getAdidasClickConfig(payload, value);
   const preferences = { ...savedPreferences, ...config.preferences };
-  const index = useMemo(() => buildAdidasInventoryIndex(inventoryRows), [inventoryRows]);
+  const index = useMemo(() => buildAdidasInventoryIndex(inventoryRows, freshnessAt), [inventoryRows, freshnessAt]);
   const plan = useMemo(() => planAdidasClickOrder({
     lines: payload?.lines || [],
     inventoryRows,
+    inventoryFreshness: freshnessAt,
     preferences,
     defaultChoice: config.default_choice,
     skuChoices: config.sku_choices,
     customerPo: config.customer_po,
     shipMethod: config.ship_method,
     deliveryLocation: config.delivery_location,
-  }), [payload, inventoryRows, preferences, config.default_choice, config.sku_choices, config.customer_po, config.ship_method, config.delivery_location]);
+  }), [payload, inventoryRows, freshnessAt, preferences, config.default_choice, config.sku_choices, config.customer_po, config.ship_method, config.delivery_location]);
 
   const update = (patch) => onChange?.({ ...config, ...patch });
   const updateAddress = (patch) => update({

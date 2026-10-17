@@ -82,3 +82,10 @@ one dated future-delivery quantity in `adidas_inventory`. Preorder-section
 articles with season delivery windows are intentionally not inferred from those
 fields. They must remain unresolved until the catalog/sync exposes an explicit
 season-window shape and the contract is versioned to carry it.
+
+Portal/CLICK comparisons normalize equivalent names (`2XS`/`XXS`,
+`2XL`/`XXL`, and numeric waist labels with a trailing inch mark) while retaining
+the exact CLICK label in import rows. Tall-2 labels such as `LT2`, `XLT2`, and
+`2XT2` remain distinct sizes. Inventory age comes from the browser-safe
+`adidas_inventory_freshness` projection of successful sync runs, with row
+`last_synced` as a fallback.

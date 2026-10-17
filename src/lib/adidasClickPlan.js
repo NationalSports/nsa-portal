@@ -1,3 +1,5 @@
+import { normalizeAdidasSizeName } from './adidasInventory';
+
 export const ADIDAS_CLICK_TASK_TYPE = 'adidas_click_cart_v2';
 export const ADIDAS_CLICK_PLAN_VERSION = 2;
 export const ADIDAS_CLICK_SOLD_TO = '6017364000';
@@ -94,7 +96,8 @@ export function aggregateAdidasOrderLines(lines = []) {
   return { lines: [...grouped.values()], invalidQuantities };
 }
 
-const norm = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+const norm = (value) => String(normalizeAdidasSizeName(value) || '').replace(/\s+/g, '');
+const rawNorm = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 const variantToken = (value) => norm(value).replace(/"/g, '');
 
 // CLICK labels are inconsistent about spaces and quotes (S 7", XL7", 2XL7).
@@ -102,6 +105,7 @@ const variantToken = (value) => norm(value).replace(/"/g, '');
 // still win before this fallback is considered.
 export function splitClickSizeLabel(label) {
   const text = String(label || '').trim();
+  if (/^[A-Za-z0-9]*T2$/i.test(text.replace(/\s+/g, ''))) return { base: text, variant: null };
   const match = text.match(/^(.*?[A-Za-z])\s*(\d+)"?$/);
   if (!match) return { base: text, variant: null };
   return { base: match[1].trim(), variant: match[2] };
@@ -109,7 +113,12 @@ export function splitClickSizeLabel(label) {
 
 export function resolvePortalSize(portalSize, knownClickSizes, preference = null) {
   const sizes = [...new Set((knownClickSizes || []).map((s) => String(s || '').trim()).filter(Boolean))];
-  const exact = sizes.find((s) => norm(s) === norm(portalSize));
+  const rawExact = sizes.find((s) => rawNorm(s) === rawNorm(portalSize));
+  if (rawExact) return { status: 'resolved', click_size: rawExact, candidates: [rawExact], variant: splitClickSizeLabel(rawExact).variant };
+  const exact = sizes.find((s) => {
+    const split = splitClickSizeLabel(s);
+    return split.variant == null && norm(split.base) === norm(portalSize);
+  });
   if (exact) return { status: 'resolved', click_size: exact, candidates: [exact], variant: null };
 
   const candidates = sizes.filter((s) => norm(splitClickSizeLabel(s).base) === norm(portalSize));
@@ -127,7 +136,7 @@ export function resolvePortalSize(portalSize, knownClickSizes, preference = null
   return { status: candidates.length ? 'ambiguous' : 'missing', click_size: null, candidates, variant: null };
 }
 
-export function buildAdidasInventoryIndex(rows) {
+export function buildAdidasInventoryIndex(rows, freshnessAt = null) {
   const bySku = {};
   let oldestSyncedAt = null;
   let newestSyncedAt = null;
@@ -147,6 +156,10 @@ export function buildAdidasInventoryIndex(rows) {
       if (!newestSyncedAt || row.last_synced > newestSyncedAt) newestSyncedAt = row.last_synced;
     }
   });
+  if (freshnessAt) {
+    oldestSyncedAt = freshnessAt;
+    newestSyncedAt = freshnessAt;
+  }
   return { bySku, oldestSyncedAt, newestSyncedAt };
 }
 
@@ -160,6 +173,7 @@ const nextMorning = (dateString) => {
 export function planAdidasClickOrder({
   lines = [],
   inventoryRows = [],
+  inventoryFreshness = null,
   preferences = {},
   defaultChoice = ADIDAS_CLICK_CHOICES.COMPLETE_SKU,
   skuChoices = {},
@@ -169,7 +183,7 @@ export function planAdidasClickOrder({
   deliveryLocation = { type: 'saved', number: ADIDAS_CLICK_DEFAULT_SHIP_TO },
   generatedAt = new Date().toISOString(),
 } = {}) {
-  const inventory = buildAdidasInventoryIndex(inventoryRows);
+  const inventory = buildAdidasInventoryIndex(inventoryRows, inventoryFreshness);
   const skuPlans = [];
   const importRows = [];
   const issues = [];

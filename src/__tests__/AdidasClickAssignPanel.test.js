@@ -19,6 +19,7 @@ test('shows the four timing choices, stale age, exact CLICK sizes, and saves a v
   render(<AdidasClickAssignPanel
     payload={payload}
     inventoryRows={rows}
+    freshnessAt={new Date().toISOString()}
     savedPreferences={{}}
     value={{}}
     onChange={onChange}
@@ -29,7 +30,7 @@ test('shows the four timing choices, stale age, exact CLICK sizes, and saves a v
   expect(screen.getAllByText('Complete SKU').length).toBeGreaterThan(0);
   expect(screen.getAllByText('Each size when ready').length).toBeGreaterThan(0);
   expect(screen.getAllByText('Hold & re-check').length).toBeGreaterThan(0);
-  expect(screen.getByText(/Inventory .*h old/)).toBeTruthy();
+  expect(screen.getByText(/✓ Inventory <1h old/)).toBeTruthy();
   expect(screen.getByText(/S:5 → choose variant/)).toBeTruthy();
 
   fireEvent.change(screen.getByDisplayValue('Choose variant…'), { target: { value: '7' } });

@@ -43,6 +43,13 @@ describe('adidas CLICK size resolution', () => {
     expect(resolvePortalSize('LT2', ['LT', 'LT2'], '7')).toMatchObject({ click_size: 'LT2' });
     expect(resolvePortalSize('M', ['M 5"'], '7')).toMatchObject({ status: 'missing', click_size: null });
   });
+
+  test('matches aliases, waist inches, and tall-2 without changing the CLICK import label', () => {
+    expect(resolvePortalSize('XXS', ['2XS'])).toMatchObject({ click_size: '2XS' });
+    expect(resolvePortalSize('2XL', ['XXL'])).toMatchObject({ click_size: 'XXL' });
+    expect(resolvePortalSize('28', ['28"'])).toMatchObject({ click_size: '28"' });
+    expect(resolvePortalSize('LT2', ['LT', 'LT2'])).toMatchObject({ click_size: 'LT2' });
+  });
 });
 
 describe('adidas CLICK planning', () => {
@@ -75,6 +82,35 @@ describe('adidas CLICK planning', () => {
       { article: 'TOP1', rdd: '2026-10-20', click_size: 'S', qty: 8 },
       { article: 'TOP1', rdd: '2026-10-20', click_size: 'M', qty: 2 },
     ]);
+  });
+
+  test('plans zero-current future ATP as restock, never as stock now', () => {
+    const plan = planAdidasClickOrder({
+      lines: [{ sku: 'FUTURE1', sizes: { S: 5 } }],
+      inventoryRows: [{
+        sku: 'FUTURE1',
+        size: 'S',
+        stock_qty: 0,
+        future_delivery_date: '2026-11-15',
+        future_delivery_qty: 20,
+        last_synced: '2026-10-17T12:00:00Z',
+      }],
+      defaultChoice: ADIDAS_CLICK_CHOICES.EACH_SIZE,
+      ...headers,
+    });
+    expect(plan.import_rows).toEqual([
+      { article: 'FUTURE1', rdd: '2026-11-15', click_size: 'S', qty: 5 },
+    ]);
+  });
+
+  test('uses successful-run freshness in the resolved task plan', () => {
+    const plan = planAdidasClickOrder({
+      lines: [{ sku: 'TOP1', sizes: { M: 2 } }],
+      inventoryRows: inventory,
+      inventoryFreshness: '2026-10-17T15:00:00Z',
+      ...headers,
+    });
+    expect(plan.inventory_as_of).toBe('2026-10-17T15:00:00Z');
   });
 
   test('resolves saved variants and schedules a deterministic held import', () => {
