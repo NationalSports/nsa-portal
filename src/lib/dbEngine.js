@@ -3004,6 +3004,17 @@ const _dbSaveInvoiceInner = async (inv) => {
       _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
       return false;
     }
+    // STALE PAYMENTS (2026-10-17). guard_invoice_payment_revision raises 40001 when this tab's
+    // payment_revision is behind the row's: accounting (or the QuickBooks sync) changed the
+    // payments since this tab loaded. A retry can never succeed with the same stale header, and
+    // the generic path below kept the invoice in the retry set with an alarming toast. Say what
+    // happened, clear the retry, and let the reload bring the current payments.
+    if(invErr&&(invErr.code==='40001'||/Reload this invoice before saving/i.test(invErr.message||''))){
+      console.warn('[DB]',inv.id,': payments changed elsewhere since this tab loaded —',invErr.message);
+      if(_dbNotify)_dbNotify('Not saved — the payments on '+inv.id+' were changed elsewhere (accounting or QuickBooks) after this screen loaded. Reload the invoice, then make your change again.','error');
+      _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
+      return false;
+    }
     if(invErr&&!(invErr.code==='42703'||invErr.code==='PGRST204')){
       console.error('[DB] invoices upsert failed:',invErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr.message);_persistFailedIds();return false;
     }
@@ -3087,6 +3098,22 @@ const _dbSaveInvoiceInner = async (inv) => {
         // A payment is a financial record and its date decides a rep's statement month: never delete
         // on a failed write. Try a plain insert of the rows the DB does not already hold, and if that
         // fails too, fail the save so the retry loop keeps the payment instead of dropping it.
+        // DELIBERATE REFUSALS (2026-10-17). Three answers from the DB are decisions, not glitches,
+        // and a retry with the same rows can never succeed: a payment accounting unapplied (the
+        // tombstone read above normally catches this first), a payment held for QuickBooks
+        // reconciliation, and two payments on one invoice sharing the same reference (unique key
+        // on invoice_id+ref). Each used to fall into the "Payment NOT saved … Retrying" loop.
+        const _refusal=(()=>{const m=String(payErr.message||'');
+          if(/was unapplied/i.test(m))return 'a payment on it was removed by accounting';
+          if(/held for QuickBooks reconciliation/i.test(m))return 'a payment on it is held for QuickBooks reconciliation';
+          if(payErr.code==='23505'||payErr.code==='21000'||/duplicate key|affect row a second time/i.test(m))return 'two payments on it share the same reference (give each payment its own check # or reference)';
+          return null;})();
+        if(_refusal){
+          console.warn('[DB]',inv.id,': payment write refused by the database —',payErr.message);
+          if(_dbNotify)_dbNotify('Payment not saved on '+inv.id+' — '+_refusal+'. Reload the invoice to see its current payments, then try again.','error');
+          _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
+          return false;
+        }
         const _known=new Set(_dbPayRows.map(r=>String(r.ref)));
         const _missing=payRows.filter(r=>!_known.has(String(r.ref)));
         const{error:insErr}=_missing.length?await supabase.from('invoice_payments').insert(_missing):{error:null};
