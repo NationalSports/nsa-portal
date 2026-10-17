@@ -127,3 +127,58 @@ test('supplier manifest identifies the exact garment knockout and distinct print
  const payload=await batchPayload(storageAdmin(),{...batch,manifest:variants});
  expect(payload.attachment).toHaveLength(3);
 });
+
+// Permanent Art IDs + approved Astra chart layout.
+function variantRecorder({owner='team',rpc=async()=>({data:'ART-000042-V02-R01',error:null})}={}) {
+ const admin=recorder();const base=admin.from;
+ const variant={id:'variant-uuid-1',art_id:'caf1',garment_color:'Red',knockout_color:'Red removed',web_logo_url:'https://res.cloudinary.com/x/logo.png'};
+ const customers={team:{id:'c-team',parent_id:'c-parent',art_files:owner==='team'?[{id:'caf1'}]:[]},parent:{id:'c-parent',art_files:owner==='parent'?[{id:'caf1'}]:[]}};
+ admin.from=table=>{
+  if(table==='customers'){let id;const q={select:()=>q,eq:(_,v)=>{id=v;return q;},maybeSingle:async()=>({data:id==='c-team'?customers.team:customers.parent,error:null})};return q;}
+  const q=base(table);
+  if(table==='webstores'){const then=q.then;q.then=resolve=>then(r=>resolve({...r,data:{...r.data,customer_id:'c-team'}}));}
+  if(table==='so_items'){const then=q.then;q.then=resolve=>then(r=>resolve({...r,data:r.data.map(i=>({...i,recipe_snapshot:{...i.recipe_snapshot,image_url:'https://cdn.example.com/red-tee.png',transfer_inventory:i.recipe_snapshot.transfer_inventory.map(t=>({...t,production_file:{...t.production_file,at_once_variant:variant}}))}}))}));}
+  return q;
+ };
+ admin.rpc=jest.fn(rpc);
+ return admin;
+}
+test('24/7 DTF request freezes a permanent Art ID assigned to the owning art folder',async()=>{
+ const admin=variantRecorder();await recordAllSchoolDtfForSo(admin,'SO-1');
+ expect(admin.rpc).toHaveBeenCalledWith('assign_art_code',{p_customer_id:'c-team',p_art_id:'caf1',p_variant_key:'Red',p_revision_key:'variant-uuid-1'});
+ expect(admin.writes[0].status).toBe('queued');
+ expect(admin.writes[0].manifest.art_code).toBe('ART-000042-V02-R01');
+ expect(admin.writes[0].manifest.logo_url).toBe('https://res.cloudinary.com/x/logo.png');
+ expect(admin.writes[0].manifest.garments[0].image_url).toBe('https://cdn.example.com/red-tee.png');
+});
+test('art that lives in the parent program folder is numbered under the parent',async()=>{
+ const admin=variantRecorder({owner:'parent'});await recordAllSchoolDtfForSo(admin,'SO-1');
+ expect(admin.rpc.mock.calls[0][1].p_customer_id).toBe('c-parent');
+});
+test('no Art ID means the supplier request is held for review, never sent unmatched',async()=>{
+ const admin=variantRecorder({rpc:async()=>({data:null,error:{message:'function assign_art_code does not exist'}})});
+ await recordAllSchoolDtfForSo(admin,'SO-1');
+ expect(admin.writes[0].status).toBe('blocked');expect(admin.writes[0].error).toMatch(/permanent Art ID/);
+});
+test('supplier email matches the approved chart: Art ID file names, mockups, sizes and totals',async()=>{
+ const shared={...manifest.artwork,path:'red.ai',name:'Red knockout FINAL.ai'};
+ const red={...manifest,job_id:'J-1',art_code:'ART-001234-V02-R01',qty:5,placement:'Left Chest',logo_url:'https://res.cloudinary.com/x/logo.png',
+  artwork:{...shared,at_once_variant:{id:'v2',garment_color:'Red',knockout_color:'Red removed'}},
+  garments:[{sku:'3600-RED',color:'Red',size:'L',qty:1,image_url:'https://cdn.example.com/red-tee.png'},{sku:'BC3719-Red',color:'Red',size:'XL',qty:1,image_url:'http://insecure.example.com/hoodie.png'},
+   {sku:'3600-RED',color:'Red',size:'2XL',qty:2},{sku:'3600-RED',color:'Red',size:'M',qty:1}]};
+ const payload=await batchPayload(storageAdmin(),{...batch,manifest:[red]});
+ expect(payload.attachment.map(a=>a.name)).toEqual(['DTF-batch-1.csv','ART-001234-V02-R01.ai']);
+ const html=payload.htmlContent;
+ expect(html).toContain('Art ID / file');expect(html).toContain('ART-001234-V02-R01.ai');
+ expect(html).toContain('M: 1; L: 1; 2XL: 2');expect(html).toContain('XL: 1');
+ expect(html).toContain('src="https://cdn.example.com/red-tee.png"');expect(html).not.toContain('http://insecure');
+ expect(html).toContain('Knockout: Red removed<br>Left Chest');expect(html).toContain('8 × 10 in');
+ expect(html).toContain('ART-001234-V02-R01 = 5 prints for Red garments');expect(html).toContain('Total = 5');
+ const csv=Buffer.from(payload.attachment[0].content,'base64').toString();
+ expect(csv.split('\r\n')[0]).toMatch(/^"Art ID","Artwork file"/);expect(csv).toContain('"ART-001234-V02-R01","ART-001234-V02-R01.ai"');
+});
+test('chart escapes order data and older manifests keep their original file name',async()=>{
+ const payload=await batchPayload(storageAdmin(),{...batch,manifest:[{...manifest,placement:'<script>x</script>'}]});
+ expect(payload.attachment[1].name).toBe('mascot.ai');
+ expect(payload.htmlContent).not.toContain('<script>');expect(payload.htmlContent).toContain('&lt;script&gt;');
+});
