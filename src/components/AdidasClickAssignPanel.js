@@ -4,6 +4,7 @@ import {
   ADIDAS_CLICK_DEFAULT_SHIP_TO,
   ADIDAS_CLICK_LOCATIONS,
   ADIDAS_CLICK_SHIP_METHODS,
+  aggregateAdidasOrderLines,
   buildAdidasInventoryIndex,
   downloadClickImportFile,
   planAdidasClickOrder,
@@ -71,7 +72,7 @@ export default function AdidasClickAssignPanel({
   });
   const ageHours = index.oldestSyncedAt ? (Date.now() - new Date(index.oldestSyncedAt).getTime()) / 36e5 : null;
   const stale = ageHours == null || ageHours > 24;
-  const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+  const lines = useMemo(() => aggregateAdidasOrderLines(payload?.lines || []).lines, [payload]);
 
   const variantsFor = (line) => {
     const known = Object.keys(index.bySku[line.sku] || {});

@@ -66,9 +66,10 @@ Write the result to `bot_payload.result` without removing the original
 }
 ```
 
-The legacy Mac Mini worker continues to process existing
-`task_type = "add_to_cart"` tasks. It deliberately ignores v2 tasks, preventing
-two browser runners from racing for the same CLICK cart.
+The legacy Mac Mini worker continues to process fallback and other-vendor
+`task_type = "add_to_cart"` tasks. Availability-aware adidas assignments from
+the portal use v2; the Mac Mini deliberately ignores them, preventing two
+browser runners from racing for the same CLICK cart.
 
 ## Scope
 

@@ -35,7 +35,11 @@ export const ADIDAS_CLICK_LOCATIONS = [
 
 const SIZE_META = new Set([
   'drop_ship', 'unit_cost', 'po_type', 'vendor', 'memo', 'notes', 'status',
-  'ship_to', 'attention', 'ship_to_deco_id',
+  'ship_to', 'attention', 'ship_to_deco_id', 'po_id', 'received', 'shipments',
+  'cancelled', 'deco_vendor', 'deco_type', 'created_at', 'expected_date',
+  'billed', 'tracking_numbers', 'batch_queue_id', 'batch_po_number',
+  'preexisting', 'email_history', 'shipping', 'api_order_id', 'api_ordered_at',
+  'vendor_keys',
 ]);
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -55,11 +59,39 @@ export function sanitizeClickCustomerPo(value) {
 export function cleanAdidasOrderSizes(raw) {
   const out = {};
   Object.entries(raw || {}).forEach(([size, value]) => {
-    if (SIZE_META.has(size)) return;
+    if (SIZE_META.has(size) || size.startsWith('_')) return;
     const qty = Number(value);
-    if (Number.isFinite(qty) && qty > 0) out[size] = qty;
+    if (Number.isInteger(qty) && qty > 0) out[size] = qty;
   });
   return out;
+}
+
+// A PO can contain the same article on multiple source lines. CLICK inventory
+// is per article+size, so aggregate before evaluating supply; otherwise each
+// line can independently spend the same stock.
+export function aggregateAdidasOrderLines(lines = []) {
+  const grouped = new Map();
+  const invalidQuantities = [];
+  (lines || []).forEach((line, lineIndex) => {
+    const sku = String(line?.sku || '').trim();
+    if (!sku) return;
+    let groupedLine = grouped.get(sku);
+    if (!groupedLine) {
+      groupedLine = { ...line, sku, sizes: {}, source_line_indexes: [] };
+      grouped.set(sku, groupedLine);
+    }
+    groupedLine.source_line_indexes.push(lineIndex);
+    Object.entries(line?.sizes || {}).forEach(([size, value]) => {
+      if (SIZE_META.has(size) || size.startsWith('_') || value == null || value === '' || Number(value) === 0) return;
+      const qty = Number(value);
+      if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty < 0) {
+        invalidQuantities.push({ sku, size, value, line_index: lineIndex });
+        return;
+      }
+      groupedLine.sizes[size] = (groupedLine.sizes[size] || 0) + qty;
+    });
+  });
+  return { lines: [...grouped.values()], invalidQuantities };
 }
 
 const norm = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -142,8 +174,18 @@ export function planAdidasClickOrder({
   const importRows = [];
   const issues = [];
   let scheduledFor = null;
+  const aggregated = aggregateAdidasOrderLines(lines);
+  aggregated.invalidQuantities.forEach((invalid) => {
+    issues.push({
+      code: 'invalid_quantity',
+      sku: invalid.sku,
+      portal_size: invalid.size,
+      value: invalid.value,
+      message: `${invalid.sku} ${invalid.size} must have a whole-number quantity.`,
+    });
+  });
 
-  (lines || []).forEach((line) => {
+  aggregated.lines.forEach((line) => {
     const sku = String(line.sku || '').trim();
     if (!sku) return;
     const requestedSizes = cleanAdidasOrderSizes(line.sizes);

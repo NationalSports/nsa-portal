@@ -38,3 +38,16 @@ test('shows the four timing choices, stale age, exact CLICK sizes, and saves a v
     preferences: { IS1111: '7' },
   }));
 });
+
+test('renders duplicate source lines as one per-SKU decision', () => {
+  render(<AdidasClickAssignPanel
+    payload={{ ...payload, lines: [{ sku: 'IS1111', sizes: { S: 2 } }, { sku: 'IS1111', sizes: { S: 3 } }] }}
+    inventoryRows={rows}
+    savedPreferences={{ IS1111: '7' }}
+    value={{}}
+    onChange={() => {}}
+  />);
+
+  expect(screen.getAllByText('IS1111')).toHaveLength(1);
+  expect(screen.getByText(/S:5 → S 7"/)).toBeTruthy();
+});

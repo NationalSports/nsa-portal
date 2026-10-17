@@ -6902,8 +6902,10 @@ export default function App(){
     setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
     try{_sbSignOut()}catch{}
     setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so your changes can save to the cloud.','error')},150);
-  });
-
+    const host=typeof window!=='undefined'?(window.location.hostname||''):'';
+    const isPreviewHost=/--[a-z0-9-]+\.netlify\.app$/i.test(host);
+    const isLocalDev=host==='localhost'||host==='127.0.0.1';
+    if(isPreviewHost||isLocalDev)return;
   // Detect stale legacy sessions — users with nsa_user in localStorage from before Supabase
   // auth was added bypass LoginGate but have no JWT, so every write to an RLS-protected
   // table fails with 401. Force them to sign in again so writes get a valid auth.uid().
@@ -15802,7 +15804,13 @@ export default function App(){
                     ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_botSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
                     :resolveShipToClient(_botSoId,sos,cust);
                   const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
-                  assignBotTask({title,description,priority:1,bot_payload});
+                  if(bot_payload.target==='adidas_click'){
+                    const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+                    const so=sos.find(row=>row.id===_botSoId);
+                    setTodoModal({open:true,title,description,assigned_to:bot?.id||'',so_id:_botSoId||'',customer_id:so?.customer_id||'',priority:1,due_date:'',doc_label:poNum,po_id:poNum,wh_only:false,bot_payload});
+                  }else{
+                    assignBotTask({title,description,priority:1,bot_payload});
+                  }
                 }}>🤖 Assign to Claude</button>}
               </div>
             </div>

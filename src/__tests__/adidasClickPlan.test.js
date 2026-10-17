@@ -120,6 +120,45 @@ describe('adidas CLICK planning', () => {
     ]);
   });
 
+  test('aggregates duplicate article lines before spending inventory', () => {
+    const plan = planAdidasClickOrder({
+      lines: [
+        { sku: 'DUP', sizes: { S: 4 } },
+        { sku: 'DUP', sizes: { S: 4 } },
+      ],
+      inventoryRows: [{ sku: 'DUP', size: 'S', stock_qty: 5, last_synced: '2026-10-17T12:00:00Z' }],
+      defaultChoice: ADIDAS_CLICK_CHOICES.AVAILABLE_NOW,
+      ...headers,
+    });
+
+    expect(plan.sku_plans).toHaveLength(1);
+    expect(plan.sku_plans[0].requested).toEqual([
+      expect.objectContaining({ portal_size: 'S', click_size: 'S', qty: 8 }),
+    ]);
+    expect(plan.import_rows).toEqual([
+      { article: 'DUP', rdd: '2026-10-17', click_size: 'S', qty: 5 },
+    ]);
+    expect(plan.sku_plans[0].unfilled).toEqual([
+      expect.objectContaining({ click_size: 'S', qty: 3 }),
+    ]);
+  });
+
+  test('blocks fractional, negative, and malformed quantities', () => {
+    const plan = planAdidasClickOrder({
+      lines: [{ sku: 'TOP1', sizes: { S: 1.5, M: -2, L: 'oops', XL: 0 } }],
+      inventoryRows: inventory,
+      defaultChoice: ADIDAS_CLICK_CHOICES.HOLD,
+      ...headers,
+    });
+
+    expect(plan.issues.filter((issue) => issue.code === 'invalid_quantity')).toEqual([
+      expect.objectContaining({ sku: 'TOP1', portal_size: 'S', value: 1.5 }),
+      expect.objectContaining({ sku: 'TOP1', portal_size: 'M', value: -2 }),
+      expect.objectContaining({ sku: 'TOP1', portal_size: 'L', value: 'oops' }),
+    ]);
+    expect(plan.import_rows).toEqual([]);
+  });
+
   test('reports ambiguous variants before a task can be queued', () => {
     const plan = planAdidasClickOrder({
       lines: [{ sku: 'IS1111', sizes: { S: 5 } }],
