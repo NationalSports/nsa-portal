@@ -32,8 +32,10 @@ begin
 end
 $$;
 
-revoke all on public.agron_inventory from authenticated;
-revoke all on public.agron_products_staging from authenticated;
+-- Additive on purpose: production may still carry broader grants from the
+-- original Agron migrations, while environments that applied the later vendor
+-- cache lockdown carry none. Do not silently change either environment's
+-- existing access here; grant only what this security-invoker view requires.
 grant select (sku, size, upc) on public.agron_inventory to authenticated;
 grant select (code, product_number) on public.agron_products_staging to authenticated;
 
