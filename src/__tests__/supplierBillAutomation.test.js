@@ -9,8 +9,11 @@ const {
 } = require('../lib/supplierBillAutomation');
 const {
   deterministicQboReview,
+  pageFiltered,
+  runSupplierBillBacklog,
   vendorLinkMap,
 } = require('../../netlify/functions/_supplierBillProcessor');
+const supplierBillBackground = require('../../netlify/functions/_background-workers/supplier-bill-process-background');
 
 const bill = (overrides = {}) => ({
   doc_number: 'INV-100',
@@ -173,17 +176,124 @@ describe('scheduled QuickBooks handoff', () => {
     expect(worker).toContain('qboSupplierBillRequestId(realmId, { ...bill, doc_number: docNumber');
   });
 
-  test('is deployed as a private Netlify schedule, not a callable route', () => {
+  test('runs once daily around 6 AM Pacific and starts a protected background worker', async () => {
     const toml = fs.readFileSync(path.join(__dirname, '../../netlify.toml'), 'utf8');
+    const scheduled = fs.readFileSync(path.join(__dirname, '../../netlify/functions/supplier-bill-process-scheduled.js'), 'utf8');
+    const background = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_background-workers/supplier-bill-process-background.js'), 'utf8');
+    const backgroundWrapper = fs.readFileSync(path.join(__dirname, '../../netlify/functions/supplier-bill-process-background.mjs'), 'utf8');
     expect(toml).toContain('[functions."supplier-bill-process-scheduled"]');
-    expect(toml).toContain('schedule = "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"');
+    expect(toml).toContain('schedule = "0 14 * * *"');
+    expect(toml).toContain('6:00 AM Pacific');
+    expect(toml).toContain('7:00 AM during daylight time');
     expect(toml).not.toMatch(/supplier-bill-process-scheduled[\s\S]{0,120}\n\s*path\s*=/);
+    expect(scheduled).toContain("'x-internal-secret': secret");
+    expect(scheduled).toContain('/supplier-bill-process-background');
+    expect(background).toContain('safeEqualStr(provided, expected)');
+    expect(backgroundWrapper).toContain('export const config = { background: true }');
+    expect((await supplierBillBackground.handler({ httpMethod: 'GET', headers: {} })).statusCode).toBe(405);
+    expect((await supplierBillBackground.handler({ httpMethod: 'POST', headers: { 'x-internal-secret': 'wrong' } })).statusCode).toBe(401);
   });
 
   test('self-heals applied source rows so stale new rows cannot starve the queue', () => {
     const worker = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_supplierBillProcessor.js'), 'utf8');
     expect(worker).toContain("if (claim?.state === 'applied') {");
-    expect(worker).toContain('await markSourceApplied(admin, entry.source, entry.sourceId, bill)');
+    expect(worker).toContain('await markSourceApplied(admin, entry.source, entry.sourceId, bill, signal)');
     expect(worker).toContain(".select('*').eq('status', 'new')");
+  });
+
+  test('daily background run drains Portal and QBO batches while skipping rows already attempted', async () => {
+    const portalCalls = [];
+    const qboCalls = [];
+    const portalRows = [
+      { scanned: 2, applied: 1, review: 0, busy: 0, failed: 1, sourceKeys: ['ss|1', 'ss|2'] },
+      { scanned: 1, applied: 1, review: 0, busy: 0, failed: 0, sourceKeys: ['si|3'] },
+      { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, sourceKeys: [] },
+    ];
+    const qboRows = [
+      { enabled: true, scanned: 2, applied: 1, review: 1, busy: 0, failed: 0, ledgerIds: ['1', '2'] },
+      { enabled: true, scanned: 1, applied: 1, review: 0, busy: 0, failed: 0, ledgerIds: ['3'] },
+      { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [] },
+    ];
+    const result = await runSupplierBillBacklog({
+      admin: {},
+      timeBudgetMs: 1000,
+      clock: () => 0,
+      portalProcessor: async (_admin, _limit, owner, options) => {
+        portalCalls.push({ owner, skipped: new Set(options.skipSourceKeys) });
+        return portalRows.shift();
+      },
+      qboProcessor: async (_admin, _limit, owner, options) => {
+        qboCalls.push({ owner, skipped: new Set(options.skipLedgerIds) });
+        return qboRows.shift();
+      },
+    });
+    expect(result.portal).toEqual(expect.objectContaining({ batches: 3, scanned: 3, applied: 2, failed: 1 }));
+    expect(result.quickbooks).toEqual(expect.objectContaining({ batches: 3, scanned: 3, applied: 2, review: 1 }));
+    expect(portalCalls[1].skipped).toEqual(new Set(['ss|1', 'ss|2']));
+    expect(qboCalls[1].skipped).toEqual(new Set(['1', '2']));
+    expect(new Set([...portalCalls, ...qboCalls].map(call => call.owner)).size).toBe(1);
+  });
+
+  test('Portal time allocation cannot consume the QBO portion of the daily window', async () => {
+    let now = 0;
+    let qboCalled = false;
+    const result = await runSupplierBillBacklog({
+      admin: {},
+      timeBudgetMs: 900,
+      clock: () => now,
+      portalProcessor: async () => {
+        now = 301;
+        return { scanned: 1, applied: 1, review: 0, busy: 0, failed: 0, sourceKeys: ['ss|1'] };
+      },
+      qboProcessor: async () => {
+        qboCalled = true;
+        return { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [] };
+      },
+    });
+    expect(qboCalled).toBe(true);
+    expect(result.portal.timeBudgetReached).toBe(true);
+    expect(result.quickbooks.batches).toBe(1);
+  });
+
+  test('database paging reaches safe rows beyond the first 1,000 skipped records', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, id) => ({ id }));
+    const ranges = [];
+    const rows = await pageFiltered(
+      () => ({
+        range: async (from, to) => {
+          ranges.push([from, to]);
+          return { data: from === 0 ? firstPage : [{ id: 1000 }], error: null };
+        },
+      }),
+      row => row.id === 1000,
+      1,
+      'test page',
+      null,
+    );
+    expect(rows).toEqual([{ id: 1000 }]);
+    expect(ranges).toEqual([[0, 999], [1000, 1999]]);
+  });
+
+  test('busy leases are retried during the same background window', async () => {
+    let now = 0;
+    let portalCall = 0;
+    const skipped = [];
+    const result = await runSupplierBillBacklog({
+      admin: {},
+      timeBudgetMs: 900,
+      clock: () => now,
+      sleep: async () => { now += 1; },
+      portalProcessor: async (_admin, _limit, _owner, options) => {
+        portalCall += 1;
+        skipped.push(new Set(options.skipSourceKeys));
+        return portalCall === 1
+          ? { scanned: 1, applied: 0, review: 0, busy: 1, failed: 0, sourceKeys: ['ss|busy'], busySourceKeys: ['ss|busy'] }
+          : { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, sourceKeys: [] };
+      },
+      qboProcessor: async () => ({ enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [] }),
+    });
+    expect(portalCall).toBe(2);
+    expect(skipped[1]).not.toContain('ss|busy');
+    expect(result.portal.busy).toBe(1);
   });
 });

@@ -32,7 +32,26 @@ const check = (result, label) => {
   return result?.data;
 };
 
-async function markForReview(admin, claimToken, source, sourceId, bill, plan) {
+const withSignal = (query, signal) =>
+  signal && typeof query?.abortSignal === 'function' ? query.abortSignal(signal) : query;
+
+const signalUntil = deadlineMs => {
+  if (!deadlineMs) return null;
+  return AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
+};
+
+async function pageFiltered(makeQuery, accept, wanted, label, signal, maxRows = 20000) {
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; from < maxRows && rows.length < wanted; from += pageSize) {
+    const page = check(await withSignal(makeQuery().range(from, from + pageSize - 1), signal), label) || [];
+    rows.push(...page.filter(accept));
+    if (page.length < pageSize) break;
+  }
+  return rows.slice(0, wanted);
+}
+
+async function markForReview(admin, claimToken, source, sourceId, bill, plan, signal) {
   const id = `server-${source}-${sourceId}`;
   const parsed = { ...bill, _auto_hold: [plan.reason], _server_review_code: plan.code };
   const hold = {
@@ -52,27 +71,27 @@ async function markForReview(admin, claimToken, source, sourceId, bill, plan) {
     held_by: OWNER,
     updated_at: new Date().toISOString(),
   };
-  check(await admin.from('supplier_bill_holds').upsert(hold, { onConflict: 'id' }), 'save review hold');
+  check(await withSignal(admin.from('supplier_bill_holds').upsert(hold, { onConflict: 'id' }), signal), 'save review hold');
   if (source === 'ss_orders') {
-    check(await admin.from('ss_documents').update({ status: 'reviewed', updated_at: new Date().toISOString() })
-      .eq('order_number', sourceId), 'mark S&S review');
+    check(await withSignal(admin.from('ss_documents').update({ status: 'reviewed', updated_at: new Date().toISOString() })
+      .eq('order_number', sourceId), signal), 'mark S&S review');
   } else if (source === 'sportsinc') {
-    check(await admin.from('si_documents').update({ status: 'review', updated_at: new Date().toISOString() })
-      .eq('si_doc_number', sourceId), 'mark Sports Inc review');
+    check(await withSignal(admin.from('si_documents').update({ status: 'review', updated_at: new Date().toISOString() })
+      .eq('si_doc_number', sourceId), signal), 'mark Sports Inc review');
   }
   if (claimToken) {
-    check(await admin.rpc('finish_supplier_bill_claim', {
+    check(await withSignal(admin.rpc('finish_supplier_bill_claim', {
       p_claim_token: claimToken,
       p_status: 'review',
       p_code: plan.code,
       p_reason: plan.reason,
       p_payload: parsed,
       p_match_plan: plan.mappings || [],
-    }), 'finish review claim');
+    }), signal), 'finish review claim');
   }
 }
 
-async function markSourceApplied(admin, source, sourceId, bill) {
+async function markSourceApplied(admin, source, sourceId, bill, signal) {
   const patch = {
     applied_doc_number: bill.doc_number || null,
     resolved_by: OWNER,
@@ -80,34 +99,58 @@ async function markSourceApplied(admin, source, sourceId, bill) {
     updated_at: new Date().toISOString(),
   };
   if (source === 'ss_orders') {
-    check(await admin.from('ss_documents').update({ ...patch, status: 'applied' })
-      .eq('order_number', sourceId), 'self-heal S&S applied status');
+    check(await withSignal(admin.from('ss_documents').update({ ...patch, status: 'applied' })
+      .eq('order_number', sourceId), signal), 'self-heal S&S applied status');
   } else if (source === 'sportsinc') {
-    check(await admin.from('si_documents').update({ ...patch, status: 'approved' })
-      .eq('si_doc_number', sourceId), 'self-heal Sports Inc applied status');
+    check(await withSignal(admin.from('si_documents').update({ ...patch, status: 'approved' })
+      .eq('si_doc_number', sourceId), signal), 'self-heal Sports Inc applied status');
   }
 }
 
-async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${randomUUID()}`) {
-  const [ssResult, siResult] = await Promise.all([
-    admin.from('ss_documents').select('*').eq('status', 'new')
-      .eq('has_usable_lines', true).order('invoice_date', { ascending: true }).limit(limit),
-    admin.from('si_documents').select('*').eq('status', 'new')
-      .eq('source_type', 'edi').order('supplier_doc_date', { ascending: true }).limit(limit),
+async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${randomUUID()}`, options = {}) {
+  const skipSourceKeys = options.skipSourceKeys || new Set();
+  const querySignal = signalUntil(options.deadlineMs);
+  const [ssRows, siRows] = await Promise.all([
+    pageFiltered(
+      () => admin.from('ss_documents').select('*').eq('status', 'new')
+        .eq('has_usable_lines', true).order('invoice_date', { ascending: true }),
+      row => !skipSourceKeys.has(`ss_orders|${row.order_number}`),
+      limit,
+      'load S&S queue',
+      querySignal,
+    ),
+    pageFiltered(
+      () => admin.from('si_documents').select('*').eq('status', 'new')
+        .eq('source_type', 'edi').order('supplier_doc_date', { ascending: true }),
+      row => !skipSourceKeys.has(`sportsinc|${row.si_doc_number}`),
+      limit,
+      'load Sports Inc queue',
+      querySignal,
+    ),
   ]);
   const queued = [
-    ...(check(ssResult, 'load S&S queue') || []).map(row => ({ source: 'ss_orders', sourceId: row.order_number, sortDate: row.invoice_date || row.order_date || '', row })),
-    ...(check(siResult, 'load Sports Inc queue') || []).map(row => ({ source: 'sportsinc', sourceId: String(row.si_doc_number), sortDate: row.supplier_doc_date || row.si_doc_date || '', row })),
+    ...ssRows.map(row => ({ source: 'ss_orders', sourceId: row.order_number, sortDate: row.invoice_date || row.order_date || '', row })),
+    ...siRows.map(row => ({ source: 'sportsinc', sourceId: String(row.si_doc_number), sortDate: row.supplier_doc_date || row.si_doc_date || '', row })),
   ].sort((a, b) => String(a.sortDate).localeCompare(String(b.sortDate))).slice(0, limit);
-  const summary = { scanned: queued.length, applied: 0, review: 0, busy: 0, failed: 0 };
+  const summary = {
+    scanned: queued.length, applied: 0, review: 0, busy: 0, failed: 0,
+    sourceKeys: queued.map(entry => `${entry.source}|${entry.sourceId}`),
+    busySourceKeys: [],
+    timeBudgetReached: false,
+  };
 
   for (const entry of queued) {
+    if (options.deadlineMs && Date.now() >= options.deadlineMs) {
+      summary.timeBudgetReached = true;
+      break;
+    }
     let bill;
     try {
+      const signal = signalUntil(options.deadlineMs);
       bill = mapQueuedSupplierBill(entry.source, entry.row);
       const key = supplierBillCoordinationKey(bill);
       if (!key) throw new Error('missing stable bill identity');
-      const claim = check(await admin.rpc('claim_supplier_bill', {
+      const claim = check(await withSignal(admin.rpc('claim_supplier_bill', {
         p_bill_key: key,
         p_doc_norm: norm(bill.doc_number),
         p_vendor: bill.vendor || bill.supplier || '',
@@ -116,14 +159,15 @@ async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${r
         p_source_id: entry.sourceId,
         p_owner: claimOwner,
         p_allow_review: false,
-      }), 'claim bill');
+      }), signal), 'claim bill');
       if (claim?.state === 'applied') {
-        await markSourceApplied(admin, entry.source, entry.sourceId, bill);
+        await markSourceApplied(admin, entry.source, entry.sourceId, bill, signal);
         summary.applied += 1;
         continue;
       }
       if (claim?.state === 'busy') {
         summary.busy += 1;
+        summary.busySourceKeys.push(`${entry.source}|${entry.sourceId}`);
         continue;
       }
       if (claim?.state === 'review') {
@@ -136,24 +180,27 @@ async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${r
           code: 'document_vendor_collision',
           reason: claim.reason || 'Document number already belongs to a different supplier.',
           mappings: [],
-        });
+        }, signal);
         summary.review += 1;
         continue;
       }
       if (claim?.state !== 'claimed' || !claim.token) throw new Error(`unexpected claim state ${claim?.state || 'none'}`);
 
-      const candidates = check(await admin.rpc('supplier_bill_po_candidates', { p_po_number: bill.po_number }), 'load PO candidates') || [];
+      const candidates = check(await withSignal(
+        admin.rpc('supplier_bill_po_candidates', { p_po_number: bill.po_number }),
+        signal,
+      ), 'load PO candidates') || [];
       const plan = planSupplierBill(bill, candidates);
       if (plan.action !== 'apply') {
-        await markForReview(admin, claim.token, entry.source, entry.sourceId, bill, plan);
+        await markForReview(admin, claim.token, entry.source, entry.sourceId, bill, plan, signal);
         summary.review += 1;
         continue;
       }
-      const applied = check(await admin.rpc('apply_claimed_supplier_bill', {
+      const applied = check(await withSignal(admin.rpc('apply_claimed_supplier_bill', {
         p_claim_token: claim.token,
         p_bill: plan.bill,
         p_actor: OWNER,
-      }), 'apply supplier bill');
+      }), signal), 'apply supplier bill');
       if (!['applied', 'already_applied', 'ledger_repaired'].includes(applied?.state)) {
         throw new Error(`unexpected apply state ${applied?.state || 'none'}`);
       }
@@ -192,53 +239,76 @@ function vendorLinkMap(rows) {
 
 const deterministicQboReview = error => /vendor|account|document .* exists|date|total|credit|portal PO|not found|duplicated|ambiguous/i.test(error?.message || '');
 
-// One QBO bill per run leaves room for account/vendor reads, a document-specific
-// duplicate query, the write, and its receipt inside Netlify's 30-second ceiling.
-// The five-minute cadence still drains twelve bills/hour.
-async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${randomUUID()}`) {
-  const configResult = await admin.from('app_state').select('value').eq('id', 'qb_config').maybeSingle();
+// The synchronous helper defaults to one QBO bill; the daily background runner
+// raises the batch size and supplies a deadline so it can drain the backlog
+// without starting a write too close to Netlify's execution ceiling.
+async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${randomUUID()}`, options = {}) {
+  const skipLedgerIds = options.skipLedgerIds || new Set();
+  const querySignal = signalUntil(options.deadlineMs);
+  const configResult = await withSignal(admin.from('app_state').select('value').eq('id', 'qb_config').maybeSingle(), querySignal);
   const qbConfig = parseValue(check(configResult, 'load QB config')?.value) || {};
   if (qbConfig.autoPushBillsToQB !== true || qbConfig.connected !== true || qbConfig.initialMigrationApproved !== true) {
-    return { enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0 };
+    return { enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
   }
   if (qbConfig.preflight?.status !== 'success' || String(qbConfig.preflight?.realm_id || '') !== String(qbConfig.realm_id || '')) {
-    return { enabled: false, reason: 'preflight', scanned: 0, applied: 0, review: 0, busy: 0, failed: 0 };
+    return { enabled: false, reason: 'preflight', scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
   }
 
-  const ledger = check(await admin.from('applied_bills').select('*')
-    .eq('status', 'pushed').eq('portal_status', 'success').is('qb_status', null)
-    .eq('qb_review_required', false).eq('is_credit', false)
-    .order('applied_at', { ascending: true }).limit(limit), 'load unsynced bills') || [];
-  if (!ledger.length) return { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0 };
+  const ledger = await pageFiltered(
+    () => admin.from('applied_bills').select('*')
+      .eq('status', 'pushed').eq('portal_status', 'success').is('qb_status', null)
+      .eq('qb_review_required', false).eq('is_credit', false)
+      .order('applied_at', { ascending: true }),
+    row => !skipLedgerIds.has(String(row.id)),
+    limit,
+    'load unsynced bills',
+    querySignal,
+  );
+  if (!ledger.length) return { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
 
-  const { access_token: accessToken, realm_id: realmId } = await getValidAccessToken(admin, 'national');
+  const tokenTimeoutMs = options.deadlineMs
+    ? Math.max(1, Math.min(8000, options.deadlineMs - Date.now()))
+    : 8000;
+  const { access_token: accessToken, realm_id: realmId } = await getValidAccessToken(admin, 'national', {
+    signal: signalUntil(options.deadlineMs),
+    timeoutMs: tokenTimeoutMs,
+  });
   if (String(realmId) !== String(qbConfig.realm_id)) throw new Error('QBO realm changed after preflight');
   const [accounts, qboVendors, portalVendorResult, linkResult] = await Promise.all([
     queryAllQbo('Account', 'Id, AcctNum, Name, FullyQualifiedName, AccountType, Active', accessToken, realmId),
     queryAllQbo('Vendor', 'Id, DisplayName, CompanyName, Active', accessToken, realmId),
-    admin.from('vendors').select('id,name,is_active,qb_vendor_id'),
-    admin.from('app_state').select('id,value').like('id', '_qb_link_v1_%'),
+    withSignal(admin.from('vendors').select('id,name,is_active,qb_vendor_id'), querySignal),
+    withSignal(admin.from('app_state').select('id,value').like('id', '_qb_link_v1_%'), querySignal),
   ]);
   const portalVendors = check(portalVendorResult, 'load portal vendors') || [];
   const links = vendorLinkMap(check(linkResult, 'load vendor links') || []);
   const refs = resolveQBAccountRefs(accounts, qbConfig.mapping, ['purchases_account', 'freight_account', 'sports_inc_fee_account', 'ap_account']);
-  const summary = { enabled: true, scanned: ledger.length, applied: 0, review: 0, busy: 0, failed: 0 };
+  const summary = {
+    enabled: true, scanned: ledger.length, applied: 0, review: 0, busy: 0, failed: 0,
+    ledgerIds: ledger.map(row => String(row.id)), busyLedgerIds: [], timeBudgetReached: false,
+  };
 
   for (const row of ledger) {
+    // Leave enough room for one bounded Intuit request and durable receipt.
+    if (options.deadlineMs && Date.now() >= options.deadlineMs - 10000) {
+      summary.timeBudgetReached = true;
+      break;
+    }
     const bill = row.raw_meta && typeof row.raw_meta === 'object' ? row.raw_meta : {};
     const key = supplierBillCoordinationKey({ ...bill, doc_number: row.doc_number || row.doc_norm, is_credit: row.is_credit });
     let claimToken = null;
     try {
-      const claim = check(await admin.rpc('claim_supplier_bill_qbo', {
+      const signal = signalUntil(options.deadlineMs);
+      const claim = check(await withSignal(admin.rpc('claim_supplier_bill_qbo', {
         p_bill_key: key,
         p_doc_norm: row.doc_norm,
         p_vendor: row.vendor || bill.vendor || bill.supplier || '',
         p_is_credit: !!row.is_credit,
         p_owner: claimOwner,
         p_allow_review: false,
-      }), 'claim QBO bill');
+      }), signal), 'claim QBO bill');
       if (claim?.state === 'applied') { summary.applied += 1; continue; }
-      if (claim?.state === 'busy') { summary.busy += 1; continue; }
+      if (claim?.state === 'busy') { summary.busy += 1; summary.busyLedgerIds.push(String(row.id)); continue; }
       if (claim?.state === 'review') { summary.review += 1; continue; }
       if (claim?.state === 'collision') { summary.review += 1; continue; }
       if (claim?.state !== 'claimed' || !claim.token) throw new Error(`unexpected QBO claim state ${claim?.state || 'none'}`);
@@ -292,32 +362,32 @@ async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${rand
           throw new Error(`QBO Bill #${qbBill.Id} stored different vendor, date, or total`);
         }
       }
-      check(await admin.from('applied_bills').update({
+      check(await withSignal(admin.from('applied_bills').update({
         qb_status: 'success',
         qb_bill_id: String(qbBill.Id),
         qb_message: existing ? `QB Bill #${qbBill.Id} (existing verified)` : `QB Bill #${qbBill.Id}`,
         qb_synced_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      }).eq('id', row.id), 'save QBO receipt');
-      check(await admin.rpc('finish_supplier_bill_qbo_claim', {
+      }).eq('id', row.id), signal), 'save QBO receipt');
+      check(await withSignal(admin.rpc('finish_supplier_bill_qbo_claim', {
         p_claim_token: claimToken, p_status: 'applied', p_reason: null,
-      }), 'finish QBO claim');
+      }), signal), 'finish QBO claim');
       summary.applied += 1;
     } catch (error) {
       const review = deterministicQboReview(error);
       try {
-        await admin.from('applied_bills').update({
+        await withSignal(admin.from('applied_bills').update({
           qb_message: `${review ? 'Needs review' : 'Automatic retry pending'}: ${error.message || String(error)}`,
           updated_at: new Date().toISOString(),
-        }).eq('id', row.id);
+        }).eq('id', row.id), signalUntil(options.deadlineMs));
       } catch (_) {}
       if (claimToken) {
         try {
-          await admin.rpc('finish_supplier_bill_qbo_claim', {
+          await withSignal(admin.rpc('finish_supplier_bill_qbo_claim', {
             p_claim_token: claimToken,
             p_status: review ? 'review' : 'failed',
             p_reason: error.message || String(error),
-          });
+          }), signalUntil(options.deadlineMs));
         } catch (_) {}
       }
       summary[review ? 'review' : 'failed'] += 1;
@@ -339,12 +409,86 @@ async function runSupplierBillProcessor({ admin = getSupabaseAdmin(), portalLimi
   return { portal, quickbooks };
 }
 
+const addSummary = (target, row) => {
+  ['scanned', 'applied', 'review', 'busy', 'failed'].forEach(key => { target[key] += Number(row?.[key]) || 0; });
+};
+
+// Netlify background functions have a 15-minute ceiling. Stop at 13 minutes so
+// the last QBO response and database receipt have time to settle. Source/ledger
+// ids already attempted in this run are skipped on later pages; failures remain
+// queued for tomorrow without poisoning the rest of today's backlog.
+async function runSupplierBillBacklog({
+  admin = getSupabaseAdmin(),
+  timeBudgetMs = 13 * 60 * 1000,
+  portalBatchSize = 100,
+  qboBatchSize = 50,
+  clock = () => Date.now(),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  portalProcessor = processPortalQueues,
+  qboProcessor = processQuickBooks,
+} = {}) {
+  const startedAt = clock();
+  const deadlineMs = startedAt + timeBudgetMs;
+  // Reserve most of the background window for Intuit I/O; Portal writes are
+  // database-only and get the first third (capped at four minutes).
+  const portalDeadlineMs = Math.min(deadlineMs, startedAt + Math.min(4 * 60 * 1000, Math.floor(timeBudgetMs / 3)));
+  const claimOwner = `${OWNER}:daily:${randomUUID()}`;
+  const portal = { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, batches: 0, timeBudgetReached: false };
+  const quickbooks = { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, batches: 0, timeBudgetReached: false };
+  const seenSources = new Set();
+  const seenLedger = new Set();
+  let portalDrained = false;
+  let qboDrained = false;
+
+  while (clock() < portalDeadlineMs) {
+    const row = await portalProcessor(admin, portalBatchSize, claimOwner, { deadlineMs: portalDeadlineMs, skipSourceKeys: seenSources });
+    portal.batches += 1;
+    addSummary(portal, row);
+    const busySources = new Set(row.busySourceKeys || []);
+    const completedSources = (row.sourceKeys || []).filter(key => !busySources.has(key));
+    completedSources.forEach(key => seenSources.add(key));
+    if (row.timeBudgetReached) { portal.timeBudgetReached = true; break; }
+    if (!row.scanned) { portalDrained = true; break; }
+    if (!completedSources.length && row.busy > 0) {
+      await sleep(Math.min(30000, Math.max(0, portalDeadlineMs - clock())));
+    }
+  }
+  if (!portalDrained && clock() >= portalDeadlineMs) portal.timeBudgetReached = true;
+
+  while (clock() < deadlineMs) {
+    const row = await qboProcessor(admin, qboBatchSize, claimOwner, { deadlineMs, skipLedgerIds: seenLedger });
+    quickbooks.batches += 1;
+    quickbooks.enabled = row.enabled !== false;
+    if (row.reason) quickbooks.reason = row.reason;
+    addSummary(quickbooks, row);
+    const busyLedger = new Set((row.busyLedgerIds || []).map(String));
+    const completedLedger = (row.ledgerIds || []).map(String).filter(id => !busyLedger.has(id));
+    completedLedger.forEach(id => seenLedger.add(id));
+    if (row.timeBudgetReached) { quickbooks.timeBudgetReached = true; break; }
+    if (row.enabled === false || !row.scanned) { qboDrained = true; break; }
+    if (!completedLedger.length && row.busy > 0) {
+      await sleep(Math.min(30000, Math.max(0, deadlineMs - clock())));
+    }
+  }
+  if (!qboDrained && clock() >= deadlineMs) quickbooks.timeBudgetReached = true;
+
+  const finishedAt = clock();
+  return {
+    portal,
+    quickbooks,
+    duration_ms: finishedAt - startedAt,
+    time_budget_reached: finishedAt >= deadlineMs || portal.timeBudgetReached || quickbooks.timeBudgetReached,
+  };
+}
+
 module.exports = {
   OWNER,
   deterministicQboReview,
+  pageFiltered,
   processPortalQueues,
   processQuickBooks,
   queryAllQbo,
+  runSupplierBillBacklog,
   runSupplierBillProcessor,
   vendorLinkMap,
 };
