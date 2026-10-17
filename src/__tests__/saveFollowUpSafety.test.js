@@ -81,6 +81,14 @@ describe.each(editors)('%s save follow-up safety', file => {
     expect(source).toContain("window.dispatchEvent(new CustomEvent('nsa:create-issue',{detail:issue}))");
     expect(app).toContain("prev.some(existing=>existing.id===issue.id)?prev:[issue,...prev]");
   });
+
+  test('inventory follow-ups apply current-state deltas with stable replay keys', () => {
+    expect(source).toContain("onAdjustInv(p.id,null,deltas,'Inventory fulfillment','pick',null,{applyDelta:true,idempotencyKey})");
+    expect(source).toContain("const inventoryEffectId='pick-delete:");
+    expect(source).toContain("const inventoryEffectId='pick-update:");
+    expect(app).toContain('_inventoryEffectIds.current.has(opts.idempotencyKey)');
+    expect(app).toContain("nextInv={...(x._inv||{})}");
+  });
 });
 
 test('App replays editor callbacks and defers prior-shipping restoration', () => {

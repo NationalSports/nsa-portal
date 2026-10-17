@@ -2144,14 +2144,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     return()=>window.removeEventListener('beforeunload',h);
   },[dirty]);
   // Adjust inventory when pick is pulled or un-pulled
-  const adjustInvForPick=(pick,item,direction)=>{
+  const adjustInvForPick=(pick,item,direction,idempotencyKey)=>{
     // direction: -1 = pulling (decrement inv), +1 = un-pulling (restore inv)
     if(!onAdjustInv)return;
     const p=findProd(item);
     if(!p)return;
-    const newInv={...p._inv};
-    Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)+(direction*v))}});
-    onAdjustInv(p.id,newInv);
+    const newInv={...p._inv},deltas={};
+    Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){deltas[k]=(deltas[k]||0)+direction*v;newInv[k]=Math.max(0,(newInv[k]||0)+(direction*v))}});
+    onAdjustInv(p.id,null,deltas,'Inventory fulfillment','pick',null,{applyDelta:true,idempotencyKey});
     // Check other SOs for open (unpulled) picks on the same product that now exceed inventory
     if(direction===-1&&allOrders){
       const warnings=[];
@@ -2180,15 +2180,15 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // before and after the edit). Returns the previously-pulled units and re-draws the new ones in a single
   // write so the two sides can't clobber each other on a stale `products` snapshot — a plain
   // restore-then-draw pair of adjustInvForPick calls would both read the same base and the last write wins.
-  const reconcilePulledInv=(oldPick,curPick,item)=>{
+  const reconcilePulledInv=(oldPick,curPick,item,idempotencyKey)=>{
     if(!onAdjustInv)return;
     const p=findProd(item);
     if(!p)return;
-    const newInv={...p._inv};
-    const applyPick=(pick,sign)=>{if(!pick)return;Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)+sign*v)}})};
+    const deltas={};
+    const applyPick=(pick,sign)=>{if(!pick)return;Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0)deltas[k]=(deltas[k]||0)+sign*v})};
     applyPick(oldPick,1);   // return what the old pulled line drew
     applyPick(curPick,-1);  // draw what the edited pulled line now needs
-    onAdjustInv(p.id,newInv);
+    onAdjustInv(p.id,null,deltas,'Inventory fulfillment','pick',null,{applyDelta:true,idempotencyKey});
   };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);const[apiOrder,setApiOrder]=useState(null);// apiOrder: {vendorKey,poNumber,vendorName,batchPOs} — single-PO API order modal
   const poEmailSendRef=useRef(false);useEffect(()=>{if(!poEmail)poEmailSendRef.current=false},[poEmail]);
@@ -14983,7 +14983,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
           // Reverse inventory only after the order write confirms.
-          const restoreInventory=()=>picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
+          const inventoryEffectId='pick-delete:'+o.id+':'+editPick.pickId+':'+Date.now().toString(36);
+          const restoreInventory=()=>picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1,inventoryEffectId+':'+p.lineIdx+':'+p.pickIdx)});
           const removeMap=new Map();picks.forEach(p=>{if(!removeMap.has(p.lineIdx))removeMap.set(p.lineIdx,new Set());removeMap.get(p.lineIdx).add(p.pickIdx)});
           const updatedItems=o.items.map((it,i)=>removeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter((_,pi)=>!removeMap.get(i).has(pi))}:it);
           const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};saveSONow(updated,'Inventory fulfillment','Pick deleted',()=>{restoreInventory();setEditPick(null)});
@@ -14999,11 +15000,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // pulled footprint must move inventory: reopening a pulled IF returns its units, pulling draws
           // them, and editing the quantities of an IF that stays pulled settles the per-size difference
           // (previously skipped — an in-place edit silently desynced stock).
+          const inventoryEffectId='pick-update:'+o.id+':'+pkId+':'+Date.now().toString(36);
           const reconcileInventory=()=>affected.forEach(i=>{const it=o.items[i];const old=(it.pick_lines||[]).find(pl=>pl.pick_id===pkId);const cur=curByLine.get(i);
             const oldPulled=!!(old&&old.status==='pulled');const curPulled=!!(cur&&cur.status==='pulled');
-            if(oldPulled&&!curPulled)adjustInvForPick(old,it,1);
-            else if(!oldPulled&&curPulled)adjustInvForPick(cur,it,-1);
-            else if(oldPulled&&curPulled)reconcilePulledInv(old,cur,it);});
+            if(oldPulled&&!curPulled)adjustInvForPick(old,it,1,inventoryEffectId+':'+i);
+            else if(!oldPulled&&curPulled)adjustInvForPick(cur,it,-1,inventoryEffectId+':'+i);
+            else if(oldPulled&&curPulled)reconcilePulledInv(old,cur,it,inventoryEffectId+':'+i);});
           const updatedItems=o.items.map((it,i)=>{if(!affected.has(i))return it;const others=(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId);const cur=curByLine.get(i);return{...it,pick_lines:cur?[...others,cur]:others}});
           // Recalc job fulfillment so deco-readiness reflects the reopened/edited pull state, matching the warehouse pull path.
           const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};saveSONow(updated,'Inventory fulfillment','Pick updated',()=>{reconcileInventory();setEditPick(null)});

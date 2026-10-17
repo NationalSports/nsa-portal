@@ -7902,17 +7902,20 @@ export default function App(){
       }}).then(saved=>{if(!saved){setSOs(prev=>prev.map(row=>row.id===so.id?so:row));setESO(prev=>prev?.id===so.id?so:prev);_autoClosedSOs.current.delete(so.id);_autoCloseRetryAt.current.set(so.id,Date.now()+30000);setTimeout(()=>{_autoCloseRetryAt.current.delete(so.id);setAutoCloseRevision(value=>value+1)},30000)}});
     });
   },[sos,invs,dbLoading,autoCloseRevision]);// eslint-disable-line react-hooks/exhaustive-deps
+  const _inventoryEffectIds=useRef(new Set());
   const savI=(pid,inv,deltas,reason,adjType,availSizes,opts)=>{
+    if(opts?.idempotencyKey&&_inventoryEffectIds.current.has(opts.idempotencyKey))return;
+    if(opts?.idempotencyKey)_inventoryEffectIds.current.add(opts.idempotencyKey);
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
       const entries=Object.entries(deltas).filter(([,v])=>v!==0);
       if(entries.length>0){
-        const logs=entries.map(([sz,delta])=>({id:_newInventoryAdjustmentId(),product_id:pid,sku:p.sku,product_name:p.name,color:p.color||'',size:sz,qty_change:delta,prev_qty:p._inv?.[sz]||0,new_qty:Math.max(0,(p._inv?.[sz]||0)+delta),reason:reason||'',adjustment_type:adjType||'manual',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()}));
-        setInvAdjLog(prev=>[...logs,...prev].slice(0,2000));
+        const logs=entries.map(([sz,delta])=>({id:opts?.idempotencyKey?(opts.idempotencyKey+':'+sz):_newInventoryAdjustmentId(),product_id:pid,sku:p.sku,product_name:p.name,color:p.color||'',size:sz,qty_change:delta,prev_qty:p._inv?.[sz]||0,new_qty:Math.max(0,(p._inv?.[sz]||0)+delta),reason:reason||'',adjustment_type:adjType||'manual',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()}));
+        setInvAdjLog(prev=>[...logs.filter(log=>!prev.some(existing=>existing.id===log.id)),...prev].slice(0,2000));
         logChange('inventory_adjustment','Product',pid,entries.map(([sz,d2])=>(d2>0?'+':'')+d2+' '+sz).join(', ')+(reason?' — '+reason:''));
       }
     }
-    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv,...(Array.isArray(availSizes)?{available_sizes:availSizes}:{})}:x));
+    setProd(pp=>pp.map(x=>{if(x.id!==pid)return x;let nextInv=inv;if(opts?.applyDelta){nextInv={...(x._inv||{})};Object.entries(deltas||{}).forEach(([sz,delta])=>{nextInv[sz]=Math.max(0,(nextInv[sz]||0)+delta)})}return{...x,_inv:nextInv,...(Array.isArray(availSizes)?{available_sizes:availSizes}:{})}}));
     const addedSizes=Array.isArray(availSizes)&&p?availSizes.filter(s=>!(p.available_sizes||[]).includes(s)):[];
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
     if(!opts||!opts.quiet)nf('Inventory updated');
