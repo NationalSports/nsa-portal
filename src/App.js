@@ -59,6 +59,7 @@ import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import AdidasClickAssignPanel, { getAdidasClickConfig } from './components/AdidasClickAssignPanel';
 import { ADIDAS_CLICK_TASK_TYPE, isAdidasClickPayload, planAdidasClickOrder } from './lib/adidasClickPlan';
+import { buildAgronCartTask, isAgronCartPayload } from './lib/agronCartPlan';
 import { normalizeOmgSize } from './lib/omgReport';
 import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
@@ -2934,6 +2935,7 @@ export default function App(){
   // them at assign time and ship the snapshot in the payload — the bot starts
   // informed instead of discovering everything by hovering the vendor site.
   const[botAvail,setBotAvail]=useState(null);// {rows,map,synced,preferences}
+  const[botAgron,setBotAgron]=useState(null);// {loading,error,inventoryRows,poLines}
   React.useEffect(()=>{
     if(!todoModal.open||!supabase){setBotAvail(null);return}
     // adidas_inventory contains some non-adidas catalog rows whose source tag is
@@ -2954,6 +2956,39 @@ export default function App(){
       const preferences={};if(!prefs.error)(prefs.data||[]).forEach(row=>{preferences[row.sku]=row.variant});
       setBotAvail({rows:r.data,map,synced,preferences});
     });
+    return()=>{dead=true};
+  },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(()=>{
+    if(!todoModal.open||!isAgronCartPayload(todoModal.bot_payload)){setBotAgron(null);return}
+    if(!supabase){setBotAgron({loading:false,error:'A live database connection is required to resolve Agron UPCs.',inventoryRows:[],poLines:null});return}
+    const lines=todoModal.bot_payload?.lines||[];
+    const skus=[...new Set(lines.map(l=>l.sku).filter(Boolean))];
+    const soIds=[...new Set(lines.map(l=>l.so_id).filter(Boolean))];
+    const poIds=[...new Set(lines.map(l=>l.source_po_id).filter(Boolean))];
+    let dead=false;
+    setBotAgron({loading:true,error:null,inventoryRows:[],poLines:null});
+    (async()=>{
+      try{
+        const inventoryPromise=skus.length
+          ?supabase.from('agron_cart_catalog').select('sku,size,upc,product_number,color_code').in('sku',skus)
+          :Promise.resolve({data:[],error:null});
+        const itemResult=soIds.length
+          ?await supabase.from('so_items').select('id,so_id,item_index').in('so_id',soIds)
+          :{data:[],error:null};
+        if(itemResult.error)throw itemResult.error;
+        const itemRows=itemResult.data||[];
+        const itemIds=itemRows.map(row=>row.id);
+        const poResult=itemIds.length&&poIds.length
+          ?await supabase.from('so_item_po_lines').select('id,so_item_id,po_id,vendor,sizes,expected_date').in('so_item_id',itemIds).in('po_id',poIds)
+          :{data:[],error:null};
+        const inventoryResult=await inventoryPromise;
+        if(inventoryResult.error)throw inventoryResult.error;
+        if(poResult.error)throw poResult.error;
+        if(!dead)setBotAgron({loading:false,error:null,inventoryRows:inventoryResult.data||[],poLines:{itemRows,poRows:poResult.data||[]}});
+      }catch(error){
+        if(!dead)setBotAgron({loading:false,error:error?.message||'Could not resolve Agron cart data.',inventoryRows:[],poLines:null});
+      }
+    })();
     return()=>{dead=true};
   },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
   const saveAdidasClickPreference=(sku,variant)=>{
@@ -8950,6 +8985,7 @@ export default function App(){
     const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
     if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
     if(!title||!title.trim()){nf('Task needs a title','error');return false}
+    if(isAgronCartPayload(bot_payload)){nf('Agron tasks must be reviewed in the assignment window so UPCs and PO lines can be resolved.','error');return false}
     const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
     if(bot_payload)newTodo.bot_payload=bot_payload;
     setAssignedTodos(prev=>[newTodo,...prev]);
@@ -15778,13 +15814,16 @@ export default function App(){
                 {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();if(_blockOrph())return;
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
+                  const _botDest=resolveBatchDestination({batches:vg.pos,decoId:vg.ship_to_deco_id||null,allOrders:sos,customers:cust,decoVendors,vendors:vend});
+                  if(isAgronCartPayload({vendor_name:vg.name})&&_botDest.mixed){nf('Not assigned — this Agron batch contains more than one ship-to destination. Split it by destination first.','error');return}
+                  if(isAgronCartPayload({vendor_name:vg.name})&&_botDest.unresolved){nf('Not assigned — this Agron drop-ship batch has no usable delivery address. Add the customer or decorator address first.','error');return}
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
                   // DPO on the attention line; otherwise resolve the program's drop-ship address.
                   const _botShipTo=vg.ship_to_deco_id
                     ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_botSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
                     :resolveShipToClient(_botSoId,sos,cust);
                   const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
-                  if(bot_payload.target==='adidas_click'){
+                  if(bot_payload.target==='adidas_click'||isAgronCartPayload(bot_payload)){
                     const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
                     const so=sos.find(row=>row.id===_botSoId);
                     setTodoModal({open:true,title,description,assigned_to:bot?.id||'',so_id:_botSoId||'',customer_id:so?.customer_id||'',priority:1,due_date:'',doc_label:poNum,po_id:poNum,wh_only:false,bot_payload});
@@ -39604,6 +39643,39 @@ export default function App(){
               </div>
             </div>;
           }
+          if(isAgronCartPayload(bp)){
+            if(botAgron?.loading)return<div style={{marginBottom:12,padding:'12px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:12,color:'#1e40af',fontWeight:700}}>Resolving Agron UPCs and PO line IDs…</div>;
+            if(botAgron?.error)return<div style={{marginBottom:12,padding:'12px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,fontSize:12,color:'#b91c1c',fontWeight:700}}>⚠ Agron task cannot be assigned: {botAgron.error}</div>;
+            const _agronPlan=buildAgronCartTask({sourcePayload:bp,inventoryRows:botAgron?.inventoryRows||[],poLines:botAgron?.poLines||{},shipVia:todoModal.agron_ship_via,arriveOn:todoModal.agron_arrive_on,cancelOn:todoModal.agron_cancel_on});
+            const _missing=_agronPlan.issues.filter(issue=>issue.code==='upc_missing');
+            const _identityIssues=_agronPlan.issues.filter(issue=>issue.code!=='upc_missing');
+            return<div style={{marginBottom:12,border:'1px solid #c4b5fd',borderRadius:10,overflow:'hidden'}}>
+              <div style={{padding:'10px 14px',background:'#f5f3ff',borderBottom:'1px solid #ddd6fe',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:800,color:'#4c1d95'}}>🛒 Agron cart runner</span>
+                <span className="badge badge-gray">PO {_agronPlan.customer_po||'—'}</span>
+                <span className="badge badge-gray">{_agronPlan.plan.rows.length} size row{_agronPlan.plan.rows.length===1?'':'s'}</span>
+                {_missing.length>0&&<span style={{fontSize:10,fontWeight:800,color:'#991b1b',background:'#fee2e2',padding:'2px 7px',borderRadius:999}}>⚠ {_missing.length} missing UPC</span>}
+              </div>
+              {_identityIssues.length>0&&<div style={{padding:'9px 14px',background:'#fef2f2',borderBottom:'1px solid #fecaca',fontSize:11,color:'#b91c1c',fontWeight:700}}>⚠ {_identityIssues.map(issue=>issue.message).join(' ')}</div>}
+              <div style={{padding:'10px 14px',borderBottom:'1px solid #ede9fe',fontSize:12,color:'#475569'}}>
+                {_agronPlan.ship_to.type==='drop_ship'
+                  ?(_agronPlan.ship_to.address?<><b>Drop ship:</b> {_agronPlan.ship_to.address.name||''} · {_agronPlan.ship_to.address.line1||''} · {_agronPlan.ship_to.address.city||''}, {_agronPlan.ship_to.address.state||''} {_agronPlan.ship_to.address.zip||''}</>:<span style={{color:'#b91c1c',fontWeight:700}}>⚠ Drop ship address is missing.</span>)
+                  :<><b>Ship to:</b> Agron account default (NSA warehouse)</>}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1.2fr 1fr 1fr',gap:8,padding:'10px 14px',borderBottom:'1px solid #ede9fe'}}>
+                <div><label className="form-label" style={{fontSize:10}}>Ship via (optional)</label><input className="form-input" value={todoModal.agron_ship_via||''} onChange={e=>setTodoModal(m=>({...m,agron_ship_via:e.target.value}))}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Arrive on</label><input type="date" className="form-input" value={todoModal.agron_arrive_on||_agronPlan.arrive_on||''} onChange={e=>setTodoModal(m=>({...m,agron_arrive_on:e.target.value}))}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Cancel on</label><input type="date" className="form-input" value={todoModal.agron_cancel_on||''} onChange={e=>setTodoModal(m=>({...m,agron_cancel_on:e.target.value}))}/></div>
+              </div>
+              <div style={{maxHeight:240,overflowY:'auto'}}>
+                {_agronPlan.plan.rows.map((row,i)=><div key={i} style={{padding:'7px 14px',borderBottom:i<_agronPlan.plan.rows.length-1?'1px solid #f1f5f9':'none',display:'grid',gridTemplateColumns:'1fr auto',gap:10,background:row.upc?'white':'#fff7ed'}}>
+                  <div><b style={{fontFamily:'ui-monospace,monospace'}}>{row.sku}</b> · {row.size} · {row.qty} pcs <span style={{color:'#64748b'}}>· ${row.unit_cost.toFixed(2)}</span></div>
+                  {row.upc?<span style={{fontFamily:'ui-monospace,monospace',fontSize:11,color:'#166534'}}>UPC {row.upc}</span>:<span style={{fontSize:11,color:'#b91c1c',fontWeight:800}}>⚠ NO UPC — row kept</span>}
+                </div>)}
+              </div>
+              <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>The external runner uses these resolved rows and stops before submit. Source lines remain attached for audit only.</div>
+            </div>;
+          }
           if(bp.target==='adidas_click'){
             return <AdidasClickAssignPanel payload={bp} inventoryRows={botAvail?.rows||[]} freshnessAt={botAvail?.synced||null} savedPreferences={botAvail?.preferences||{}}
               value={todoModal.bot_click_config}
@@ -39673,7 +39745,7 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&todoModal.bot_payload?.target!=='adidas_click'&&<>
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&todoModal.bot_payload?.target!=='adidas_click'&&!isAgronCartPayload(todoModal.bot_payload)&&<>
           <div style={{marginBottom:12}}>
             <label className="form-label">📅 Requested delivery date (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -39792,7 +39864,14 @@ export default function App(){
           if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
-            if(_bp.target==='adidas_click'){
+            if(isAgronCartPayload(_bp)){
+              if(botAgron?.error){nf('Agron task not assigned: '+botAgron.error,'error');return}
+              if(botAgron?.loading||!botAgron?.poLines){nf('Wait for the Agron UPC and PO-line lookup to finish before assigning.','error');return}
+              const _agronPayload=buildAgronCartTask({sourcePayload:_bp,inventoryRows:botAgron.inventoryRows||[],poLines:botAgron.poLines,shipVia:todoModal.agron_ship_via,arriveOn:todoModal.agron_arrive_on,cancelOn:todoModal.agron_cancel_on});
+              const _blocking=_agronPayload.issues.filter(issue=>issue.code==='po_line_missing'||issue.code==='po_line_ambiguous'||issue.code==='po_vendor_mismatch');
+              if(_blocking.length){nf('Agron task not assigned: '+_blocking.map(issue=>issue.message).join(' '),'error');return}
+              newTodo.bot_payload=_agronPayload;
+            }else if(_bp.target==='adidas_click'){
               const _cfg=getAdidasClickConfig(_bp,todoModal.bot_click_config);
               const _preferences={...(botAvail?.preferences||{}),...(_cfg.preferences||{})};
               const _plan=planAdidasClickOrder({lines:_bp.lines||[],inventoryRows:botAvail?.rows||[],preferences:_preferences,defaultChoice:_cfg.default_choice,skuChoices:_cfg.sku_choices,customerPo:_cfg.customer_po,shipMethod:_cfg.ship_method,deliveryLocation:_cfg.delivery_location});
@@ -39831,7 +39910,7 @@ export default function App(){
             }
           }
           setAssignedTodos(prev=>[...newTodos,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{},bot_click_config:null});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{},bot_click_config:null,agron_ship_via:'',agron_arrive_on:'',agron_cancel_on:''});
           nf((newTodos.length>1?'Tasks':'Task')+' assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

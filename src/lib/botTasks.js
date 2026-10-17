@@ -6,6 +6,8 @@
 // See supabase/migrations/00099_assigned_todos_bot.sql for the schema and the
 // bot_status lifecycle (queued -> in_progress -> needs_review -> done/failed).
 
+import { isAgronVendor } from './agronCartPlan';
+
 // Only this portal user sees/uses the Claude bot (status pill, Assign-to-Claude
 // button, and the bot option in the Assign Task dropdown). Tasks themselves are
 // already private to their creator/assignee; this just hides the controls from
@@ -34,6 +36,7 @@ export const BOT_STATUS = {
 export function botTargetForVendor(vendorName) {
   const v = String(vendorName || '').toLowerCase();
   if (v.includes('adidas')) return 'adidas_click';
+  if (isAgronVendor(vendorName)) return 'agron';
   if (v.includes('silver')) return 'silver_screen';
   if (v.includes('sanmar')) return 'sanmar';
   return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
@@ -51,6 +54,7 @@ function batchesToLines(batches) {
         color: it.color || '',
         qty: it.qty || 0,
         unit_cost: it.unit_cost || 0,
+        size_costs: it._size_costs || null,
         sizes: it.sizes || {},
         drop_ship: it.drop_ship === true,
         ship_to: it.ship_to || null,           // write-in "new address" from the PO form
