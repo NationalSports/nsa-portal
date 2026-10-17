@@ -1,13 +1,15 @@
 -- Adidas B2B inventory table — stores per-SKU per-size stock data
 -- synced via CSV upload from Adidas Cowork portal
 CREATE TABLE IF NOT EXISTS public.adidas_inventory (
-  id SERIAL PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   sku TEXT NOT NULL,
   size TEXT NOT NULL,
   stock_qty INTEGER DEFAULT 0,
   future_delivery_date TEXT,
   future_delivery_qty INTEGER,
   last_synced TIMESTAMPTZ DEFAULT now(),
+  source TEXT DEFAULT 'api-materials',
+  created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(sku, size)
 );
 

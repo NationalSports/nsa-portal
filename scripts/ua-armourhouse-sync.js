@@ -5,8 +5,8 @@
  * The PRIMARY UA sync is the COWORK skill (ua-inventory-sync), which drives
  * Armour House's JSON API from a logged-in Chrome tab — far more reliable than
  * scraping the rendered page. Use THIS script only if that API can't be found,
- * or to bootstrap/debug login + selectors. It mirrors scripts/adidas-cowork-sync.js
- * (the original adidas heuristic scraper) and writes to the SAME Supabase shape.
+ * or to bootstrap/debug login + selectors. It was based on the removed Adidas
+ * heuristic scraper and writes to the same per-SKU/size Supabase shape.
  *
  * It logs into armourhouse.underarmour.com, searches each Under Armour SKU from
  * the portal's product list, scrapes the size/qty table, and upserts to the
@@ -24,7 +24,7 @@
  *     UA_EMAIL=<armour house login>          # never commit real creds
  *     UA_PASSWORD=<armour house password>
  *   Test:  UA_HEADLESS=false node scripts/ua-armourhouse-sync.js
- *   Cron:  see bottom of scripts/adidas-cowork-sync.js for the pattern.
+ *   Cron example: 0 7 * * * cd /path/to/nsa-portal && node scripts/ua-armourhouse-sync.js
  */
 
 const puppeteer = require('puppeteer');

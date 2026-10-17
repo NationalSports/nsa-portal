@@ -8,6 +8,38 @@ One row per SKU+size with:
 - `future_delivery_qty` — projected available-to-promise for that date  ← (new)
 - `last_synced`, `source`
 
+## Reliability contract
+
+The executable skill must use source `api-materials` in the shared reliability
+tables introduced by migration `20261013035411_adidas_inventory_sync_reliability.sql`:
+
+- Claim `claim_adidas_inventory_sync` before opening a queue; an unexpired lock
+  prevents overlapping runs.
+- After acquiring the lock, mark older `api-materials` rows still `running`
+  beyond the 20-minute lock TTL as `failed` before inserting the new run.
+- Insert and finish one `adidas_inventory_sync_runs` row per attempt. Error-free
+  daily slices are `success`; error-free full sweeps are `completed`; any item
+  errors are `partial`; HTTP 401/no SID is `auth_required`; fatal setup/write
+  failures are `failed`.
+- Persist the unprocessed queue in `adidas_inventory_sync_state.cursor` after no
+  more than 25 successful SKUs and at least every 5 minutes. Bound each CLICK
+  request to 2 minutes so the 20-minute lease cannot expire during a hung call.
+  Keep the in-flight SKU queued until its upsert and read-back succeed. Resume a
+  stored queue before discovering a new one.
+- After the final SKU in a full sweep, checkpoint `{}` with
+  `p_cycle_completed:true` before marking the run `completed`; this resets the
+  queue and stamps full-catalog coverage.
+- On 401, checkpoint first, record `auth_required`, release the lock, and ask
+  Steve to log back into account `0000270384`. Never discard the queue.
+- Compare `adidas_inventory_guard_drops` before/after each write batch. A rise
+  makes the run `partial` even when PostgREST returned 2xx.
+
+This remains a browser-session job. The repo has bot-worker env names
+`ADIDAS_CLICK_URL`, `ADIDAS_CLICK_USER`, and `ADIDAS_CLICK_PASS`, but no verified
+unattended CLICK login/token-refresh implementation. Moving it server-side
+requires Steve to configure those credentials and validate account selection,
+MFA, cookie persistence, and SID renewal on the Mac Mini first.
+
 The portal display and the order screen already read all of these; the only gap
 today is `future_delivery_qty` (always null), plus `future_delivery_date` being
 saved only on the out-of-stock branch.
