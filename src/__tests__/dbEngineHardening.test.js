@@ -1310,3 +1310,89 @@ describe('_dbSaveInvoiceInner — portal payment survives a stale staff save', (
     expect(__mockState.calls.some(c => c.table === 'invoice_payments' && c.method !== 'select')).toBe(false);
   });
 });
+
+// ── _dbSaveInvoiceInner — a payment accounting unapplied is not re-sent forever ─────────────
+// INV-63464 (2026-10-12): Andrea unapplied check 58415 (wrong customer). Jered's and Liliana's
+// tabs had loaded the invoice before that, kept the old payment, and re-sent it on every save.
+// The DB guard refused each time, the refusal fell into the generic payment-failure path, and
+// the rep saw "Payment NOT saved … would commission in the wrong month. Retrying" all day.
+describe('_dbSaveInvoiceInner — unapplied payments are dropped, not retried', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const staleTab = () => ({
+    id: 'INV-63464', payment_revision: 1, paid: 0, status: 'open',
+    payments: [{ amount: 2936.34, method: 'check', ref: '58415', date: '10/06/2026', cc_fee: 0 }],
+  });
+  const writesOf = (calls) => calls.filter(c => c.table === 'invoice_payments' && c.method !== 'select');
+
+  test('the unapplied payment is never written and the save succeeds', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: [{ payment_ref: '58415' }], error: null }],
+      invoice_payments: [{ data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice, _dbSaveFailedIds, _setDbNotify } = require('../lib/dbEngine');
+    const notes = [];
+    _setDbNotify((m, t) => notes.push({ m, t }));
+    const inv = staleTab();
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).toBe(true);
+    expect(_dbSaveFailedIds.has('INV-63464')).toBe(false);
+    expect(writesOf(__mockState.calls)).toHaveLength(0);
+    expect(inv.payments).toEqual([]); // this tab's copy healed, so a retry won't re-send it
+    expect(notes.some(n => n.t === 'error')).toBe(false);
+    expect(notes.some(n => /removed by accounting/.test(n.m))).toBe(true);
+  });
+
+  test('other payments on the invoice are still written', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: [{ payment_ref: '58415' }], error: null }],
+      invoice_payments: [{ data: [], error: null }, { error: null }, { data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = staleTab();
+    inv.payments.push({ amount: 100, method: 'check', ref: '60001', date: '10/10/2026', cc_fee: 0 });
+    expect(await _dbSaveInvoice(inv)).toBe(true);
+    const upsert = __mockState.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert');
+    expect(upsert.args[0].map(r => r.ref)).toEqual(['60001']);
+  });
+
+  test('a failed tombstone read falls back to the old path (DB guard still decides)', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: null, error: { message: 'timeout' } }],
+      invoice_payments: [{ data: [], error: null }, { error: null }, { data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = staleTab();
+    await _dbSaveInvoice(inv);
+    const upsert = __mockState.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert');
+    expect(upsert.args[0].map(r => r.ref)).toEqual(['58415']);
+    expect(inv.payments).toHaveLength(1);
+  });
+
+  test('an invoice with no payments makes no tombstone read', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payments: [{ data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    expect(await _dbSaveInvoice({ id: 'INV-NOPAY', payments: [] })).toBe(true);
+    expect(__mockState.calls.some(c => c.table === 'invoice_payment_unapplications')).toBe(false);
+  });
+});

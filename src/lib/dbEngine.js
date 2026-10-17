@@ -3013,10 +3013,34 @@ const _dbSaveInvoiceInner = async (inv) => {
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
       if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
     }
+    // UNAPPLIED PAYMENTS (2026-10-12, INV-63464). Accounting can unapply a payment on purpose
+    // (unapply_invoice_payment). A tab that loaded the invoice before that still holds the old
+    // payment and re-sends it on every save; the DB guard correctly refuses ("This payment was
+    // unapplied"), but that refusal used to land in the generic payment-failure path below, which
+    // told the rep their commission was at risk and retried forever. A tombstone is a deliberate,
+    // permanent decision, so drop those refs from what we write and from this tab's copy.
+    // Fail open on a read error: the DB trigger still blocks the write, so nothing is lost —
+    // we just fall back to the old behaviour for this one attempt.
+    let _unappliedRefs=null;
+    if(payments?.length){
+      const{data:_tomb,error:_tombErr}=await supabase.from('invoice_payment_unapplications').select('payment_ref').eq('invoice_id',inv.id);
+      if(!_tombErr&&Array.isArray(_tomb)&&_tomb.length)_unappliedRefs=new Set(_tomb.map(t=>String(t.payment_ref)));
+    }
+    const _isUnapplied=p=>!!_unappliedRefs&&p&&p.ref!=null&&_unappliedRefs.has(String(p.ref));
+    const _droppedPays=_unappliedRefs?payments.filter(_isUnapplied):[];
+    const _livePayments=_droppedPays.length?payments.filter(p=>!_isUnapplied(p)):payments;
+    if(_droppedPays.length){
+      // Swap the property on the passed entity (the caller passed the state object — same as the
+      // _version bump below) so a retry from this tab doesn't re-send the removed payment. A new
+      // array, not an in-place splice, so a shared snapshot array is never altered under React.
+      inv.payments=_livePayments;
+      console.warn('[DB]',inv.id,': dropped',_droppedPays.length,'payment(s) accounting unapplied:',_droppedPays.map(p=>p.ref).join(', '));
+      if(_dbNotify)_dbNotify('A payment on '+inv.id+' was removed by accounting, so your screen\'s copy was updated to match. No action needed.','success');
+    }
     // Payment preservation: payments are financial records — never let a stale/timed-out client drop one another
     // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
     // was never aware of, so only a payment the client loaded and then deleted is actually removed.
-    let _payments=payments;
+    let _payments=_livePayments;
     let _dbPayRows=[];
     {
       const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
@@ -3027,7 +3051,7 @@ const _dbSaveInvoiceInner = async (inv) => {
       }
       _dbPayRows=_dbPays||[];
       if(_dbPays&&_dbPays.length){
-        const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
+        const _clientRefs=new Set((_livePayments||[]).map(p=>p.ref).filter(Boolean));
         const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
         const _payHydrated=inv._paymentsHydrated!==false;
         const _restore=[];
@@ -3037,7 +3061,7 @@ const _dbSaveInvoiceInner = async (inv) => {
           if(_payHydrated&&ref&&_knownRefs.has(ref))return;// deliberately deleted from a clean load
           _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date,...(row.receipt_id?{receipt_id:row.receipt_id}:{})});
         });
-        if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(payments||[]),..._restore];}
+        if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(_livePayments||[]),..._restore];}
       }
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
