@@ -13832,16 +13832,17 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         const _wizSizes=(jobWizard&&jobWizard.artSizes)||{};
         updArtFiles=updArtFiles.map(a=>{const v=_wizSizes[a.id];return (v!=null&&String(v).trim()&&String(v)!==String(a.art_size||''))?{...a,art_size:String(v).trim()}:a});
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
-        saveSONow(updated,'Released jobs',null);setJobWizard(null);
-        // After releasing a quick mock, jump straight to that job's detail (where "Send to
-        // Coach" lives) instead of dropping the rep on the jobs list, so they can send it.
-        if(activateAll){const _qmIdx=newJobs.findIndex(j=>j.quick_mock);if(_qmIdx>=0)setSelJob(preservedJobs.length+_qmIdx);}
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).length>0).length:0;
         const artSkipped=activateAll?newJobs.filter(j=>j.art_status==='art_complete').length:0;
         const quickMocked=activateAll?newJobs.filter(j=>j.quick_mock).length:0;
         const msgs=[];if(artSent>0)msgs.push(artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard');if(quickMocked>0)msgs.push(quickMocked+' quick mock'+(quickMocked!==1?'s':'')+' sent to coach for approval');if(artSkipped>0)msgs.push(artSkipped+' job'+(artSkipped!==1?'s':'')+' marked art complete');
         if(heldItemCount>0)msgs.push(heldItemCount+' item'+(heldItemCount!==1?'s':'')+' kept on hold');
-        nf(activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready');
+        const okMsg=activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready';
+        saveSONow(updated,'Released jobs',okMsg,()=>{setJobWizard(null);
+          // After releasing a quick mock, jump straight to that job's detail (where "Send to
+          // Coach" lives) instead of dropping the rep on the jobs list, so they can send it.
+          if(activateAll){const _qmIdx=newJobs.findIndex(j=>j.quick_mock);if(_qmIdx>=0)setSelJob(preservedJobs.length+_qmIdx)}
+        });
       };
 
       // ── Art size is required before a job goes to the artist ──────────────────────────
