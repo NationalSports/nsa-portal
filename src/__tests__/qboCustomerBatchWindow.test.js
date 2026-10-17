@@ -2,7 +2,7 @@
 // Before, a new customer waited for the rotation (~4 days) and its invoices were held meanwhile.
 import fs from 'fs';
 import path from 'path';
-import { customerBatchWindow } from '../../supabase/functions/qbo-sales-background/logic';
+import { customerBatchWindow, NEW_CUSTOMERS_PER_RUN } from '../../supabase/functions/qbo-sales-background/logic';
 
 const ids = rows => rows.map(r => r.id);
 const linked = Array.from({ length: 60 }, (_, i) => ({ id: 'c' + String(i).padStart(3, '0') }));
@@ -21,10 +21,11 @@ describe('customerBatchWindow', () => {
       .toEqual(ids(linked.slice(25, 50)));
   });
 
-  test('unlinked customers are capped at the batch limit so the rotation keeps moving', () => {
+  test('at most a few unlinked customers per run (each QBO create takes ~20s of a 150s limit)', () => {
+    expect(NEW_CUSTOMERS_PER_RUN).toBe(3);
     const many = Array.from({ length: 40 }, (_, i) => ({ id: 'n' + String(i).padStart(3, '0') }));
     const batch = customerBatchWindow([...linked, ...many], links, { customer_batch_limit: 25 });
-    expect(batch.filter(r => r.id.startsWith('n'))).toHaveLength(25);
+    expect(ids(batch.filter(r => r.id.startsWith('n')))).toEqual(['n000', 'n001', 'n002']);
     expect(batch.filter(r => r.id.startsWith('c'))).toHaveLength(25);
   });
 
