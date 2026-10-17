@@ -1,0 +1,24 @@
+.card-feed-panel { display: grid; gap: 18px; }
+.card-feed-setup { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 9px; color: #9a3412; padding: 15px; }
+.card-report-tiles { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.card-report-tiles > div { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; display: grid; gap: 5px; padding: 14px; }
+.card-report-tiles span { color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
+.card-report-tiles strong { color: #192853; font-size: 22px; }
+.card-report-tiles small { color: #64748b; }
+.card-report, .card-connections, .card-inbox { border-top: 1px solid #e2e8f0; padding-top: 16px; }
+.card-feed-panel h4 { color: #192853; margin: 0 0 10px; }
+.card-connection-summary { display: grid; gap: 8px; margin-bottom: 8px; }
+.card-connection-summary > div { align-items: center; background: #f8fafc; border-radius: 9px; display: grid; gap: 8px; grid-template-columns: minmax(0,1fr) auto; padding: 10px 12px; }
+.card-connection-summary small { color: #64748b; grid-column: 1 / -1; }
+.card-report-row { display: grid; grid-template-columns: minmax(0,1fr) 100px 120px; gap: 12px; padding: 9px 0; border-top: 1px solid #eef2f7; font-size: 12px; }
+.card-report-row strong { text-align: right; }
+.card-account { display: grid; grid-template-columns: minmax(180px,1fr) minmax(280px,2fr); align-items: end; gap: 16px; padding: 12px 0; border-top: 1px solid #eef2f7; }
+.card-account > div { display: grid; gap: 4px; }.card-account small { color: #64748b; }
+.card-transaction { border-top: 1px solid #e2e8f0; display: grid; gap: 12px; padding: 16px 0; }
+.card-transaction-main { align-items: flex-start; display: flex; justify-content: space-between; gap: 16px; }
+.card-transaction-amount { align-items: flex-end; display: flex; flex-direction: column; gap: 6px; white-space: nowrap; }
+.card-category-grid { background: #f8fafc; border-radius: 9px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 14px; }
+.card-checks { align-items: center; display: flex; gap: 16px; }
+.card-checks label { align-items: center; display: flex; flex-direction: row; font-weight: 500; }
+.card-checks input { width: auto; }
+@media(max-width:760px){.card-report-tiles,.card-account,.card-category-grid{grid-template-columns:1fr}.card-report-row{grid-template-columns:1fr auto}.card-report-row strong{grid-column:2;grid-row:1;text-align:right}.card-transaction-main{align-items:stretch;flex-direction:column}.card-transaction-amount{align-items:flex-start}}
