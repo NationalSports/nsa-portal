@@ -57,6 +57,8 @@ import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
+import AdidasClickAssignPanel, { getAdidasClickConfig } from './components/AdidasClickAssignPanel';
+import { ADIDAS_CLICK_TASK_TYPE, isAdidasClickPayload, planAdidasClickOrder } from './lib/adidasClickPlan';
 import { normalizeOmgSize } from './lib/omgReport';
 import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
@@ -2951,20 +2953,32 @@ export default function App(){
   // already syncs per-size stock + restock dates (adidas_inventory), so show
   // them at assign time and ship the snapshot in the payload — the bot starts
   // informed instead of discovering everything by hovering the vendor site.
-  const[botAvail,setBotAvail]=useState(null);// {map:{sku:{size:{stock,date,fqty}}},synced}
+  const[botAvail,setBotAvail]=useState(null);// {rows,map,synced,preferences}
   React.useEffect(()=>{
     if(!todoModal.open||!supabase){setBotAvail(null);return}
+    // adidas_inventory contains some non-adidas catalog rows whose source tag is
+    // "click"; vendor identity, not inventory_source, is the ordering boundary.
+    if(!isAdidasClickPayload(todoModal.bot_payload)){setBotAvail(null);return}
     const skus=[...new Set((todoModal.bot_payload?.lines||[]).map(l=>l.sku).filter(Boolean))];
     if(!skus.length){setBotAvail(null);return}
     let dead=false;
-    supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus).then(r=>{
+    Promise.all([
+      supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus),
+      supabase.from('adidas_click_size_preferences').select('sku,variant').in('sku',skus),
+    ]).then(([r,prefs])=>{
       if(dead||r.error||!r.data||!r.data.length){if(!dead)setBotAvail(null);return}
       const map={};let synced=null;
       r.data.forEach(row=>{(map[row.sku]=map[row.sku]||{})[row.size]={stock:row.stock_qty??0,date:row.future_delivery_date||null,fqty:row.future_delivery_qty??null};if(row.last_synced&&(!synced||row.last_synced>synced))synced=row.last_synced});
-      setBotAvail({map,synced});
+      const preferences={};if(!prefs.error)(prefs.data||[]).forEach(row=>{preferences[row.sku]=row.variant});
+      setBotAvail({rows:r.data,map,synced,preferences});
     });
     return()=>{dead=true};
   },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
+  const saveAdidasClickPreference=(sku,variant)=>{
+    if(!supabase||!sku||!variant)return;
+    setBotAvail(prev=>prev?{...prev,preferences:{...(prev.preferences||{}),[sku]:variant}}:prev);
+    _dbSavingGuard(()=>supabase.from('adidas_click_size_preferences').upsert({sku,variant,updated_by:cu?.id||null,updated_at:new Date().toISOString()},{onConflict:'sku'}).then(r=>{if(r.error)nf('Could not save the CLICK size preference: '+r.error.message,'error')}));
+  };
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -39602,6 +39616,12 @@ export default function App(){
               </div>
             </div>;
           }
+          if(bp.target==='adidas_click'){
+            return <AdidasClickAssignPanel payload={bp} inventoryRows={botAvail?.rows||[]} savedPreferences={botAvail?.preferences||{}}
+              value={todoModal.bot_click_config}
+              onChange={bot_click_config=>setTodoModal(m=>({...m,bot_click_config}))}
+              onSavePreference={saveAdidasClickPreference}/>;
+          }
           const lines=Array.isArray(bp.lines)?bp.lines:[];
           const totQty=bp.totals?.qty??lines.reduce((a,l)=>a+(l.qty||0),0);
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
@@ -39665,7 +39685,7 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&<>
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&todoModal.bot_payload?.target!=='adidas_click'&&<>
           <div style={{marginBottom:12}}>
             <label className="form-label">📅 Requested delivery date (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -39780,34 +39800,51 @@ export default function App(){
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           // Bot task: queue it for the worker. Attach structured payload when present
           // (batch button); otherwise queue from the title/description alone.
+          let newTodos=[newTodo];
           if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
-            if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
-            _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
-            // Ship the portal's availability snapshot (needed sizes only) + the rep's
-            // long-backorder decision so the bot starts informed and doesn't round-trip.
-            if(botAvail?.map){
-              const _avNeeded={};
-              (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
-              if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+            if(_bp.target==='adidas_click'){
+              const _cfg=getAdidasClickConfig(_bp,todoModal.bot_click_config);
+              const _preferences={...(botAvail?.preferences||{}),...(_cfg.preferences||{})};
+              const _plan=planAdidasClickOrder({lines:_bp.lines||[],inventoryRows:botAvail?.rows||[],preferences:_preferences,defaultChoice:_cfg.default_choice,skuChoices:_cfg.sku_choices,customerPo:_cfg.customer_po,shipMethod:_cfg.ship_method,deliveryLocation:_cfg.delivery_location});
+              if(_plan.issues.length){nf('Fix the CLICK plan before assigning: '+_plan.issues.map(i=>i.message).join(' '),'error');return}
+              const _scheduledSkus=new Set(_plan.sku_plans.filter(p=>p.status==='scheduled').map(p=>p.sku));
+              const _subset=(scheduled)=>{
+                const skuPlans=_plan.sku_plans.filter(p=>_scheduledSkus.has(p.sku)===scheduled);
+                const skus=new Set(skuPlans.map(p=>p.sku));
+                return{..._plan,sku_plans:skuPlans,import_rows:_plan.import_rows.filter(r=>skus.has(r.article)),scheduled_for:scheduled?_plan.scheduled_for:null};
+              };
+              const _payloadFor=(scheduled)=>({..._bp,task_type:ADIDAS_CLICK_TASK_TYPE,contract_version:2,lines:(_bp.lines||[]).filter(l=>_scheduledSkus.has(l.sku)===scheduled),resolved_plan:_subset(scheduled),customer_po:_plan.customer_po,ship_method:_plan.ship_method,delivery_location:_plan.delivery_location,...(scheduled?{scheduled_for:_plan.scheduled_for}:{})});
+              const _hasReady=_plan.sku_plans.some(p=>p.status!=='scheduled');
+              const _hasScheduled=_scheduledSkus.size>0;
+              if(_hasReady)newTodo.bot_payload=_payloadFor(false);
+              if(!_hasReady&&_hasScheduled){newTodo.bot_status='scheduled';newTodo.bot_payload=_payloadFor(true)}
+              if(_hasReady&&_hasScheduled){
+                const held={...newTodo,id:newTodo.id+'-hold',title:newTodo.title+' · hold & re-check',bot_status:'scheduled',bot_payload:_payloadFor(true)};
+                newTodos=[newTodo,held];
+              }
+            }else{
+              if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
+              _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
+              // Legacy Mac Mini path remains available for existing add_to_cart tasks.
+              if(botAvail?.map){
+                const _avNeeded={};
+                (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
+                if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+              }
+              if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
+              const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
+              if(Object.keys(_ls).length)_bp.line_schedule=_ls;
+              const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
+              if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
+              if(_bp.ship_to){const _att=todoModal.bot_attention!==undefined?String(todoModal.bot_attention).trim():(_bp.ship_to.attention||'');_bp.ship_to={..._bp.ship_to,attention:_att||null}}
+              if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
             }
-            if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
-            // Per-item schedule: only ship real decisions ('auto' rows follow the rules;
-            // a date pick without a date is meaningless and dropped).
-            const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
-            if(Object.keys(_ls).length)_bp.line_schedule=_ls;
-            // Drop ship: make sure the delivery address travels with the payload so the
-            // worker never has to guess where the order actually goes.
-            const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
-            if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
-            // Attention line 2 rides on the ship-to address (only place it can render).
-            if(_bp.ship_to){const _att=todoModal.bot_attention!==undefined?String(todoModal.bot_attention).trim():(_bp.ship_to.attention||'');_bp.ship_to={..._bp.ship_to,attention:_att||null}}
-            if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
-          setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+          setAssignedTodos(prev=>[...newTodos,...prev]);
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{},bot_click_config:null});
+          nf((newTodos.length>1?'Tasks':'Task')+' assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
     </div></div>}
