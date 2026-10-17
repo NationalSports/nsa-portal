@@ -36,13 +36,31 @@ The public coach catalog at /adidas hides any product with **no**
 `adidas_inventory` rows — "never checked" is indistinguishable from "not
 carried". So:
 
-1. **SKU list:** re-query the `products` table **every run** (`brand='Adidas'`,
-   active, not archived) — never a cached list. Catalog imports must be picked
-   up automatically on the next run. (~4,000 SKUs currently; only ~2,100 have
-   rows today — close that gap.)
+1. **SKU list:** read the `adidas_crawl_queue` view **every run** — never a cached
+   list. It is derived from `products` (`brand='Adidas'`, active, not archived,
+   non-Agron), so catalog imports are picked up automatically. 4,354 SKUs in scope
+   as of 2026-08-25; 753 still have no inventory rows at all — close that gap.
+
+   ```sql
+   SELECT sku, category, priority, reason FROM adidas_crawl_queue
+   ORDER BY priority, oldest_synced ASC NULLS FIRST LIMIT 622;
+   ```
+
+   Order on the SKU's **oldest** size row, never its newest — the sync writes per
+   size and skips unmapped size codes, so a SKU's tail sizes go stale while its
+   core sizes look fresh. Sorting on the newest row skips those SKUs forever.
 2. **Cadence:** inventory is the daily job; discovery and backfill are monthly.
-   - **Daily:** stock sync only (prioritized subset is fine).
-   - **Weekly:** full-catalog stock sweep — every SKU re-checked, no time filters.
+   - **Daily:** stock sync only. Take the top `daily_budget_for_weekly_sweep`
+     (≈622) rows off `adidas_crawl_queue` and work them in order.
+   - **Weekly:** the full sweep is a *rolling* 7-day sweep, delivered by the daily
+     budget above — not a separate marathon run. Because the queue's
+     `weekly-sweep-due` tier is ordered oldest-first, every SKU is re-checked
+     within 7 days by construction, and a run that dies early just resumes at the
+     top of the queue next time.
+   - **Verify it:** `SELECT pct_covered_7d FROM adidas_crawl_coverage` — this is
+     the only thing that proves the weekly scan happened. It read **7.1%** on
+     2026-08-25, i.e. the sweep described here had not run for weeks and nothing
+     surfaced it. Target is ~100.
    - **Monthly:** full-range discovery (new SKUs on Cowork → create rows) and
      image/description backfill. Backfill is fill-empties-only, so it is
      naturally one-time per SKU; the monthly pass just catches new items.
