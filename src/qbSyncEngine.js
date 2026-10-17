@@ -9,6 +9,7 @@ import { mergeQBSyncLogs } from './qbLinkLedger';
 import { loadQBPaymentPullSources, planQBPaymentPull } from './qbPaymentPull';
 import { D_V } from './constants';
 import { _dbSaveSO, supabase } from './lib/dbEngine';
+import { effectiveOrderTaxRate } from './lib/webstoreSoMoney';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import {buildQBInventoryValuation, buildQBInventoryValuationEntry, findQBInventoryValuationEntries, loadQBInventoryAssetBalance, loadQBJournalEntry, qbInventoryValuationDocNumber, verifyQBInventoryValuationReadback} from './qbInventoryValuation';
@@ -567,9 +568,7 @@ export function buildPortalSalesOrderTax(salesOrder = {}, customer = {}, salesSu
   // Sales orders snapshot their tax rate when they are created. Keep that
   // historical rate even if the customer changes later; webstore orders are
   // the important zero-rate exception because tax was collected at checkout.
-  const taxRate = salesOrder.tax_exempt ? 0 : salesOrder.source === 'webstore'
-    ? safeNum(salesOrder.tax_rate)
-    : safeNum(salesOrder.tax_rate || customer?.tax_rate);
+  const taxRate = effectiveOrderTaxRate(salesOrder, customer?.tax_rate);
   const tax = qbCurrency(safeNum(salesSubtotal) * taxRate);
   return {
     taxRate,

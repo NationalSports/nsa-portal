@@ -16,6 +16,20 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 export const isWebstoreBatchSO = (o) => !!o && o.source === 'webstore';
 
+// Resolve the rate used to calculate NEW tax on an order.
+//
+// A native webstore batch already carries the checkout tax as `_omg_tax`. Its
+// stored tax_rate=0 is therefore an intentional, authoritative zero — falling
+// through to the customer's normal rate would charge the same sale tax twice.
+// Portal/estimate orders keep their legacy behavior: an absent/zero order rate
+// falls back to the customer's rate. `source` is the reliable discriminator;
+// nullish-vs-zero alone cannot distinguish an old portal row from a webstore SO.
+export function effectiveOrderTaxRate(o, customerTaxRate = 0) {
+  if (o && o.tax_exempt) return 0;
+  if (isWebstoreBatchSO(o)) return num(o && o.tax_rate);
+  return num((o && o.tax_rate) || customerTaxRate);
+}
+
 export function webstoreCheckoutMoney(o) {
   if (!isWebstoreBatchSO(o)) return { isWebstore: false, processing: 0, tax: 0, shipping: 0, ccFees: 0 };
   return {
