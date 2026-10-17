@@ -204,7 +204,7 @@ export const outsideDecoSell=(perCost,margin=OUTSIDE_DECO_MARGIN)=>{const c=safe
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the
 // editor agree. Returns { rev, ship, tax, grand }.
 import { safeNum as _sNum, safeItems as _sItems, safeSizes as _sSizes, safeDecos as _sDecos, safeArt as _sArt } from './safeHelpers';
-import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
+import { effectiveOrderTaxRate, webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 export const calcOrderTotals=(o,custTaxRate=0)=>{
   if(!o)return{rev:0,ship:0,tax:0,grand:0};
   const items=_sItems(o);const af=_sArt(o);
@@ -244,7 +244,7 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   // Webstore SOs collect/remit tax at checkout, so their stored tax_rate (0) is
   // authoritative — never fall back to the customer's default, or we'd double-tax.
   // (0 || custTaxRate picked up the customer rate; webstore SOs must honor the explicit 0.)
-  const taxRate=o.tax_exempt?0:(o.source==='webstore'?_sNum(o.tax_rate):_sNum(o.tax_rate||custTaxRate));
+  const taxRate=effectiveOrderTaxRate(o,custTaxRate);
   const tax=rev*taxRate;
   return{rev,ship,tax,grand:rev+ship+tax+wm.tax};
 };

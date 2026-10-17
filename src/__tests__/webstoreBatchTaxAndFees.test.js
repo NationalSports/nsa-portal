@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { webstoreCheckoutMoney, webstoreDocMoneyRows, isWebstoreBatchSO } = require('../lib/webstoreSoMoney');
+const { effectiveOrderTaxRate, webstoreCheckoutMoney, webstoreDocMoneyRows, isWebstoreBatchSO } = require('../lib/webstoreSoMoney');
 
 const root = path.resolve(__dirname, '../..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
@@ -40,11 +40,17 @@ describe('lib/webstoreSoMoney', () => {
     expect(Math.round((4485 + doc.extra) * 100) / 100).toBe(5056.84);
     expect(webstoreDocMoneyRows({ source: 'portal', _omg_tax: 50 }, fmt)).toEqual({ rows: [], extra: 0 });
   });
+
+  test('webstore zero is authoritative, portal missing rate falls back, and tax exemption wins', () => {
+    expect(effectiveOrderTaxRate({ source: 'webstore', tax_rate: 0 }, 0.0875)).toBe(0);
+    expect(effectiveOrderTaxRate({ source: 'portal' }, 0.0875)).toBe(0.0875);
+    expect(effectiveOrderTaxRate({ source: 'portal', tax_rate: 0.08, tax_exempt: true }, 0.0875)).toBe(0);
+  });
 });
 
 describe('shared order totals / margin (SO list, coach portal, dashboard) agree with the editor', () => {
   const { calcOrderTotals, calcOrderMargin } = require('../pricing');
-  const so = { source: 'webstore', tax_exempt: true, tax_rate: 0, shipping_type: 'flat', shipping_value: 0,
+  const so = { source: 'webstore', tax_exempt: false, tax_rate: 0, shipping_type: 'flat', shipping_value: 0,
     items: [{ sku: 'NEA200', unit_sell: 23, nsa_cost: 10, sizes: { M: 2 } }],
     _omg_processing: 5, _omg_tax: 4, _omg_shipping: 3, _omg_cc_fees: 2 };
 
@@ -121,6 +127,7 @@ describe('client side of the batch', () => {
   const webstores = read('src/Webstores.js');
   const timedTeamBatch = read('src/lib/timedTeamBatch.js');
   const commissions = read('src/CommissionsPage.js');
+  const qbSync = read('src/qbSyncEngine.js');
 
   test('the SO opened after a batch carries the server-derived money', () => {
     expect(app).toContain('const _sm=finalized.store_money;');
@@ -138,10 +145,15 @@ describe('client side of the batch', () => {
 
   test('list totals, dashboard margin and Reports pipeline read the same money as the editors', () => {
     const pricing = read('src/pricing.js');
-    expect(pricing).toContain("import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';");
+    expect(pricing).toContain("import { effectiveOrderTaxRate, webstoreCheckoutMoney } from './lib/webstoreSoMoney';");
     expect(pricing).toContain('return{rev,ship,tax,grand:rev+ship+tax+wm.tax};');
     expect(pricing).toContain('rev+=wm.processing;cost+=wm.ccFees;');
     expect(app).toContain('const _wm=webstoreCheckoutMoney(so);rev+=_wm.processing;cost+=_wm.ccFees;');
+  });
+
+  test('QuickBooks sales-order previews use the same effective tax-rate rule', () => {
+    expect(qbSync).toContain("import { effectiveOrderTaxRate } from './lib/webstoreSoMoney';");
+    expect(qbSync).toContain('const taxRate = effectiveOrderTaxRate(salesOrder, customer?.tax_rate);');
   });
 
   test('invoice page never recomputes a stored tax amount at a 0% rate, and never TaxCloud-files a batch invoice', () => {
@@ -173,6 +185,16 @@ describe('classic and new order editors carry the identical webstore money logic
     // The SO↔invoice balance compares the collected tax too, so a later invoice on the
     // SO never carries a negative tax line.
     expect(a.filter((l) => l.includes('tax:totals.tax+totals.storeTax')).length).toBe(2);
+  });
+
+  test('every editor tax path uses the shared webstore-aware rate, including manual invoices', () => {
+    const taxLines = (src) => src.split('\n').filter((l) => l.includes('effectiveOrderTaxRate(')).map((l) => l.trim()).sort();
+    const a = taxLines(modern), b = taxLines(classic);
+    expect(a).toEqual(b);
+    expect(a).toHaveLength(6);
+    expect(a.join('\n')).toContain('tax_rate:effectiveOrderTaxRate(o,cust?.tax_rate)');
+    expect(modern).not.toMatch(/o\.tax_rate\|\|cust\?\.tax_rate/);
+    expect(classic).not.toMatch(/o\.tax_rate\|\|cust\?\.tax_rate/);
   });
 
   test('print and email PDFs add the checkout rows and total in both editors', () => {

@@ -18,7 +18,7 @@ import JobGarmentMocks from './JobGarmentMocks';
 import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl, stitchLogoNeedsSave, artLogoNeedsSave } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
-import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
+import { effectiveOrderTaxRate, webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import { mergeExternalPoItems } from './lib/editorPoSync';
@@ -4256,7 +4256,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // from collected = product + fundraise (Webstores.js collectedForLine), so it's inside
     // `rev`/margin already — adding it again would double-count.
     const fundraiseRev=safeNum(o._omg_fundraise||0);
-    const ship=(o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0))+_wm.shipping;const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
+    const ship=(o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0))+_wm.shipping;const taxRate=effectiveOrderTaxRate(o,cust?.tax_rate);const tax=rev*taxRate;
     // Prior shipping carried onto this order (a Manual Ship recorded against the customer when
     // they had no open order). Billed on top of the order's own shipping; not taxed.
     const priorShip=safeNum(o.pending_ship_applied?o.pending_ship_amount:0);
@@ -4300,7 +4300,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const baseShip=o.shipping_type==='pct'?origTotalRev*(o.shipping_value||0)/100:(o.shipping_value||0);
     const promoPct=origTotalRev>0?origPromoRev/origTotalRev:(promoRev>0?1:0);
     const promoShip=rQ(baseShip*promoPct*1.25);const normalShip=rQ(baseShip*(1-promoPct));
-    const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const normalTax=normalRev*taxRate;
+    const taxRate=effectiveOrderTaxRate(o,cust?.tax_rate);const normalTax=normalRev*taxRate;
     // Include _promo_credit from partially covered items
     const promoCredit=safeItems(o).reduce((a,it)=>a+safeNum(it._promo_credit),0);
     const promoAmount=promoRev+promoShip+promoCredit;const customerPays=normalRev+normalShip+normalTax;
@@ -5443,7 +5443,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               const items=_docPdfItems(o);
               const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-              const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
+              const taxRate=effectiveOrderTaxRate(o,cust?.tax_rate);
               const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
               const rows=[];let subTotal=0;
               items.forEach(it=>{
@@ -8702,7 +8702,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       const items=_docPdfItems(o);
       const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
-      const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
+      const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=effectiveOrderTaxRate(o,cust?.tax_rate);
       const rows=[];let subTotal=0;
       items.forEach(it=>{
         const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
@@ -9092,7 +9092,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       if(creditAmt>0){
         invCredit=Math.min(creditAmt,selTotals.subtotal+invShip+invTax);
         // Recalculate tax: credit reduces the taxable subtotal proportionally
-        const taxRate2=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
+        const taxRate2=effectiveOrderTaxRate(o,cust?.tax_rate);
         const creditOnSubtotal=Math.min(creditAmt,selTotals.subtotal);
         const reducedSubtotal=Math.max(0,selTotals.subtotal-creditOnSubtotal);
         invTax=Math.round(reducedSubtotal*taxRate2*100)/100;
@@ -9369,7 +9369,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:_invDateStr,due_date:dueDate,total:_roundedTotal,paid:0,
               memo:invMemo||defaultMemo,status:_roundedTotal===0?'paid':'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round((invShipAmt+_priorShipBill)*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:effectiveOrderTaxRate(o,cust?.tax_rate),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round((invShipAmt+_priorShipBill)*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),bill_to_id:billingOverride?billToIdFor(cust,allCustomers,billingOverride):'default',
               ...(shippingOverride||{}),
