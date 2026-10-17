@@ -45,6 +45,10 @@ describe('supplier bill auto-hold is a hard push gate', () => {
     expect(liveGate[0]).toMatch(/targetVendors:/);
     expect(liveGate[0]).toMatch(/else delete p\._auto_hold/);
     expect(liveGate[0]).toMatch(/safety check errored — review manually/);
+    // A proposal/wizard match stores the order's customer PO or id as matchedPO.po_id, so
+    // exactness must also be asked of the order's own PO lines (poExactMatch), never looser.
+    expect(liveGate[0]).toMatch(/poExact=tItems\.some\(t=>poExactMatch\(p\.po_number,t\.po_id\)\)/);
+    expect(liveGate[0]).not.toMatch(/startsWith/);
     expect((APP.match(/_liveBillPushHoldReasons\(/g)||[]).length).toBeGreaterThanOrEqual(6);
   });
 });

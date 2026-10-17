@@ -214,15 +214,37 @@ const _V_STOP = new Set(['SPORTS', 'SPORTING', 'GOODS', 'INC', 'LLC', 'CO', 'COM
 // database keys, not supplier names — comparing them to a bill's vendor string would false-
 // block legitimate matches, so they count as UNKNOWN.
 const _isVendorPlaceholder = (v) => /^(v\d{6,}|ns[_ ]?\d+)$/i.test(String(v || '').trim());
+// One supplier, several names on paper. Momentec Brands owns Augusta Sportswear,
+// Badger, Alleson and Holloway: the order line says "Momentec" (the vendor record the
+// portal buys through) while Sports Inc bills the brand ("AUGUSTA SPORTSWEAR/ASI",
+// "BADGER SPORTSWEAR"). Token overlap can't see that, so 72 bills ($32K) sat on a
+// "supplier differs" hold (2026-10-17). Distinct from _isAugustaFamily above, which is
+// about the trailing-"00" style numbering, not ownership.
+const _vendorHouse = (v) => (/AUGUSTA|MOMENTEC|ALLESON|HOLLOWAY|BADGER/i.test(String(v || '')) ? 'MOMENTEC' : null);
 export const vendorsCompatible = (a, b) => {
   if (_isVendorPlaceholder(a) || _isVendorPlaceholder(b)) return true;
   const norm = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
   const A = norm(a), B = norm(b);
   if (!A || !B) return true; // unknown never blocks
   if (A === B || A.includes(B) || B.includes(A)) return true;
+  const ha = _vendorHouse(A), hb = _vendorHouse(B);
+  if (ha && hb && ha === hb) return true;
   const at = A.split(' ').filter((t) => t.length >= 4 && !_V_STOP.has(t));
   const bt = new Set(B.split(' ').filter((t) => t.length >= 4 && !_V_STOP.has(t)));
   return at.some((t) => bt.has(t));
+};
+
+// Exact PO equality as the push gate means it: same characters once case and spacing
+// are ignored ("PO 59589 LYSL" = "po59589lysl"), nothing looser. The live push check
+// compares the bill's PO to the matched wrapper's po_id, but a match accepted from a
+// proposal or the wizard stores the ORDER's customer PO ("Tony Gates", "P2700740") or
+// its id ("SO-2101") there, so a bill whose PO is word-for-word a line on that order
+// still read as "not exact" and was held (218 bills, $86K, 2026-10-17). The gate now
+// also asks the order's own PO lines, through this one definition of exact.
+export const poExactMatch = (billPo, orderPo) => {
+  const flat = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+  const a = flat(billPo);
+  return !!a && a === flat(orderPo);
 };
 
 // ── PO string anatomy ────────────────────────────────────────────────────────

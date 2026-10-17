@@ -1302,6 +1302,30 @@ describe('autoPushSafety direct-path gate', () => {
     expect(autoPushSafety({ ...base, billVendor: 'OUTDOOR CAP CO INC A', targetVendors: ['ns_115'] })).toEqual([]);
     expect(autoPushSafety({ ...base, billVendor: '', targetVendors: ['SanMar'] })).toEqual([]);
   });
+  test('one supplier house: Augusta / Badger bills clear against Momentec order lines; real mismatches still block', () => {
+    expect(vendorsCompatible('AUGUSTA SPORTSWEAR/ASI', 'Momentec')).toBe(true);
+    expect(vendorsCompatible('BADGER SPORTSWEAR', 'Momentec')).toBe(true);
+    expect(vendorsCompatible('Momentec', 'HOLLOWAY')).toBe(true);
+    expect(autoPushSafety({ ...base, billVendor: 'AUGUSTA SPORTSWEAR/ASI', targetVendors: ['Momentec'] })).toEqual([]);
+    expect(autoPushSafety({ ...base, billVendor: 'BADGER SPORTSWEAR', targetVendors: ['Momentec'] })).toEqual([]);
+    // The other pairs seen on real holds (2026-10-17) are genuine mismatches and must keep blocking.
+    expect(vendorsCompatible('AUGUSTA SPORTSWEAR/ASI', 'S&S Activewear')).toBe(false);
+    expect(vendorsCompatible('RICHARDSON CAP CO', 'SanMar')).toBe(false);
+    expect(vendorsCompatible('S&S Activewear', 'Adidas')).toBe(false);
+    expect(vendorsCompatible('BADGER SPORTSWEAR', 'SanMar')).toBe(false);
+    expect(autoPushSafety({ ...base, billVendor: 'RICHARDSON CAP CO', targetVendors: ['SanMar'] }).length).toBe(1);
+  });
+  test('poExactMatch: same characters ignoring case and spacing, nothing looser', () => {
+    const { poExactMatch } = require('../billResolve');
+    expect(poExactMatch('PO 59589 LYSL', 'po59589lysl')).toBe(true);
+    expect(poExactMatch(' PO 59589  LYSL ', 'PO 59589 LYSL')).toBe(true);
+    expect(poExactMatch('PO 59589 LYSL', 'PO 59589 LYS')).toBe(false);   // prefix is not exact
+    expect(poExactMatch('PO 59589 LYSL', 'PO 59589 LYSLRE')).toBe(false); // longer is not exact
+    expect(poExactMatch('PO 59589 LYSL', 'SO-2101')).toBe(false);        // the order id a wizard match stores
+    expect(poExactMatch('PO 59589 LYSL', 'Tony Gates')).toBe(false);     // the customer PO a wizard match stores
+    expect(poExactMatch('', '')).toBe(false);
+    expect(poExactMatch('PO 1', undefined)).toBe(false);
+  });
   test('vendorsCompatible treats internal vendor-record ids as unknown (fixes the proposal-path false block too)', () => {
     expect(vendorsCompatible('AGRON INC.', 'v1777312659133')).toBe(true);
     expect(vendorsCompatible('WILSON SPORTING GOODS CO', 'ns_166')).toBe(true);

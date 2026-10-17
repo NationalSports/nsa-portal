@@ -549,7 +549,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, poExactMatch, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine,qbResponseErrorDetail} from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs,qboAccountOnlyBill} from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
@@ -29871,13 +29871,16 @@ export default function App(){
       const stored=billAutoHoldReasons(p);
       if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
       try{
-        const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
         const matchedPoRaw=matchedBillPoNumber(p);
-        const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
+        let poExact=poExactMatch(p.po_number,matchedPoRaw)||poCoreTagMatch(p.po_number,matchedPoRaw);
         let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
         let tItems=[];
         if(p.matchedPOSource==='so_po'){
           tItems=_soPoTargetItems(p);
+          // A proposal/wizard match stores the order's customer PO or id as po_id, not the
+          // PO line the bill names. The target lines are the order's own po_lines (exact,
+          // prefix or prefix-stripped hits): exact on any of them is exact (poExactMatch).
+          if(!poExact)poExact=tItems.some(t=>poExactMatch(p.po_number,t.po_id));
           if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
           if(!pairs){
             pairs=[];
