@@ -9,6 +9,20 @@ const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 // Bill totals normally arrive as numbers, but can round-trip as numeric strings
 // (JSON re-parse / Postgres numeric). safeNum is number-typed only and would silently
 // null a string total — coerce here instead. Garbage still maps to 0.
+// A matched bill carries a copy of the whole sales order it matched (matchedPO.so,
+// up to 850KB per bill). Every reader resolves the live order from the order
+// book by so_id and only falls back to the copy, so the stored row keeps the
+// id and drops the copy: with it, 1,794 holds weighed 24MB and a 1,000-row page
+// sat on the 8s PostgREST statement_timeout, so the Set-aside pile silently
+// came and went between page loads (2026-10-16). Batch / inventory-PO matches
+// are small and kept whole.
+export const slimMatchedPO = (m) => {
+  if (!m || typeof m !== 'object' || !('so' in m)) return m;
+  const { so, ...rest } = m;
+  if (rest.so_id == null && so && so.id != null) rest.so_id = so.id;
+  return rest;
+};
+
 const _total = (v) => { const n = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(v)); return Number.isFinite(n) ? n : 0; };
 
 // A QBO backfill can legitimately target a bill whose quantities/costs were
@@ -74,8 +88,9 @@ export const buildAppliedBillRows = (bills, appliedBy) => {
         flags: billAnomalyFlags(p),
       },
       // Enough to render this bill's history row on a machine that never saw the
-      // PDF. rawText/_wizard/_applyKey are big or transient — stripped, same as holds.
-      raw_meta: { ...p, rawText: undefined, _wizard: undefined, _applyKey: undefined },
+      // PDF. rawText/_wizard/_applyKey are big or transient — stripped, same as holds;
+      // the matched order's copy goes too (slimMatchedPO).
+      raw_meta: { ...p, rawText: undefined, _wizard: undefined, _applyKey: undefined, matchedPO: slimMatchedPO(p.matchedPO) },
       updated_at: new Date().toISOString(),
     });
   });

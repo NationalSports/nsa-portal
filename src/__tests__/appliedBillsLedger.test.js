@@ -7,6 +7,7 @@ import {
   isMissingLedgerColumnError,
   mergeServerBills,
   portalBillAlreadyApplied,
+  slimMatchedPO,
 } from '../appliedBillsLedger';
 
 describe('portalBillAlreadyApplied', () => {
@@ -71,6 +72,16 @@ describe('buildAppliedBillRows', () => {
     expect(r.raw_meta._wizard).toBeUndefined();
     expect(r.raw_meta.vendor).toBe('Sports Inc');
     expect(typeof r.updated_at).toBe('string');
+  });
+
+  it('drops the matched order copy from raw_meta but keeps its id', () => {
+    const so = { id: 'SO-1396', items: [{ sku: 'A', po_lines: [{ po_id: 'PO 3517', M: 4 }] }] };
+    const [r] = buildAppliedBillRows([bill({
+      doc_number: 'INV-1002', matchedPOSource: 'so_po',
+      matchedPO: { so_id: 'SO-1396', po_id: 'PO 3517', po: { po_id: 'PO 3517', M: 4 }, so },
+    })], 'Sam');
+    expect(r.raw_meta.matchedPO).toEqual({ so_id: 'SO-1396', po_id: 'PO 3517', po: { po_id: 'PO 3517', M: 4 } });
+    expect(r.applied_so_ids).toEqual(['SO-1396']);
   });
 
   it('skips unkeyable bills and bills without parsed', () => {
@@ -346,5 +357,24 @@ describe('numeric document numbers', () => {
     const seen = new Set(['75565794']);
     const applied = (doc) => seen.has(String(doc == null ? '' : doc).trim().toLowerCase());
     expect(portalBillAlreadyApplied({ doc_number: 'X', si_doc_number: 75565794 }, applied)).toBe(true);
+  });
+});
+
+describe('slimMatchedPO (stored bill rows carry the order id, not the order)', () => {
+  it('drops the embedded sales order and keeps the rest of the match', () => {
+    const m = { so_id: 'SO-9', po_id: 'PO 1', item: { sku: 'X' }, so: { id: 'SO-9', items: [] } };
+    expect(slimMatchedPO(m)).toEqual({ so_id: 'SO-9', po_id: 'PO 1', item: { sku: 'X' } });
+    expect(m.so).toBeDefined(); // the live object is not mutated
+  });
+
+  it('fills so_id from the copy when an older match only carried the order', () => {
+    expect(slimMatchedPO({ po_id: 'PO 1', so: { id: 'SO-9' } })).toEqual({ po_id: 'PO 1', so_id: 'SO-9' });
+  });
+
+  it('leaves batch and inventory-PO matches, null and undefined alone', () => {
+    const batch = { id: 'B1', po_number: 'PO 7', source_pos: [{ so_id: 'SO-1', items: [] }] };
+    expect(slimMatchedPO(batch)).toBe(batch);
+    expect(slimMatchedPO(null)).toBeNull();
+    expect(slimMatchedPO(undefined)).toBeUndefined();
   });
 });
