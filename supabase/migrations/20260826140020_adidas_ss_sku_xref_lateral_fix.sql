@@ -1,0 +1,22 @@
+-- Intentionally does nothing. This file exists so the repo accounts for a live
+-- migration record, and nothing more.
+--
+-- adidas_ss_sku_xref was applied to the live database twice within a few minutes
+-- during development: the first cut joined the family map flat, which emitted one
+-- phantom "no article" row per family name that did not match the colour, so every
+-- matched SKU carried spurious NULLs. The replacement uses a LATERAL join. Both
+-- applies landed in supabase_migrations.schema_migrations, so prod carries
+-- 20260826135932 adidas_ss_sku_xref AND 20260826140020 adidas_ss_sku_xref_lateral_fix.
+--
+-- The fix was folded back into 20260826140000_adidas_ss_sku_xref.sql, which now
+-- carries the LATERAL form — so that one file already produces exactly the view that
+-- is live, and a database built from this repo needs nothing further here.
+--
+-- Repeating the view body here would be actively harmful: it would leave two copies
+-- of the family map, and a later edit to the real one would be silently undone on any
+-- fresh build by the stale copy running after it. So this migration stays empty, and
+-- the schema-drift guard (scripts/check-schema-drift.js, which matches on migration
+-- NAME) sees the counterpart it needs.
+--
+-- To change the crosswalk, edit 20260826140000_adidas_ss_sku_xref.sql or add a new
+-- migration. Never edit this one.
