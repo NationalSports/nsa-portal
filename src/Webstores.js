@@ -1,3 +1,4 @@
+import { playerReportGroupKey } from './lib/playerReportGrouping';
 import AtOnceArtVariants from './allSchool/AtOnceArtVariants';
 import { artworkSetup, isAtOnceStore } from './allSchool/atOnceArtwork.shared';
 import { approveImages } from './lib/showcaseApproval';
@@ -500,7 +501,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit, l
     const o = orderById[i.order_id] || {};
     const nm = (i.player_name || '').trim();
     const num = (i.player_number != null ? String(i.player_number) : '').trim();
-    const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
+    const key = playerReportGroupKey(i, o);
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
     p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', adidasTagSku: i._adidasTagSku || '', color: i.color || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
@@ -523,12 +524,11 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit, l
       const sh = shipLine(c.ship);
       return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.no ? ` · order ${esc(String(c.no))}` : ''}${c.email ? ` · ${esc(c.email)}` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
     }).join('');
-    // A player paid on one order and on the team tab for another is real; say so
-    // rather than stamping one badge over both.
+    // Payment status belongs to this slip’s source order.
     const paidBadge = orders.length && orders.every((c) => c.paid) ? 'PAID'
       : orders.length && orders.every((c) => !c.paid) ? 'TEAM TAB' : 'MIXED';
     return `<div class="slip">
-      <div class="hd"><div><div class="t">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}</div><div class="s">${esc(sub)} · player ${index + 1} of ${list.length}</div></div>
+      <div class="hd"><div><div class="t">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}</div><div class="s">${esc(sub)} · slip ${index + 1} of ${list.length}</div></div>
       <div class="pay">${paidBadge}</div></div>
       <div class="meta">${contacts}<div class="units">${p.units} item${p.units === 1 ? '' : 's'}</div></div>
       <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th class="c">✓</th></tr></thead><tbody>${rows}</tbody></table>
@@ -538,7 +538,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit, l
   const cover = `<div class="slip">
     <h1>Player Report</h1>
     <div class="meta2">${esc(sub)} · ${new Date().toLocaleString()}</div>
-    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    <div class="chips">${chip(list.length, 'Slips')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
     ${reportSyncBanner(audit)}
     <h3>Slips in this stack</h3>
     <table class="grid"><thead><tr><th>#</th><th>Player</th><th class="c">Items</th></tr></thead><tbody>${

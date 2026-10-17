@@ -1,3 +1,4 @@
+import { playerReportGroupKey } from './playerReportGrouping';
 import { recipeKey, artworkInstructions, artworkItemName } from './artworkReport';
 // Player report generated FROM the sales order — every player and exactly what they
 // get, with each line resolved through the SO's CURRENT items. The OMG/webstore
@@ -1051,7 +1052,7 @@ function renderProductReport({ so, storeName, lines, substitutions, unmatched })
     ${subBanner}${list.length ? `<table><thead><tr><th>Item</th><th>Sizes</th><th class="c">Total</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="meta">No active items.</div>'}</body></html>`);
 }
 
-// One block per player — same layout language as the Webstores player report, plus
+// One block per player within an order — same layout as the Webstores report, plus
 // the substitution banner and per-line "was <sku>" markers.
 function renderReport({ so, storeName, lines, orderById, substitutions, unmatched }) {
   const players = {};
@@ -1059,8 +1060,8 @@ function renderReport({ so, storeName, lines, orderById, substitutions, unmatche
     const o = orderById[l.order_id] || {};
     const nm = (l.player_name || '').trim();
     const num = (l.player_number != null ? String(l.player_number) : '').trim();
-    const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || l.order_id));
-    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
+    const key = playerReportGroupKey(l, o);
+    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], order: o });
     p.units += (l.qty || 1);
     p.items.push({ ...lineFields(l), buyer: o.buyer_name || '' });
   });
@@ -1068,7 +1069,7 @@ function renderReport({ so, storeName, lines, orderById, substitutions, unmatche
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const row = (it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}${it.color ? ' · ' + esc(it.color) : ''}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not on the SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`;
-  const block = (p) => `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
+  const block = (p) => `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}${orderNo(p.order) ? ` <span class="sub">· order ${esc(orderNo(p.order))}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
     <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${p.items.map(row).join('')}</tbody></table></div>`;
   const sizeChanges = []; const seenSizeChanges = new Set();
   lines.filter((l) => l._wasSize).forEach((l) => { const k = [l._sku || l.sku, l._wasSize, l._size || l.size].join('|'); if (!seenSizeChanges.has(k)) { seenSizeChanges.add(k); sizeChanges.push({ sku: l._sku || l.sku || '', from: l._wasSize, to: l._size || l.size || '', verify: !!l._sizeVerify }); } });
@@ -1092,7 +1093,7 @@ function renderReport({ so, storeName, lines, orderById, substitutions, unmatche
   </style></head><body>
     <h1>Player Report</h1>
     <div class="meta">${esc(storeName)} · ${esc(so.id)} — items as on the sales order · ${new Date().toLocaleString()}</div>
-    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${substitutions.length ? chip(substitutions.length, 'Items changed') : ''}</div>
+    <div class="chips">${chip(list.length, 'Slips')}${chip(totalUnits, 'Items')}${substitutions.length ? chip(substitutions.length, 'Items changed') : ''}</div>
     ${subBanner}
     ${list.map(block).join('') || '<div class="meta">No orders.</div>'}
   </body></html>`);

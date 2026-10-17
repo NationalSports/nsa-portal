@@ -55,8 +55,8 @@ export function buildCondensedPlayerRows({ lines = [], orderById = {}, netCollec
     const o = orderById[l.order_id] || {};
     const nm = (l.player_name || '').trim();
     const num = (l.player_number != null ? String(l.player_number) : '').trim();
-    // Same keying as the packing slips, so the two PDFs always agree on who counts
-    // as a player — including the unassigned-buyer fallback.
+    // This financial summary intentionally aggregates a player across orders.
+    // Packing slips instead preserve each source order and its destination.
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || l.order_id));
     const p = players[key] || (players[key] = {
       label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'),
