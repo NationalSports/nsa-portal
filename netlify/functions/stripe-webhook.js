@@ -377,6 +377,27 @@ exports.handler = async (event) => {
             p_reason: 'Chargeback opened: ' + (dispute.reason || 'unknown'),
           });
           try { await alertStaffOfDispute(order, dispute); } catch (e) { console.warn('[stripe-webhook] dispute alert failed:', e.message); }
+        } else {
+          // Not a webstore order: a coach paid an INVOICE through the portal's Pay button /
+          // pay link (invoice_payment_intents is keyed by the PaymentIntent id). Until
+          // 2026-10-17 this path did nothing — the invoice stayed "paid", QuickBooks kept the
+          // payment, and nobody was told. Flag the intent and alert accounting. Idempotent on
+          // the dispute id so Stripe redelivery never double-notes or re-alerts.
+          try {
+            const { data: intent } = await sb.from('invoice_payment_intents')
+              .select('id,invoice_ids,amount_cents,method,review_reason').eq('id', piId).maybeSingle();
+            if (intent) {
+              const note = invoiceDisputeNote(dispute);
+              if (!String(intent.review_reason || '').includes('dispute ' + dispute.id)) {
+                const review_reason = intent.review_reason ? intent.review_reason + ' | ' + note : note;
+                const { error: noteErr } = await sb.from('invoice_payment_intents').update({ review_reason }).eq('id', piId);
+                if (noteErr) console.warn('[stripe-webhook] invoice dispute note failed:', noteErr.message);
+                try { await alertStaffOfInvoiceDispute(intent, dispute); } catch (e) { console.warn('[stripe-webhook] invoice dispute alert failed:', e.message); }
+              }
+            } else {
+              console.warn('[stripe-webhook] dispute', dispute.id, 'on', piId, 'matches no webstore order and no invoice payment intent');
+            }
+          } catch (e) { console.warn('[stripe-webhook] invoice dispute handling failed:', e.message); }
         }
       }
     } else if (evt.type === 'payout.reconciliation_completed') {
@@ -444,6 +465,49 @@ async function alertStaffOfRefund(order, charge) {
 }
 
 // Best-effort staff alert when a chargeback is opened, so fulfillment can be halted.
+// One line for invoice_payment_intents.review_reason. Carries the dispute id so a redelivered
+// webhook can see it was already recorded.
+function invoiceDisputeNote(dispute) {
+  const due = dispute && dispute.evidence_details && dispute.evidence_details.due_by;
+  const dueTxt = due ? ' — respond by ' + new Date(Number(due) * 1000).toISOString().slice(0, 10) : '';
+  return 'Chargeback opened ' + new Date().toISOString().slice(0, 10) + ': ' + ((dispute && dispute.reason) || 'unknown') + ' (dispute ' + (dispute && dispute.id) + ')' + dueTxt;
+}
+
+// Chargeback on an INVOICE payment (coach-portal card/ACH), the counterpart of
+// alertStaffOfDispute for webstore orders. Goes to accounting + Steve, not the stores inbox.
+async function alertStaffOfInvoiceDispute(intent, dispute) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) return;
+  const to = String(process.env.INVOICE_DISPUTE_EMAILS || 'accounting@nationalsportsapparel.com,steve@nationalsportsapparel.com')
+    .split(',').map((e) => e.trim()).filter(Boolean);
+  const money = (c) => ((Number(c) || 0) / 100).toLocaleString(undefined, { style: 'currency', currency: 'usd' });
+  const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const invoices = Array.isArray(intent.invoice_ids) ? intent.invoice_ids : [];
+  const due = dispute.evidence_details && dispute.evidence_details.due_by;
+  const html = `<div style="font-family:Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
+    <div style="background:#7f1d1d;color:#fff;padding:16px 20px;border-radius:10px 10px 0 0;font-size:18px;font-weight:800">⚠️ Chargeback on an invoice payment</div>
+    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:20px">
+      <p>A customer disputed a card/ACH payment made against ${invoices.length === 1 ? 'invoice' : 'invoices'} <b>${safe(invoices.join(', ') || '?')}</b>. The invoice${invoices.length === 1 ? ' still shows' : 's still show'} as paid in the Portal and QuickBooks until this is resolved.</p>
+      <ul style="font-size:14px;line-height:1.6">
+        <li>Payment: ${safe(intent.id)} (${safe(intent.method || 'card')}, ${money(intent.amount_cents)})</li>
+        <li>Disputed amount: ${money(dispute.amount)}</li>
+        <li>Reason: ${safe(dispute.reason || 'unknown')}</li>
+        ${due ? `<li>Respond by: ${new Date(Number(due) * 1000).toISOString().slice(0, 10)}</li>` : ''}
+      </ul>
+      <p style="font-size:13px;color:#64748b">Respond in the Stripe dashboard before the evidence deadline. If the dispute is lost, the payment must be unapplied in the Portal and reversed in QuickBooks; the payout that contains this dispute will not post to QuickBooks automatically.</p>
+    </div></div>`;
+  await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    body: JSON.stringify({
+      sender: { name: 'NSA Portal', email: 'noreply@nationalsportsapparel.com' },
+      to: to.map((email) => ({ email })),
+      subject: `⚠️ Chargeback on invoice payment — ${invoices.join(', ') || intent.id}`,
+      htmlContent: html,
+    }),
+  });
+}
+
 async function alertStaffOfDispute(order, dispute) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!brevoKey) return;

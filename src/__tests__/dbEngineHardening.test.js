@@ -1396,3 +1396,87 @@ describe('_dbSaveInvoiceInner — unapplied payments are dropped, not retried', 
     expect(__mockState.calls.some(c => c.table === 'invoice_payment_unapplications')).toBe(false);
   });
 });
+
+// ── _dbSaveInvoiceInner — deliberate DB refusals are plain messages, not retries (2026-10-17) ──
+// Siblings of the INV-63464 class found in the accounting audit: a stale payment_revision
+// (guard_invoice_payment_revision, errcode 40001), a payment held for QuickBooks reconciliation
+// (guard_unapplied_payment), and two payments sharing one reference (unique invoice_id+ref).
+// None can succeed on retry with the same rows; each used to land in the generic
+// "Payment NOT saved … Retrying" loop.
+describe('_dbSaveInvoiceInner — deliberate refusals stop the retry loop with a plain message', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const tab = () => ({
+    id: 'INV-70001', payment_revision: 1, paid: 100, status: 'partial',
+    payments: [{ amount: 100, method: 'check', ref: '77001', date: '10/10/2026', cc_fee: 0 }],
+  });
+
+  test('stale payment_revision (40001): not saved, not retried, told to reload', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: { code: '40001', message: 'Invoice payments changed. Reload this invoice before saving.' } }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice, _dbSaveFailedIds, _setDbNotify } = require('../lib/dbEngine');
+    const notes = []; _setDbNotify((m, t) => notes.push({ m, t }));
+    expect(await _dbSaveInvoice(tab())).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-70001')).toBe(false);
+    expect(notes.some(n => n.t === 'error' && /changed elsewhere/.test(n.m) && /Reload/.test(n.m))).toBe(true);
+    expect(notes.some(n => /Retrying/.test(n.m))).toBe(false);
+    // no payment write was attempted after the refused header
+    expect(__mockState.calls.filter(c => c.table === 'invoice_payments' && c.method !== 'select')).toHaveLength(0);
+  });
+
+  test('payment held for QuickBooks reconciliation: plain message, no insert fallback, no retry', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: [], error: null }],
+      invoice_payments: [{ data: [], error: null }, { error: { message: 'This payment is held for QuickBooks reconciliation and cannot be applied again yet.' } }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice, _dbSaveFailedIds, _setDbNotify } = require('../lib/dbEngine');
+    const notes = []; _setDbNotify((m, t) => notes.push({ m, t }));
+    expect(await _dbSaveInvoice(tab())).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-70001')).toBe(false);
+    expect(__mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'insert')).toHaveLength(0);
+    expect(notes.some(n => n.t === 'error' && /held for QuickBooks reconciliation/.test(n.m))).toBe(true);
+    expect(notes.some(n => /Retrying/.test(n.m))).toBe(false);
+  });
+
+  test('two payments with the same reference: plain message naming the fix, no retry', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: [], error: null }],
+      invoice_payments: [{ data: [], error: null }, { error: { code: '21000', message: 'ON CONFLICT DO UPDATE command cannot affect row a second time' } }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice, _dbSaveFailedIds, _setDbNotify } = require('../lib/dbEngine');
+    const notes = []; _setDbNotify((m, t) => notes.push({ m, t }));
+    const inv = tab(); inv.payments.push({ amount: 50, method: 'venmo', ref: '77001', date: '10/11/2026', cc_fee: 0 });
+    expect(await _dbSaveInvoice(inv)).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-70001')).toBe(false);
+    expect(notes.some(n => n.t === 'error' && /same reference/.test(n.m))).toBe(true);
+  });
+
+  test('an unexpected payment write error still fails closed into the retry path', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: null }, { error: null }],
+      invoice_payment_unapplications: [{ data: [], error: null }],
+      invoice_payments: [{ data: [], error: null }, { error: { message: 'connection reset' } }, { error: { message: 'connection reset' } }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+    const { _dbSaveInvoice, _dbSaveFailedIds, _setDbNotify } = require('../lib/dbEngine');
+    const notes = []; _setDbNotify((m, t) => notes.push({ m, t }));
+    expect(await _dbSaveInvoice(tab())).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-70001')).toBe(true);
+    expect(notes.some(n => /Retrying/.test(n.m))).toBe(true);
+  });
+});
