@@ -2529,6 +2529,16 @@ function VendorSearchSelect({vendors,value,onPick}){
   </div>);
 }
 
+// QuickBooks: did a (re)connection land on a DIFFERENT company than the one the owner approved
+// batches for? Only then is initialMigrationApproved reset. A reconnect to the same realm, an
+// expired token, or a transient connection_status:false keeps the approval — preflight (which
+// re-verifies the realm) is still required before any push. Before 2026-10-17 every one of
+// those events reset the approval, and the bill push fell back to canary mode for everyone.
+const _qbRealmChanged=(prev,realm)=>{
+  const had=String((prev&&(prev.realm_id||prev.companyId))||'').trim();
+  const now=String(realm||'').trim();
+  return !!(had&&now&&had!==now);
+};
 export default function App(){
   // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
   // landing page that completes the magic-link / password reset flow before bouncing to /.
@@ -5124,7 +5134,7 @@ export default function App(){
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
         if(companyKey==='national')setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
-          preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
+          preflight:null,autoSync:'manual',...(_qbRealmChanged(prev,realm)?{initialMigrationApproved:false}:{})}));
         nf((companyKey==='methodic'?'Methodic':'National')+' connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
         const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_company_key');u.searchParams.delete('qb_realm');
@@ -5163,7 +5173,7 @@ export default function App(){
     if(!storedUserCanManageQuickBooks()||dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
     setQBConfig(prev=>({...prev,connected:true,connectionError:'',sandbox:false,realm_id:t.realm_id||prev.realm_id,
-      preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
+      preflight:null,autoSync:'manual',...(_qbRealmChanged(prev,t.realm_id)?{initialMigrationApproved:false}:{})}));
     // Company name comes from the proxy; the access token is read server-side, not passed here.
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'company_info'})})
@@ -5199,9 +5209,12 @@ export default function App(){
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'connection_status'})})
       .then(r=>r.ok?r.json():null).then(d=>{
+        // A not-connected answer (expired/rotating token, a refresh race) drops connected +
+        // preflight only. The migration approval survives — see _qbRealmChanged.
         if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id,
           connectionError:d.connected?'':(d.error||''),connectionVerifiedAt:d.connected?new Date().toISOString():'',
-          ...(d.connected?{}:{preflight:null,initialMigrationApproved:false,autoSync:'manual'})}));
+          ...(d.connected?{}:{preflight:null,autoSync:'manual'}),
+          ...(d.connected&&_qbRealmChanged(prev,d.realm_id)?{preflight:null,initialMigrationApproved:false,autoSync:'manual'}:{})}));
       }).catch(()=>{});
   },[dbLoading]); // eslint-disable-line
   // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
@@ -8971,8 +8984,14 @@ export default function App(){
     if(so.estimate_id){setEsts(prev=>prev.map(e=>e.id===so.estimate_id&&e.status==='converted'?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e))}
     // Delete linked unpaid invoices and update their status
     if(linkedInvs.length>0){
-      setInvs(prev=>prev.filter(i=>i.so_id!==soId||i.paid>0));
-      linkedInvs.filter(i=>i.paid===0).forEach(i=>_dbDeleteInvoice(i.id));
+      // An unpaid invoice that already reached QuickBooks is voided, not deleted: a delete
+      // here cannot touch the QuickBooks copy, which would stay open (see deleteInvoice).
+      const _qbLinked=linkedInvs.filter(i=>i.paid===0&&i.qb_invoice_id);
+      const _qbLinkedIds=new Set(_qbLinked.map(i=>i.id));
+      const _ts=new Date().toLocaleString();
+      setInvs(prev=>prev.filter(i=>i.so_id!==soId||i.paid>0||_qbLinkedIds.has(i.id)).map(i=>_qbLinkedIds.has(i.id)?{...i,status:'void',updated_at:_ts}:i));
+      linkedInvs.filter(i=>i.paid===0&&!i.qb_invoice_id).forEach(i=>_dbDeleteInvoice(i.id));
+      if(_qbLinked.length)nf(_qbLinked.length+' unpaid invoice'+(_qbLinked.length===1?'':'s')+' already in QuickBooks '+(_qbLinked.length===1?'was':'were')+' voided instead of deleted — ask accounting to void '+_qbLinked.map(i=>'#'+i.qb_invoice_id).join(', ')+' in QuickBooks.','error');
     }
     // Soft-delete in DB
     _dbDeleteSO(soId);
@@ -9021,6 +9040,14 @@ export default function App(){
     const inv=invs.find(i=>i.id===invId);if(!inv)return;
     if((inv.credit_memos||[]).length){
       nf('Cannot delete '+invId+' — it has '+inv.credit_memos.length+' posted credit memo'+(inv.credit_memos.length===1?'':'s')+'. The invoice and payment history must remain for the account audit trail.','error');
+      return;
+    }
+    // Already in QuickBooks: deleting here cannot delete the QuickBooks copy, and the sync only
+    // iterates Portal invoices, so the copy stays open forever. On 2026-10-17 QuickBooks carried
+    // 28 such ghosts ($188K) — each deleted here and re-issued under a new number. Void instead:
+    // the record stays as the audit trail and the void note names the QuickBooks # to void.
+    if(inv.qb_invoice_id){
+      nf('Cannot delete '+invId+' — it is already in QuickBooks as #'+inv.qb_invoice_id+'. Use Void instead (the record is kept; accounting voids #'+inv.qb_invoice_id+' in QuickBooks). Deleting would leave an open copy in QuickBooks.','error');
       return;
     }
     if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
@@ -27165,8 +27192,21 @@ export default function App(){
           error:faultBody?.error||(timedOut?'QBO request timed out.':'QBO API returned HTTP '+r.status+'.')};
       }
       const d=await r.json();
-      if(r.status===401||r.status===409){
-        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual',preflight:null,initialMigrationApproved:false,
+      // 409 = qb-api's ownership guard: the hourly server sync owns customer/invoice/payment
+      // writes, so a browser write is refused. That is not a disconnect. Until 2026-10-17 this
+      // branch also cleared preflight + initialMigrationApproved, which put the supplier-bill
+      // push back into one-bill canary mode for every browser: 126 bills ($57.9K) sat applied
+      // in the Portal but not in QuickBooks while the daily email kept asking Andrea to push.
+      if(r.status===409){
+        nf(d?.error||'QuickBooks writes for this record are handled by the hourly server sync','error');
+        return null;
+      }
+      if(r.status===401){
+        // The token is gone: drop connected + preflight (preflight re-verifies the company before
+        // any push). The owner's migration approval is a reviewed decision and is NOT a token;
+        // it is reset only when the connection moves to a different QuickBooks company
+        // (_qbRealmChanged) or by an explicit disconnect.
+        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual',preflight:null,
           connectionError:d?.error||'QuickBooks authorization expired — reconnect required'}));
         const now=Date.now();
         if(now-_qbReconnectNoticeRef.current>30000){_qbReconnectNoticeRef.current=now;nf('QB not connected — please reconnect','error')}
