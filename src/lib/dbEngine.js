@@ -4214,6 +4214,8 @@ const _outboxList=()=>{try{return _sessionOutbox.list()}catch{return[]}};
 // retyping. Before this, a stale rejection silently dropped the edit content.
 let _onOutboxConflict=null;// set by App — receives the outbox entry to append to the conflict card list
 export const _setOnOutboxConflict=(fn)=>{_onOutboxConflict=fn};
+let _onDocumentSaveConfirmed=null;// set by App — replays effects held behind a failed durable write
+export const _setOnDocumentSaveConfirmed=(fn)=>{_onDocumentSaveConfirmed=fn};
 const _emitOutboxConflict=(table,entity)=>{try{
   if(!entity||!entity.id)return;
   // Save inners can discover a stale-write conflict before their wrapper's Promise settles. Reuse
@@ -4264,6 +4266,7 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
   let retryReceipt;
   try{if(!addOnly&&entity?.id)retryReceipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,entity);}catch(error){console.error('[Retry snapshot]',error);}
   const _outboxId=entity&&entity.id;
+  const _outboxPayloadSignature=table==='sales_orders'?_soDiffCmp(entity):table==='estimates'?_estDiffCmp(entity):null;
   const _outboxRevision=(!addOnly||_sessionDead)&&_outboxId?_newOutboxRevision():null;
   if(_outboxRevision)_registerOutboxAttempt(entity,_outboxRevision,_outboxId);
   try{if(_outboxRevision)_outboxAdd(table,entity,_outboxRevision)}catch{}
@@ -4287,6 +4290,7 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
       // version rejection no longer silently destroys what the rep typed.
       else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){
         try{delete entity._obBaseVersion}catch{}
+        if(_onDocumentSaveConfirmed)_onDocumentSaveConfirmed({table,id:_outboxId,revision:_outboxRevision,payload:entity,signature:_outboxPayloadSignature});
         if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('nsa:document-save-confirmed',{detail:{table,id:_outboxId,revision:_outboxRevision}}));
       }}
     }catch(e){console.error('[Outbox] hook failed:',e)}

@@ -34,10 +34,15 @@ test.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s undoes created-in-err
   const marker = 'onClick={()=>{';
   const body = section.slice(section.indexOf(marker) + marker.length, section.indexOf('}} onMouseEnter'));
   const o = closeCreatedInError({ id: 'SO-1', jobs: [{ prod_status: 'shipped' }] });
-  const onSave = jest.fn(), nf = jest.fn();
+  const saveSONow = jest.fn(() => Promise.resolve(true)), nf = jest.fn();
   const deps = { o, setShowActionsDD: jest.fn(), calcSOStatus: () => 'complete', SO_STATUS_LABELS: { complete: 'Complete' }, nf,
-    window: { confirm: () => true }, isCreatedInError, undoCreatedInError, clearNoInvoice, setO: jest.fn(), onSave, onSOReopened: jest.fn() };
+    window: { confirm: () => true }, isCreatedInError, undoCreatedInError, clearNoInvoice, saveSONow, onSOReopened: jest.fn() };
   new Function(...Object.keys(deps), body)(...Object.values(deps));
-  expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ status: 'complete', no_invoice_needed: false, no_invoice_reason: null }));
+  expect(saveSONow).toHaveBeenCalledWith(
+    expect.objectContaining({ status: 'complete', no_invoice_needed: false, no_invoice_reason: null }),
+    'Sales order status',
+    expect.stringContaining('Created in Error undone'),
+    expect.any(Function),
+  );
   expect(nf.mock.calls.some(args => args[1] === 'error')).toBe(false);
 });
