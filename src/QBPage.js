@@ -22,6 +22,7 @@ import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buil
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
 import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, summarizeQBInvoicePreflight } from './qbInvoiceSyncGuard';
+import { clearManualQboBillRequestId, manualQboBillRequestId, qboFaultIsDefinitivePreCreate } from './lib/supplierBillAutomation';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -435,8 +436,15 @@ export default function QBPage(){
         Line:billLines,
         ...((isCanary||qbBillMemo)?{PrivateNote:[isCanary?'NSA-QB-CANARY:'+new Date().toISOString():'',qbBillMemo].filter(Boolean).join(' | ')}:{}),
       };
-      const billRes=await qbApi('upsert_bill',{bill:qbBill});
+      const requestId=manualQboBillRequestId(window.localStorage,qbConfig.realm_id);
+      const billRes=await qbApi('upsert_bill',{
+        bill:qbBill,
+        request_id:requestId,
+      });
       if(!billRes?.Bill?.Id){
+        // A confirmed QBO validation fault created nothing, so a corrected form
+        // starts a new operation. Ambiguous/network failures retain the same id.
+        if(qboFaultIsDefinitivePreCreate(billRes))clearManualQboBillRequestId(window.localStorage);
         log.details.push('Bill creation failed: '+qbResponseErrorDetail(billRes));
         log.status='error';
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
@@ -477,6 +485,7 @@ export default function QBPage(){
 
       setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf((isCanary?'Created and verified exactly one ':'Uploaded ')+'QBO bill $'+amt.toFixed(2)+' for '+vendor.name);
+      clearManualQboBillRequestId(window.localStorage);
       setQbBillFile(null);setQbBillVendor('');setQbBillAmount('');setQbBillMemo('');setQbBillFreight('');setQbBillSportsFee('');
       setQbBillUploading(false);
     };

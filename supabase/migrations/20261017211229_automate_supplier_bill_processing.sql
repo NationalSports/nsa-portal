@@ -12,7 +12,7 @@ alter table public.applied_bills
 -- One durable lease coordinates browser pushes, scheduled retries, and QBO sends.
 -- The source queues remain the document archive; this row records processing/review
 -- progress without relying on one browser's localStorage.
-create table public.supplier_bill_processing (
+create table if not exists public.supplier_bill_processing (
   bill_key text primary key,
   doc_norm text,
   vendor_norm text,
@@ -39,17 +39,112 @@ create table public.supplier_bill_processing (
   updated_at timestamptz not null default now()
 );
 
-create index supplier_bill_processing_status_idx
+create index if not exists supplier_bill_processing_status_idx
   on public.supplier_bill_processing(status, lease_until);
-create index supplier_bill_processing_qbo_idx
+create index if not exists supplier_bill_processing_qbo_idx
   on public.supplier_bill_processing(qbo_status, qbo_lease_until);
 
 alter table public.supplier_bill_processing enable row level security;
+drop policy if exists supplier_bill_processing_staff_read on public.supplier_bill_processing;
 create policy supplier_bill_processing_staff_read
   on public.supplier_bill_processing for select to authenticated
   using ((select public.is_team_member()));
-grant select on public.supplier_bill_processing to authenticated, service_role;
-grant insert, update on public.supplier_bill_processing to service_role;
+revoke all on public.supplier_bill_processing from public,anon,authenticated;
+grant select,insert,update on public.supplier_bill_processing to service_role;
+
+-- Rollout kill switch. It is deliberately OFF after migration apply: deploy the
+-- claim-aware browser + request-id-enforcing qb-api first, then enable this row.
+create table if not exists public.supplier_bill_automation_settings (
+  id text primary key check (id='national'),
+  enabled boolean not null default false,
+  enabled_at timestamptz,
+  enabled_by text,
+  updated_at timestamptz not null default now()
+);
+insert into public.supplier_bill_automation_settings(id,enabled)
+values('national',false)
+on conflict (id) do nothing;
+alter table public.supplier_bill_automation_settings enable row level security;
+revoke all on public.supplier_bill_automation_settings from public,anon,authenticated;
+grant select,update on public.supplier_bill_automation_settings to service_role;
+
+-- Once automation is enabled, refuse a legacy full-order save that introduces
+-- a new supplier-bill detail without first taking the shared claim. Normal SO
+-- saves merely copy their existing details to replacement rows and still pass.
+create or replace function public.guard_supplier_bill_po_line_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_detail jsonb;
+  v_doc text;
+  v_is_credit boolean;
+  v_item public.so_items;
+begin
+  if not exists(
+    select 1 from public.supplier_bill_automation_settings
+    where id='national' and enabled=true
+  ) then return new; end if;
+  if jsonb_typeof(coalesce(new.sizes->'_bill_details','[]'::jsonb))<>'array' then return new; end if;
+  select * into v_item from public.so_items where id=new.so_item_id;
+  for v_detail in select value from jsonb_array_elements(coalesce(new.sizes->'_bill_details','[]'::jsonb)) loop
+    v_doc:=lower(trim(v_detail->>'doc'));
+    if coalesce(v_doc,'')='' then continue; end if;
+    v_is_credit:=coalesce(lower(v_detail->>'is_credit')='true',false);
+    if exists(
+      select 1
+      from public.so_item_po_lines old_p
+      join public.so_items old_i on old_i.id=old_p.so_item_id
+      cross join lateral jsonb_array_elements(coalesce(old_p.sizes->'_bill_details','[]'::jsonb)) old_d
+      where old_i.so_id=v_item.so_id
+        and old_i.id<>new.so_item_id
+        and old_i.sku is not distinct from v_item.sku
+        and old_i.color is not distinct from v_item.color
+        and old_p.po_id is not distinct from new.po_id
+        and lower(trim(old_d->>'doc'))=v_doc
+    ) then continue; end if;
+    if not exists(
+      select 1 from public.supplier_bill_processing p
+      where p.doc_norm=v_doc and p.status='processing'
+        and p.is_credit=v_is_credit
+        and p.owner like 'browser:%'
+        and p.lease_token::text=current_setting('nsa.supplier_bill_claim_token',true)
+        and p.lease_token is not null and p.lease_until>now()
+    ) then
+      raise exception 'SUPPLIER_BILL_CLAIM_REQUIRED: reload the Portal before applying supplier bill %',v_doc
+        using errcode='55000';
+    end if;
+  end loop;
+  return new;
+end;
+$$;
+drop trigger if exists guard_supplier_bill_po_line_insert on public.so_item_po_lines;
+create trigger guard_supplier_bill_po_line_insert
+before insert on public.so_item_po_lines
+for each row execute function public.guard_supplier_bill_po_line_insert();
+revoke all on function public.guard_supplier_bill_po_line_insert() from public,anon,authenticated;
+grant execute on function public.guard_supplier_bill_po_line_insert() to service_role;
+
+create or replace function public.save_sales_order_atomic_with_bill_claim(
+  p_so_id text,
+  p_expected_token text,
+  p_plan jsonb,
+  p_bill_claim_token uuid
+) returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare v_result jsonb;
+begin
+  if p_bill_claim_token is null then raise exception 'SUPPLIER_BILL_CLAIM_REQUIRED' using errcode='55000'; end if;
+  perform set_config('nsa.supplier_bill_claim_token',p_bill_claim_token::text,true);
+  select public.save_sales_order_atomic(p_so_id,p_expected_token,p_plan) into v_result;
+  return v_result;
+end;
+$$;
 
 create or replace function public.claim_supplier_bill(
   p_bill_key text,
@@ -360,15 +455,14 @@ declare
   v_so_id text;
 begin
   if coalesce(auth.role(),'')<>'service_role' then raise exception 'SERVICE_ROLE_REQUIRED' using errcode='42501'; end if;
+  if not exists(
+    select 1 from public.supplier_bill_automation_settings
+    where id='national' and enabled=true
+  ) then raise exception 'SUPPLIER_BILL_AUTOMATION_DISABLED' using errcode='55000'; end if;
   if v_doc='' or v_credit or v_map_count=0 then raise exception 'INVALID_AUTOMATED_BILL'; end if;
   select * into v_claim from public.supplier_bill_processing
     where lease_token=p_claim_token and status='processing' and lease_until>now() for update;
   if not found then raise exception 'BILL_CLAIM_REQUIRED'; end if;
-  if exists(select 1 from public.applied_bills where doc_norm=v_doc and is_credit=v_credit) then
-    update public.supplier_bill_processing set status='applied',lease_token=null,lease_until=null,updated_at=now()
-      where bill_key=v_claim.bill_key;
-    return jsonb_build_object('state','already_applied');
-  end if;
 
   for v_map in select value from jsonb_array_elements(v_maps) loop
     select p.*,i.so_id,i.sku into v_po
@@ -397,6 +491,20 @@ begin
     end if;
   end loop;
   if v_duplicate_count>0 and v_duplicate_count<v_map_count then raise exception 'PARTIAL_SUPPLIER_BILL_REQUIRES_REVIEW'; end if;
+
+  -- Acquire the immutable idempotency key BEFORE changing costs. A concurrent
+  -- browser/worker ledger insert raises 23505 and rolls this transaction back;
+  -- no ON CONFLICT swallowing and no source/claim advancement are allowed.
+  insert into public.applied_bills(
+    doc_norm,doc_number,si_doc_number,is_credit,vendor,po_number,doc_total,source,
+    applied_by,status,portal_status,applied_so_ids,resolution,raw_meta,updated_at
+  ) values (
+    v_doc,p_bill->>'doc_number',nullif(lower(trim(p_bill->>'si_doc_number')),''),
+    false,coalesce(nullif(p_bill->>'vendor',''),p_bill->>'supplier'),p_bill->>'po_number',
+    (p_bill->>'doc_total')::numeric,p_bill->>'source',p_actor,'pushed','success',array[v_so_id],
+    jsonb_build_object('auto_pushed',true,'server_automated',true,'lines',v_map_count),
+    p_bill-'rawText'-'_wizard'-'_applyKey',now()
+  );
 
   if v_duplicate_count=0 then
     for v_map in select value from jsonb_array_elements(v_maps) loop
@@ -428,17 +536,6 @@ begin
       where id=v_so_id;
   end if;
 
-  insert into public.applied_bills(
-    doc_norm,doc_number,si_doc_number,is_credit,vendor,po_number,doc_total,source,
-    applied_by,status,portal_status,applied_so_ids,resolution,raw_meta,updated_at
-  ) values (
-    v_doc,p_bill->>'doc_number',nullif(lower(trim(p_bill->>'si_doc_number')),''),
-    false,coalesce(nullif(p_bill->>'vendor',''),p_bill->>'supplier'),p_bill->>'po_number',
-    (p_bill->>'doc_total')::numeric,p_bill->>'source',p_actor,'pushed','success',array[v_so_id],
-    jsonb_build_object('auto_pushed',true,'server_automated',true,'lines',v_map_count),
-    p_bill-'rawText'-'_wizard'-'_applyKey',now()
-  ) on conflict (doc_norm,is_credit) do nothing;
-
   if v_claim.source='ss_orders' then
     update public.ss_documents set status='applied',applied_doc_number=p_bill->>'doc_number',
       resolved_by=p_actor,resolved_at=now(),updated_at=now() where order_number=v_claim.source_id;
@@ -459,11 +556,13 @@ revoke all on function public.claim_supplier_bill_qbo(text,text,text,boolean,tex
 revoke all on function public.finish_supplier_bill_qbo_claim(uuid,text,text) from public,anon;
 revoke all on function public.supplier_bill_po_candidates(text) from public,anon;
 revoke all on function public.apply_claimed_supplier_bill(uuid,jsonb,text) from public,anon,authenticated;
+revoke all on function public.save_sales_order_atomic_with_bill_claim(text,text,jsonb,uuid) from public,anon;
 grant execute on function public.claim_supplier_bill(text,text,text,boolean,text,text,text,boolean) to authenticated,service_role;
 grant execute on function public.finish_supplier_bill_claim(uuid,text,text,text,jsonb,jsonb) to authenticated,service_role;
 grant execute on function public.claim_supplier_bill_qbo(text,text,text,boolean,text,boolean) to authenticated,service_role;
 grant execute on function public.finish_supplier_bill_qbo_claim(uuid,text,text) to authenticated,service_role;
 grant execute on function public.supplier_bill_po_candidates(text) to service_role;
 grant execute on function public.apply_claimed_supplier_bill(uuid,jsonb,text) to service_role;
+grant execute on function public.save_sales_order_atomic_with_bill_claim(text,text,jsonb,uuid) to authenticated,service_role;
 
 commit;

@@ -29,7 +29,7 @@ const hash32 = (value, seed) => {
   for (let i = 0; i < value.length; i += 1) {
     hash ^= value.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193) >>> 0;
-    hash ^= hash >>> 13;
+    hash = (hash ^ (hash >>> 13)) >>> 0;
   }
   return hash.toString(16).padStart(8, '0');
 };
@@ -37,12 +37,32 @@ const hash32 = (value, seed) => {
 // Intuit requestid is capped at 50 chars. Four independently-seeded 32-bit
 // hashes give browser and server the same compact identity without Node-only
 // crypto, so a lost browser response and a cron retry replay one QBO create.
-export const qboSupplierBillRequestId = (realmId, bill) => {
-  const source = `${text(realmId)}|${supplierBillKey(bill)}`;
-  if (!supplierBillKey(bill)) throw new Error('Bill has no stable QBO request identity.');
+export const qboStableRequestId = (realmId, identity) => {
+  const stableIdentity = text(identity);
+  if (!stableIdentity) throw new Error('Bill has no stable QBO request identity.');
+  const source = `${text(realmId)}|${stableIdentity}`;
   const digest = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35].map(seed => hash32(source, seed)).join('');
   return `NSA-bill-${digest}`;
 };
+
+export const qboSupplierBillRequestId = (realmId, bill) =>
+  qboStableRequestId(realmId, supplierBillKey(bill));
+
+export const MANUAL_QBO_BILL_REQUEST_KEY = 'nsa_qbo_manual_bill_request_id';
+export const manualQboBillRequestId = (storage, realmId, entropyFactory = null) => {
+  const existing = String(storage?.getItem?.(MANUAL_QBO_BILL_REQUEST_KEY) || '');
+  if (/^NSA-bill-[0-9a-f]{32}$/.test(existing)) return existing;
+  const entropy = entropyFactory
+    ? entropyFactory()
+    : `${Date.now()}|${Math.random()}|${globalThis.crypto?.randomUUID?.() || ''}`;
+  const created = qboStableRequestId(realmId, `manual-attempt|${entropy}`);
+  storage?.setItem?.(MANUAL_QBO_BILL_REQUEST_KEY, created);
+  return created;
+};
+export const clearManualQboBillRequestId = storage =>
+  storage?.removeItem?.(MANUAL_QBO_BILL_REQUEST_KEY);
+export const qboFaultIsDefinitivePreCreate = response =>
+  response?.Fault?.type === 'ValidationFault' && Array.isArray(response.Fault.Error) && response.Fault.Error.length > 0;
 
 export const mapQueuedSupplierBill = (source, row) => {
   if (source === 'ss_orders') return mapSsOrderToBill(row?.raw || row || {});

@@ -2,18 +2,24 @@ const fs = require('fs');
 const path = require('path');
 const {
   canonicalBillSize,
+  clearManualQboBillRequestId,
+  manualQboBillRequestId,
   planSupplierBill,
   qboSupplierBillRequestId,
+  qboFaultIsDefinitivePreCreate,
   supplierBillCoordinationKey,
   supplierBillKey,
 } = require('../lib/supplierBillAutomation');
 const {
   deterministicQboReview,
   pageFiltered,
+  queryAllQbo,
   runSupplierBillBacklog,
+  signalUntil,
   vendorLinkMap,
 } = require('../../netlify/functions/_supplierBillProcessor');
 const supplierBillBackground = require('../../netlify/functions/_background-workers/supplier-bill-process-background');
+const { createHandler: createSupplierBillBackgroundHandler } = supplierBillBackground;
 
 const bill = (overrides = {}) => ({
   doc_number: 'INV-100',
@@ -139,12 +145,36 @@ describe('database concurrency boundary', () => {
     expect(migration).toContain('qb_review_required boolean not null default false');
     expect(migration).toContain("'document_vendor_collision'");
     expect(migration).toContain("v_row.vendor_norm is distinct from");
+    const applyFn = migration.slice(migration.indexOf('create or replace function public.apply_claimed_supplier_bill'));
+    expect(applyFn.indexOf('insert into public.applied_bills')).toBeLessThan(applyFn.indexOf('update public.so_item_po_lines'));
+    expect(applyFn).not.toContain('on conflict (doc_norm,is_credit) do nothing');
+    expect(applyFn).toContain('SUPPLIER_BILL_AUTOMATION_DISABLED');
   });
 
   test('keeps the scheduled write function service-role-only', () => {
     expect(migration).toContain("if coalesce(auth.role(),'')<>'service_role'");
     expect(migration).toContain('revoke all on function public.apply_claimed_supplier_bill(uuid,jsonb,text) from public,anon,authenticated');
     expect(migration).toContain('grant execute on function public.apply_claimed_supplier_bill(uuid,jsonb,text) to service_role');
+  });
+
+  test('migration is rerunnable and seeds the rollout gate disabled', () => {
+    expect(migration).toContain('create table if not exists public.supplier_bill_processing');
+    expect(migration).toContain('create index if not exists supplier_bill_processing_status_idx');
+    expect(migration).toContain('drop policy if exists supplier_bill_processing_staff_read');
+    expect(migration).toContain('create table if not exists public.supplier_bill_automation_settings');
+    expect(migration).toContain("values('national',false)");
+    expect(migration).toContain('on conflict (id) do nothing');
+    expect(migration).toContain('create or replace function public.guard_supplier_bill_po_line_insert()');
+    expect(migration).toContain('SUPPLIER_BILL_CLAIM_REQUIRED: reload the Portal');
+    expect(migration).toContain("p.owner like 'browser:%'");
+    expect(migration).toContain('revoke all on public.supplier_bill_processing from public,anon,authenticated');
+    expect(migration).toContain('drop trigger if exists guard_supplier_bill_po_line_insert');
+    expect(migration).toContain("current_setting('nsa.supplier_bill_claim_token',true)");
+    expect(migration).toContain('save_sales_order_atomic_with_bill_claim');
+    const app = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
+    const dbEngine = fs.readFileSync(path.join(__dirname, '../lib/dbEngine.js'), 'utf8');
+    expect(app).toContain('_dbSaveSO(so,{exactAttempt:true,billClaimToken})');
+    expect(dbEngine).toContain("innerOpts.billClaimToken?'save_sales_order_atomic_with_bill_claim':'save_sales_order_atomic'");
   });
 });
 
@@ -167,13 +197,33 @@ describe('scheduled QuickBooks handoff', () => {
     expect(one).toBe(qboSupplierBillRequestId('realm-1', bill()));
     expect(one).not.toBe(qboSupplierBillRequestId('realm-1', bill({ doc_number: 'INV-101' })));
     expect(one.length).toBeLessThanOrEqual(50);
+    expect(one).toMatch(/^NSA-bill-[0-9a-f]{32}$/);
     const app = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
     const qbApi = fs.readFileSync(path.join(__dirname, '../../netlify/functions/qb-api.js'), 'utf8');
+    const qbPage = fs.readFileSync(path.join(__dirname, '../QBPage.js'), 'utf8');
     const worker = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_supplierBillProcessor.js'), 'utf8');
     expect(app).toContain("request_id:qboSupplierBillRequestId(qbConfig.realm_id,bill)");
     expect(app).toContain("_parkBillsForLater([b]);// durable supplier_bill_holds row");
     expect(qbApi).toContain('`?requestid=${encodeURIComponent(String(request_id))}`');
+    expect(qbApi).toContain('/^NSA-bill-[0-9a-f]{32}$/');
+    expect(qbPage).toContain('request_id:requestId');
+    expect(qbPage).toContain('manualQboBillRequestId(window.localStorage,qbConfig.realm_id)');
     expect(worker).toContain('qboSupplierBillRequestId(realmId, { ...bill, doc_number: docNumber');
+  });
+
+  test('manual QBO retries keep one operation id until confirmed success clears it', () => {
+    const values = new Map();
+    const storage = {
+      getItem: key => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: key => values.delete(key),
+    };
+    const first = manualQboBillRequestId(storage, 'realm-1', () => 'attempt-one');
+    expect(manualQboBillRequestId(storage, 'realm-1', () => 'different-form-values')).toBe(first);
+    clearManualQboBillRequestId(storage);
+    expect(manualQboBillRequestId(storage, 'realm-1', () => 'attempt-two')).not.toBe(first);
+    expect(qboFaultIsDefinitivePreCreate({ Fault: { type: 'SystemFault', Error: [{}] } })).toBe(false);
+    expect(qboFaultIsDefinitivePreCreate({ Fault: { type: 'ValidationFault', Error: [{}] } })).toBe(true);
   });
 
   test('runs once daily around 6 AM Pacific and starts a protected background worker', async () => {
@@ -194,16 +244,48 @@ describe('scheduled QuickBooks handoff', () => {
     expect((await supplierBillBackground.handler({ httpMethod: 'POST', headers: { 'x-internal-secret': 'wrong' } })).statusCode).toBe(401);
   });
 
+  test('valid background auth runs the backlog and thrown failures stay rejected for Netlify retry', async () => {
+    const clean = {
+      portal: { failed: 0 },
+      quickbooks: { failed: 0 },
+      time_budget_reached: false,
+    };
+    const successHandler = createSupplierBillBackgroundHandler({
+      secret: 'shared-secret',
+      runBacklog: async () => clean,
+      alert: jest.fn(),
+    });
+    const success = await successHandler({
+      httpMethod: 'POST',
+      headers: { 'x-internal-secret': 'shared-secret' },
+    });
+    expect(success.statusCode).toBe(200);
+
+    const alert = jest.fn(async () => true);
+    const retryHandler = createSupplierBillBackgroundHandler({
+      secret: 'shared-secret',
+      runBacklog: async () => { throw new Error('temporary Supabase outage'); },
+      alert,
+    });
+    await expect(retryHandler({
+      httpMethod: 'POST',
+      headers: { 'x-internal-secret': 'shared-secret' },
+    })).rejects.toThrow('temporary Supabase outage');
+    expect(alert).toHaveBeenCalledTimes(1);
+  });
+
   test('self-heals applied source rows so stale new rows cannot starve the queue', () => {
     const worker = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_supplierBillProcessor.js'), 'utf8');
     expect(worker).toContain("if (claim?.state === 'applied') {");
     expect(worker).toContain('await markSourceApplied(admin, entry.source, entry.sourceId, bill, signal)');
+    expect(worker).toContain("code: claim.code || 'server_review'");
     expect(worker).toContain(".select('*').eq('status', 'new')");
   });
 
   test('daily background run drains Portal and QBO batches while skipping rows already attempted', async () => {
     const portalCalls = [];
     const qboCalls = [];
+    const qboContextLoader = jest.fn(async () => ({ enabled: true, marker: 'shared' }));
     const portalRows = [
       { scanned: 2, applied: 1, review: 0, busy: 0, failed: 1, sourceKeys: ['ss|1', 'ss|2'] },
       { scanned: 1, applied: 1, review: 0, busy: 0, failed: 0, sourceKeys: ['si|3'] },
@@ -216,6 +298,8 @@ describe('scheduled QuickBooks handoff', () => {
     ];
     const result = await runSupplierBillBacklog({
       admin: {},
+      gateLoader: async () => true,
+      qboContextLoader,
       timeBudgetMs: 1000,
       clock: () => 0,
       portalProcessor: async (_admin, _limit, owner, options) => {
@@ -223,7 +307,7 @@ describe('scheduled QuickBooks handoff', () => {
         return portalRows.shift();
       },
       qboProcessor: async (_admin, _limit, owner, options) => {
-        qboCalls.push({ owner, skipped: new Set(options.skipLedgerIds) });
+        qboCalls.push({ owner, skipped: new Set(options.skipLedgerIds), context: options.qboContext });
         return qboRows.shift();
       },
     });
@@ -231,7 +315,24 @@ describe('scheduled QuickBooks handoff', () => {
     expect(result.quickbooks).toEqual(expect.objectContaining({ batches: 3, scanned: 3, applied: 2, review: 1 }));
     expect(portalCalls[1].skipped).toEqual(new Set(['ss|1', 'ss|2']));
     expect(qboCalls[1].skipped).toEqual(new Set(['1', '2']));
+    expect(qboCalls.every(call => call.context.marker === 'shared')).toBe(true);
+    expect(qboContextLoader).toHaveBeenCalledTimes(1);
     expect(new Set([...portalCalls, ...qboCalls].map(call => call.owner)).size).toBe(1);
+  });
+
+  test('rollout gate defaults to no work until explicitly enabled after deploy', async () => {
+    const portalProcessor = jest.fn();
+    const qboProcessor = jest.fn();
+    const result = await runSupplierBillBacklog({
+      admin: {},
+      gateLoader: async () => false,
+      clock: () => 0,
+      portalProcessor,
+      qboProcessor,
+    });
+    expect(result.gated).toBe(true);
+    expect(portalProcessor).not.toHaveBeenCalled();
+    expect(qboProcessor).not.toHaveBeenCalled();
   });
 
   test('Portal time allocation cannot consume the QBO portion of the daily window', async () => {
@@ -239,6 +340,8 @@ describe('scheduled QuickBooks handoff', () => {
     let qboCalled = false;
     const result = await runSupplierBillBacklog({
       admin: {},
+      gateLoader: async () => true,
+      qboContextLoader: async () => ({ enabled: true }),
       timeBudgetMs: 900,
       clock: () => now,
       portalProcessor: async () => {
@@ -274,12 +377,64 @@ describe('scheduled QuickBooks handoff', () => {
     expect(ranges).toEqual([[0, 999], [1000, 1999]]);
   });
 
+  test('QBO account/vendor pagination has no legacy 5,000-row cap', async () => {
+    const starts = [];
+    const rows = await queryAllQbo('Vendor', 'Id', 'token', 'realm', {
+      request: async (_method, path) => {
+        const query = decodeURIComponent(new URL(`https://example.test${path}`).searchParams.get('query'));
+        const start = Number(query.match(/STARTPOSITION (\d+)/)[1]);
+        starts.push(start);
+        return {
+          status: 200,
+          data: { QueryResponse: { Vendor: start <= 5001 ? Array.from({ length: 1000 }, () => ({})) : [] } },
+        };
+      },
+    });
+    expect(rows).toHaveLength(6000);
+    expect(starts).toContain(6001);
+  });
+
+  test('pagination fails loudly instead of reporting drained at the safety limit', async () => {
+    const fullPage = Array.from({ length: 1000 }, (_, id) => ({ id }));
+    await expect(pageFiltered(
+      () => ({ range: async () => ({ data: fullPage, error: null }) }),
+      () => false,
+      1,
+      'supplier queue',
+      null,
+      1000,
+    )).rejects.toThrow('supplier queue: pagination truncated after 1000 rows');
+  });
+
+  test('a real AbortSignal stops an in-flight paged query at the deadline', async () => {
+    const signal = signalUntil(Date.now() + 5, false);
+    await expect(pageFiltered(
+      () => ({
+        range: () => ({
+          abortSignal: activeSignal => new Promise((resolve, reject) => {
+            if (activeSignal.aborted) {
+              reject(activeSignal.reason || new Error('aborted'));
+              return;
+            }
+            activeSignal.addEventListener('abort', () => reject(activeSignal.reason || new Error('aborted')), { once: true });
+          }),
+        }),
+      }),
+      () => true,
+      1,
+      'slow query',
+      signal,
+    )).rejects.toThrow();
+  });
+
   test('busy leases are retried during the same background window', async () => {
     let now = 0;
     let portalCall = 0;
     const skipped = [];
     const result = await runSupplierBillBacklog({
       admin: {},
+      gateLoader: async () => true,
+      qboContextLoader: async () => ({ enabled: false }),
       timeBudgetMs: 900,
       clock: () => now,
       sleep: async () => { now += 1; },
@@ -287,7 +442,7 @@ describe('scheduled QuickBooks handoff', () => {
         portalCall += 1;
         skipped.push(new Set(options.skipSourceKeys));
         return portalCall === 1
-          ? { scanned: 1, applied: 0, review: 0, busy: 1, failed: 0, sourceKeys: ['ss|busy'], busySourceKeys: ['ss|busy'] }
+          ? { scanned: 1, applied: 0, review: 0, busy: 1, failed: 0, sourceKeys: ['ss|busy'], busySourceKeys: ['ss|busy'], retryableBusySourceKeys: ['ss|busy'] }
           : { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, sourceKeys: [] };
       },
       qboProcessor: async () => ({ enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [] }),
@@ -295,5 +450,34 @@ describe('scheduled QuickBooks handoff', () => {
     expect(portalCall).toBe(2);
     expect(skipped[1]).not.toContain('ss|busy');
     expect(result.portal.busy).toBe(1);
+  });
+
+  test('a saturated batch of leases expiring after the Portal window is scanned past', async () => {
+    const busyKeys = Array.from({ length: 100 }, (_, i) => `ss|busy-${i}`);
+    const skipped = [];
+    let call = 0;
+    const result = await runSupplierBillBacklog({
+      admin: {},
+      gateLoader: async () => true,
+      qboContextLoader: async () => ({ enabled: false }),
+      timeBudgetMs: 900,
+      clock: () => 0,
+      portalProcessor: async (_admin, _limit, _owner, options) => {
+        call += 1;
+        skipped.push(new Set(options.skipSourceKeys));
+        if (call === 1) return {
+          scanned: 100, applied: 0, review: 0, busy: 100, failed: 0,
+          sourceKeys: busyKeys, busySourceKeys: busyKeys, retryableBusySourceKeys: [],
+        };
+        if (call === 2) return {
+          scanned: 1, applied: 1, review: 0, busy: 0, failed: 0,
+          sourceKeys: ['ss|safe'], busySourceKeys: [], retryableBusySourceKeys: [],
+        };
+        return { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, sourceKeys: [] };
+      },
+      qboProcessor: async () => ({ enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [] }),
+    });
+    expect(skipped[1].size).toBe(100);
+    expect(result.portal).toEqual(expect.objectContaining({ busy: 100, applied: 1, batches: 3 }));
   });
 });

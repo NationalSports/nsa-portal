@@ -1753,7 +1753,7 @@ const _prepareJobUpserts=async(so,jobs)=>{
         _recordJobBase(so.id,j,'write');
       })};
 };
-const _dbSaveSOInner = async (so) => {
+const _dbSaveSOInner = async (so, innerOpts = {}) => {
   if(!supabase)return false;
   // Stale-write circuit breaker (mirrors _dbSaveEstimateInner). A save rejected as STALE_SO_WRITE is
   // preserved in the conflict card; re-POSTing the identical stale copy can never succeed. Without this
@@ -2672,9 +2672,12 @@ const _dbSaveSOInner = async (so) => {
     });
     if(saveFailed)throw new Error(_failMsg||'Sales-order validation failed');
     _rememberSaveAttempt('sales_orders',so);
-    const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{
+    const _saveRpc=innerOpts.billClaimToken?'save_sales_order_atomic_with_bill_claim':'save_sales_order_atomic';
+    const _saveArgs={
       p_so_id:so.id,p_expected_token:saveToken,p_plan:{...savePlan,...(so._editLease?{edit_lease:so._editLease}:{})},
-    }));
+      ...(innerOpts.billClaimToken?{p_bill_claim_token:innerOpts.billClaimToken}:{}),
+    };
+    const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc(_saveRpc,_saveArgs));
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE|SO_EDIT_LEASE_/.test(commitError.message||'')){
         console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
@@ -2689,7 +2692,7 @@ const _dbSaveSOInner = async (so) => {
             _ownRebase.set(so.id,{local:so._obBaseVersion??so._version,server:_resolved.version});
             so._version=_resolved.version;delete so._obBaseVersion;
             _ownRebaseTried.add(so.id);
-            try{return await _dbSaveSOInner(so)}finally{_ownRebaseTried.delete(so.id);_ownRebase.delete(so.id)}
+            try{return await _dbSaveSOInner(so,innerOpts)}finally{_ownRebaseTried.delete(so.id);_ownRebase.delete(so.id)}
           }
         }
         _emitOutboxConflict('sales_orders',so);
@@ -2728,7 +2731,7 @@ const _captureSoSave = (so, savePromise) => {
 const _dbSaveSO = (so, opts) => {
   // Bill confirmation must correspond to this exact mutation, not the result
   // of a later editor/autosave that supersedes a coalesced pending payload.
-  const save = opts?.exactAttempt ? snapshot => _dbSaveSOInner(snapshot) : _dbSaveSOInner;
+  const save = opts?.exactAttempt ? snapshot => _dbSaveSOInner(snapshot,opts) : _dbSaveSOInner;
   const _p = _saveDocument('sales_orders',so,save); _captureSoSave(so, _p); return _p;
 };
 // Narrow memo operation: no full-save wrapper, outbox, pricing or child writes.

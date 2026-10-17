@@ -35,18 +35,39 @@ const check = (result, label) => {
 const withSignal = (query, signal) =>
   signal && typeof query?.abortSignal === 'function' ? query.abortSignal(signal) : query;
 
-const signalUntil = deadlineMs => {
+const signalUntil = (deadlineMs, unref = true) => {
   if (!deadlineMs) return null;
-  return AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error('Supplier bill operation exceeded its deadline')),
+    Math.max(1, deadlineMs - Date.now()),
+  );
+  if (unref && typeof timer.unref === 'function') timer.unref();
+  return controller.signal;
 };
+
+async function supplierBillAutomationEnabled(admin, signal) {
+  const row = check(await withSignal(
+    admin.from('supplier_bill_automation_settings').select('enabled').eq('id', 'national').maybeSingle(),
+    signal,
+  ), 'load supplier bill automation gate');
+  return row?.enabled === true;
+}
 
 async function pageFiltered(makeQuery, accept, wanted, label, signal, maxRows = 20000) {
   const rows = [];
   const pageSize = 1000;
+  let inspected = 0;
+  let lastPageWasFull = false;
   for (let from = 0; from < maxRows && rows.length < wanted; from += pageSize) {
     const page = check(await withSignal(makeQuery().range(from, from + pageSize - 1), signal), label) || [];
+    inspected += page.length;
+    lastPageWasFull = page.length === pageSize;
     rows.push(...page.filter(accept));
     if (page.length < pageSize) break;
+  }
+  if (rows.length < wanted && inspected >= maxRows && lastPageWasFull) {
+    throw new Error(`${label}: pagination truncated after ${maxRows} rows`);
   }
   return rows.slice(0, wanted);
 }
@@ -135,7 +156,7 @@ async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${r
   const summary = {
     scanned: queued.length, applied: 0, review: 0, busy: 0, failed: 0,
     sourceKeys: queued.map(entry => `${entry.source}|${entry.sourceId}`),
-    busySourceKeys: [],
+    busySourceKeys: [], retryableBusySourceKeys: [],
     timeBudgetReached: false,
   };
 
@@ -166,11 +187,21 @@ async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${r
         continue;
       }
       if (claim?.state === 'busy') {
+        const sourceKey = `${entry.source}|${entry.sourceId}`;
         summary.busy += 1;
-        summary.busySourceKeys.push(`${entry.source}|${entry.sourceId}`);
+        summary.busySourceKeys.push(sourceKey);
+        if (options.deadlineMs && Date.parse(claim.lease_until || '') <= options.deadlineMs) {
+          summary.retryableBusySourceKeys.push(sourceKey);
+        }
         continue;
       }
       if (claim?.state === 'review') {
+        await markForReview(admin, null, entry.source, entry.sourceId, bill, {
+          action: 'review',
+          code: claim.code || 'server_review',
+          reason: claim.reason || 'This bill is waiting for staff review.',
+          mappings: [],
+        }, signal);
         summary.review += 1;
         continue;
       }
@@ -213,17 +244,20 @@ async function processPortalQueues(admin, limit = 20, claimOwner = `${OWNER}:${r
   return summary;
 }
 
-async function queryAllQbo(entity, fields, accessToken, realmId, max = 5000) {
+async function queryAllQbo(entity, fields, accessToken, realmId, options = {}) {
   const rows = [];
-  for (let start = 1; start <= max; start += 1000) {
+  const request = options.request || qbRequest;
+  for (let start = 1; ; start += 1000) {
+    if (options.deadlineMs && Date.now() >= options.deadlineMs - 10000) {
+      throw new Error(`QBO ${entity} pagination reached the time budget`);
+    }
     const query = `SELECT ${fields} FROM ${entity} STARTPOSITION ${start} MAXRESULTS 1000`;
-    const response = await qbRequest('GET', `/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, accessToken);
+    const response = await request('GET', `/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, accessToken);
     if (response.status !== 200 || response.data?.Fault) throw new Error(`QBO ${entity} read failed`);
     const page = response.data?.QueryResponse?.[entity] || [];
     rows.push(...page);
     if (page.length < 1000) return rows;
   }
-  throw new Error(`QBO ${entity} population exceeds ${max}`);
 }
 
 function vendorLinkMap(rows) {
@@ -239,20 +273,47 @@ function vendorLinkMap(rows) {
 
 const deterministicQboReview = error => /vendor|account|document .* exists|date|total|credit|portal PO|not found|duplicated|ambiguous/i.test(error?.message || '');
 
+async function prepareQuickBooksContext(admin, options = {}) {
+  const querySignal = signalUntil(options.deadlineMs);
+  const configResult = await withSignal(admin.from('app_state').select('value').eq('id', 'qb_config').maybeSingle(), querySignal);
+  const qbConfig = parseValue(check(configResult, 'load QB config')?.value) || {};
+  if (qbConfig.autoPushBillsToQB !== true || qbConfig.connected !== true || qbConfig.initialMigrationApproved !== true) {
+    return { enabled: false };
+  }
+  if (qbConfig.preflight?.status !== 'success' || String(qbConfig.preflight?.realm_id || '') !== String(qbConfig.realm_id || '')) {
+    return { enabled: false, reason: 'preflight' };
+  }
+  const tokenTimeoutMs = options.deadlineMs
+    ? Math.max(1, Math.min(8000, options.deadlineMs - Date.now()))
+    : 8000;
+  const { access_token: accessToken, realm_id: realmId } = await getValidAccessToken(admin, 'national', {
+    signal: signalUntil(options.deadlineMs),
+    timeoutMs: tokenTimeoutMs,
+  });
+  if (String(realmId) !== String(qbConfig.realm_id)) throw new Error('QBO realm changed after preflight');
+  const [accounts, qboVendors, portalVendorResult, linkResult] = await Promise.all([
+    queryAllQbo('Account', 'Id, AcctNum, Name, FullyQualifiedName, AccountType, Active', accessToken, realmId, options),
+    queryAllQbo('Vendor', 'Id, DisplayName, CompanyName, Active', accessToken, realmId, options),
+    withSignal(admin.from('vendors').select('id,name,is_active,qb_vendor_id'), querySignal),
+    withSignal(admin.from('app_state').select('id,value').like('id', '_qb_link_v1_%'), querySignal),
+  ]);
+  const portalVendors = check(portalVendorResult, 'load portal vendors') || [];
+  const links = vendorLinkMap(check(linkResult, 'load vendor links') || []);
+  const refs = resolveQBAccountRefs(accounts, qbConfig.mapping, ['purchases_account', 'freight_account', 'sports_inc_fee_account', 'ap_account']);
+  return { enabled: true, qbConfig, accessToken, realmId, qboVendors, portalVendors, links, refs };
+}
+
 // The synchronous helper defaults to one QBO bill; the daily background runner
 // raises the batch size and supplies a deadline so it can drain the backlog
 // without starting a write too close to Netlify's execution ceiling.
 async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${randomUUID()}`, options = {}) {
   const skipLedgerIds = options.skipLedgerIds || new Set();
   const querySignal = signalUntil(options.deadlineMs);
-  const configResult = await withSignal(admin.from('app_state').select('value').eq('id', 'qb_config').maybeSingle(), querySignal);
-  const qbConfig = parseValue(check(configResult, 'load QB config')?.value) || {};
-  if (qbConfig.autoPushBillsToQB !== true || qbConfig.connected !== true || qbConfig.initialMigrationApproved !== true) {
-    return { enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
+  const qboContext = options.qboContext || await prepareQuickBooksContext(admin, options);
+  if (qboContext.enabled !== true) {
+    return { enabled: false, reason: qboContext.reason, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
   }
-  if (qbConfig.preflight?.status !== 'success' || String(qbConfig.preflight?.realm_id || '') !== String(qbConfig.realm_id || '')) {
-    return { enabled: false, reason: 'preflight', scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
-  }
+  const { qbConfig, accessToken, realmId, qboVendors, portalVendors, links, refs } = qboContext;
 
   const ledger = await pageFiltered(
     () => admin.from('applied_bills').select('*')
@@ -265,27 +326,9 @@ async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${rand
     querySignal,
   );
   if (!ledger.length) return { enabled: true, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, ledgerIds: [], timeBudgetReached: false };
-
-  const tokenTimeoutMs = options.deadlineMs
-    ? Math.max(1, Math.min(8000, options.deadlineMs - Date.now()))
-    : 8000;
-  const { access_token: accessToken, realm_id: realmId } = await getValidAccessToken(admin, 'national', {
-    signal: signalUntil(options.deadlineMs),
-    timeoutMs: tokenTimeoutMs,
-  });
-  if (String(realmId) !== String(qbConfig.realm_id)) throw new Error('QBO realm changed after preflight');
-  const [accounts, qboVendors, portalVendorResult, linkResult] = await Promise.all([
-    queryAllQbo('Account', 'Id, AcctNum, Name, FullyQualifiedName, AccountType, Active', accessToken, realmId),
-    queryAllQbo('Vendor', 'Id, DisplayName, CompanyName, Active', accessToken, realmId),
-    withSignal(admin.from('vendors').select('id,name,is_active,qb_vendor_id'), querySignal),
-    withSignal(admin.from('app_state').select('id,value').like('id', '_qb_link_v1_%'), querySignal),
-  ]);
-  const portalVendors = check(portalVendorResult, 'load portal vendors') || [];
-  const links = vendorLinkMap(check(linkResult, 'load vendor links') || []);
-  const refs = resolveQBAccountRefs(accounts, qbConfig.mapping, ['purchases_account', 'freight_account', 'sports_inc_fee_account', 'ap_account']);
   const summary = {
     enabled: true, scanned: ledger.length, applied: 0, review: 0, busy: 0, failed: 0,
-    ledgerIds: ledger.map(row => String(row.id)), busyLedgerIds: [], timeBudgetReached: false,
+    ledgerIds: ledger.map(row => String(row.id)), busyLedgerIds: [], retryableBusyLedgerIds: [], timeBudgetReached: false,
   };
 
   for (const row of ledger) {
@@ -308,7 +351,15 @@ async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${rand
         p_allow_review: false,
       }), signal), 'claim QBO bill');
       if (claim?.state === 'applied') { summary.applied += 1; continue; }
-      if (claim?.state === 'busy') { summary.busy += 1; summary.busyLedgerIds.push(String(row.id)); continue; }
+      if (claim?.state === 'busy') {
+        const ledgerId = String(row.id);
+        summary.busy += 1;
+        summary.busyLedgerIds.push(ledgerId);
+        if (options.deadlineMs && Date.parse(claim.lease_until || '') <= options.deadlineMs) {
+          summary.retryableBusyLedgerIds.push(ledgerId);
+        }
+        continue;
+      }
       if (claim?.state === 'review') { summary.review += 1; continue; }
       if (claim?.state === 'collision') { summary.review += 1; continue; }
       if (claim?.state !== 'claimed' || !claim.token) throw new Error(`unexpected QBO claim state ${claim?.state || 'none'}`);
@@ -397,7 +448,19 @@ async function processQuickBooks(admin, limit = 1, claimOwner = `${OWNER}:${rand
   return summary;
 }
 
-async function runSupplierBillProcessor({ admin = getSupabaseAdmin(), portalLimit = 20, qboLimit = 1 } = {}) {
+async function runSupplierBillProcessor({
+  admin = getSupabaseAdmin(),
+  portalLimit = 20,
+  qboLimit = 1,
+  gateLoader = supplierBillAutomationEnabled,
+} = {}) {
+  if (!(await gateLoader(admin))) {
+    return {
+      gated: true,
+      portal: { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0 },
+      quickbooks: { enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0 },
+    };
+  }
   const claimOwner = `${OWNER}:${randomUUID()}`;
   const portal = await processPortalQueues(admin, portalLimit, claimOwner);
   let quickbooks;
@@ -416,7 +479,7 @@ const addSummary = (target, row) => {
 // Netlify background functions have a 15-minute ceiling. Stop at 13 minutes so
 // the last QBO response and database receipt have time to settle. Source/ledger
 // ids already attempted in this run are skipped on later pages; failures remain
-// queued for tomorrow without poisoning the rest of today's backlog.
+// queued without poisoning the rest, and the thrown background run is retried.
 async function runSupplierBillBacklog({
   admin = getSupabaseAdmin(),
   timeBudgetMs = 13 * 60 * 1000,
@@ -424,11 +487,22 @@ async function runSupplierBillBacklog({
   qboBatchSize = 50,
   clock = () => Date.now(),
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  gateLoader = supplierBillAutomationEnabled,
+  qboContextLoader = prepareQuickBooksContext,
   portalProcessor = processPortalQueues,
   qboProcessor = processQuickBooks,
 } = {}) {
   const startedAt = clock();
   const deadlineMs = startedAt + timeBudgetMs;
+  if (!(await gateLoader(admin, signalUntil(deadlineMs)))) {
+    return {
+      gated: true,
+      portal: { scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, batches: 0, timeBudgetReached: false },
+      quickbooks: { enabled: false, scanned: 0, applied: 0, review: 0, busy: 0, failed: 0, batches: 0, timeBudgetReached: false },
+      duration_ms: clock() - startedAt,
+      time_budget_reached: false,
+    };
+  }
   // Reserve most of the background window for Intuit I/O; Portal writes are
   // database-only and get the first third (capped at four minutes).
   const portalDeadlineMs = Math.min(deadlineMs, startedAt + Math.min(4 * 60 * 1000, Math.floor(timeBudgetMs / 3)));
@@ -444,29 +518,36 @@ async function runSupplierBillBacklog({
     const row = await portalProcessor(admin, portalBatchSize, claimOwner, { deadlineMs: portalDeadlineMs, skipSourceKeys: seenSources });
     portal.batches += 1;
     addSummary(portal, row);
-    const busySources = new Set(row.busySourceKeys || []);
-    const completedSources = (row.sourceKeys || []).filter(key => !busySources.has(key));
+    const retryableBusySources = new Set(row.retryableBusySourceKeys || []);
+    const completedSources = (row.sourceKeys || []).filter(key => !retryableBusySources.has(key));
     completedSources.forEach(key => seenSources.add(key));
     if (row.timeBudgetReached) { portal.timeBudgetReached = true; break; }
     if (!row.scanned) { portalDrained = true; break; }
-    if (!completedSources.length && row.busy > 0) {
+    if (!completedSources.length && retryableBusySources.size > 0) {
       await sleep(Math.min(30000, Math.max(0, portalDeadlineMs - clock())));
     }
   }
   if (!portalDrained && clock() >= portalDeadlineMs) portal.timeBudgetReached = true;
 
+  // Account/vendor/token reads are stable for one run and can be expensive.
+  // Load them once, then reuse them across every QBO ledger batch.
+  const qboContext = await qboContextLoader(admin, { deadlineMs });
   while (clock() < deadlineMs) {
-    const row = await qboProcessor(admin, qboBatchSize, claimOwner, { deadlineMs, skipLedgerIds: seenLedger });
+    const row = await qboProcessor(admin, qboBatchSize, claimOwner, {
+      deadlineMs,
+      skipLedgerIds: seenLedger,
+      ...(qboContext ? { qboContext } : {}),
+    });
     quickbooks.batches += 1;
     quickbooks.enabled = row.enabled !== false;
     if (row.reason) quickbooks.reason = row.reason;
     addSummary(quickbooks, row);
-    const busyLedger = new Set((row.busyLedgerIds || []).map(String));
-    const completedLedger = (row.ledgerIds || []).map(String).filter(id => !busyLedger.has(id));
+    const retryableBusyLedger = new Set((row.retryableBusyLedgerIds || []).map(String));
+    const completedLedger = (row.ledgerIds || []).map(String).filter(id => !retryableBusyLedger.has(id));
     completedLedger.forEach(id => seenLedger.add(id));
     if (row.timeBudgetReached) { quickbooks.timeBudgetReached = true; break; }
     if (row.enabled === false || !row.scanned) { qboDrained = true; break; }
-    if (!completedLedger.length && row.busy > 0) {
+    if (!completedLedger.length && retryableBusyLedger.size > 0) {
       await sleep(Math.min(30000, Math.max(0, deadlineMs - clock())));
     }
   }
@@ -485,10 +566,13 @@ module.exports = {
   OWNER,
   deterministicQboReview,
   pageFiltered,
+  prepareQuickBooksContext,
   processPortalQueues,
   processQuickBooks,
   queryAllQbo,
   runSupplierBillBacklog,
   runSupplierBillProcessor,
+  signalUntil,
+  supplierBillAutomationEnabled,
   vendorLinkMap,
 };

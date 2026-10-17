@@ -29350,7 +29350,7 @@ export default function App(){
         }
       }
     };
-    const _prepareBillWrites=(bill,mutate)=>{
+    const _prepareBillWrites=(bill,mutate,billClaimToken)=>{
       const before=_billApplyData.current;
       const tx={...before};_billStages.set(bill,tx);
       try{mutate()}finally{_billStages.delete(bill)}
@@ -29360,7 +29360,7 @@ export default function App(){
         if(sameBillingSnapshot(old,so))continue;
         writes.push({
           isCurrent:()=>{const current=_billApplyData.current.sos.find(s=>s.id===so.id);return sameBillingSnapshot(current,old)||sameBillingSnapshot(current,so)},
-          save:()=>_dbSaveSO(so,{exactAttempt:true}),
+          save:()=>_dbSaveSO(so,{exactAttempt:true,billClaimToken}),
           publish:()=>{_billApplyData.current={..._billApplyData.current,sos:_billApplyData.current.sos.map(s=>s.id===so.id?so:s)};setSOs(prev=>prev.map(s=>s.id===so.id?so:s))},
         });
       }
@@ -31380,7 +31380,7 @@ export default function App(){
               p._lineMappings=auto;
             }
             let metadata={};
-            const writes=_prepareBillWrites(p,()=>{_validateBillApplyTargets(p);if(mutate)metadata=mutate()||{};else applyBillToSO(p)});
+            const writes=_prepareBillWrites(p,()=>{_validateBillApplyTargets(p);if(mutate)metadata=mutate()||{};else applyBillToSO(p)},claimToken);
             recordBill=JSON.parse(JSON.stringify({...b,parsed:{...p,...metadata},portalStatus:'success'}));
             return writes;
           },
