@@ -9,7 +9,7 @@ const mockSendBrevoEmail = jest.fn();
 
 jest.mock('../AppContext', () => ({ useAppData: () => mockData.current }));
 jest.mock('../components', () => ({ calcSOStatus: jest.fn(() => ({})) }));
-jest.mock('../App', () => ({ dP: jest.fn(() => ''), rQ: jest.fn(() => 0), parseDate: jest.fn(() => null), _decoUnitCostComb: jest.fn(() => 0) }));
+jest.mock('../App', () => ({ dP: jest.fn(() => ''), rQ: jest.fn(() => 0), parseDate: d => d ? new Date(String(d).slice(0,10) + 'T12:00:00') : null, _decoUnitCostComb: jest.fn(() => 0) }));
 jest.mock('../utils', () => ({ sendBrevoEmail: (...args) => mockSendBrevoEmail(...args) }));
 jest.mock('../lib/dbEngine', () => ({
   __esModule: true,
@@ -45,11 +45,11 @@ const deferred = () => {
 const adminId = '00000000-0000-0000-0000-000000000001';
 const kevin = DEFAULT_REPS.find(r => r.name === 'Kevin McCormack');
 
-function mountPage(tab = 'adminDash') {
+function mountPage(tab = 'adminDash', user = { id: adminId, name: 'Steve Peterson', role: 'admin' }) {
   mockData.current = {
     REPS: DEFAULT_REPS,
-    commMonth: '2026-09', commOverrides: {}, commRep: 'all', commTab: tab,
-    cu: { id: adminId, name: 'Steve Peterson', role: 'admin' },
+    commMonth: '2026-09', commOverrides: {}, commRep: user.role==='rep'?user.id:'all', commTab: tab,
+    cu: user,
     cust: [], invs: [], sos: [],
     setCommMonth: jest.fn(), setCommOverrides: jest.fn(), setCommRep: jest.fn(), setCommTab: jest.fn(),
     setESO: jest.fn(), setESOC: jest.fn(), setESOTab: jest.fn(), setPg: jest.fn(), setSOs: jest.fn(),
@@ -76,6 +76,17 @@ beforeEach(() => {
 });
 
 describe('Commissions NetSuite payout actions', () => {
+  test.each(['statement','ytd','byCustomer'])('rep-facing %s includes only the rep’s NetSuite amounts', async tab => {
+    mockRpc.mockImplementation(name=>name==='commission_netsuite_for_current_user'
+      ?Promise.resolve({data:{rep_id:kevin.id,nsComm:{'2026-09':4500},nsInvoices:{'NS-100':{id:'NS-100',month:'2026-09',customer:'West High',invoiceDate:'2026-09-01',paidDate:'2026-09-18',daysToPay:17,rate:.3,revenue:553.72,cost:0,gp:553.72,commission:165.86}}},error:null})
+      :Promise.resolve({data:8,error:null}));
+    mountPage(tab,{id:kevin.id,name:'Kevin McCormack',role:'rep'});
+    await waitFor(()=>expect(mockRpc).toHaveBeenCalledWith('commission_netsuite_for_current_user'));
+    expect(await screen.findAllByText(/West High|NetSuite adjustment|\$4,665\.86/)).not.toHaveLength(0);
+    expect(await screen.findAllByText('$4,665.86')).not.toHaveLength(0);
+    expect(screen.queryByText('SECRET OTHER REP')).toBeNull();
+  });
+
   test('monthly reports include imported and manual NetSuite commission', async () => {
     mountPage('monthly');
     await screen.findByText('Kevin McCormack');
