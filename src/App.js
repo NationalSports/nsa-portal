@@ -2861,6 +2861,7 @@ export default function App(){
   const _decoShipPresets=useMemo(()=>decoShipToPresets({decoVendors,vendors:vend}),[decoVendors,vend]);
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
+  React.useEffect(()=>{const add=event=>{const issue=event.detail;if(issue?.id)setIssues(prev=>prev.some(existing=>existing.id===issue.id)?prev:[issue,...prev])};window.addEventListener('nsa:create-issue',add);return()=>window.removeEventListener('nsa:create-issue',add)},[]);
   const[quoteRequests,setQuoteRequests]=useState([]);
   // Sales Tools page state (must be at App level to avoid conditional hook calls)
   const[stTab,setStTab]=useState('myday');
@@ -7540,6 +7541,7 @@ export default function App(){
   // Result-checked estimate save, matching savSONow. Autosave and emergency editor flushes must enter the
   // database queue directly instead of hoping the later [ests] diff effect runs before an unmount/reload.
   const savENow=(e,opts)=>{
+    opts=opts||e?.__editorSaveOptions;
     const deferredEffects=[];
     const historyKey='estimates:'+e.id,baseline=(_dbSnap.current?.ests||[]).find(row=>row.id===e.id)||null,priorHistory=_saveHistoryBases.current.get(historyKey);
     _failedDocumentSaveEffects.current.delete(historyKey);
@@ -7547,6 +7549,7 @@ export default function App(){
     const historyState={base:priorHistory?priorHistory.base:baseline,attempt:(priorHistory?.attempt||0)+1};_saveHistoryBases.current.set(historyKey,historyState);
     const e2=savE(e,{...opts,deferDownstream:true,deferredEffects,historyPrevious:historyState.base});
     if(!e2||!e2.id){if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey);return Promise.resolve(false)}
+    if(opts?.onConfirmed)deferredEffects.push(opts.onConfirmed);
     setEEst(prev=>prev&&prev.id===e2.id?e2:prev);
     const snap=_dbSnap.current?.ests;
     if(Array.isArray(snap)&&snap.some(x=>x.id===e2.id))_dbSnap.current.ests=snap.map(x=>x.id===e2.id?e2:x);
@@ -7694,21 +7697,50 @@ export default function App(){
   };
   // Remove a carried pending shipping charge from an SO: restore the customer's balance (so it
   // re-attaches to their next order), back out the carried label cost, and clear the SO flags.
-  const releasePendingShipFromSO=(so)=>{
+  const _pendingShipRestoreKey='nsa_pending_ship_restores';
+  const _readPendingShipRestores=()=>{try{const rows=JSON.parse(localStorage.getItem(_pendingShipRestoreKey)||'[]');return Array.isArray(rows)?rows:[]}catch{return[]}};
+  const _writePendingShipRestores=rows=>{try{const value=JSON.stringify(rows);localStorage.setItem(_pendingShipRestoreKey,value);return localStorage.getItem(_pendingShipRestoreKey)===value}catch{return false}};
+  const _pendingShipRestoreLocks=useRef(new Set());
+  const _finishPendingShipRestore=async(entry,{notify=true,confirmed=false}={})=>{
+    if(!entry?.soId||_pendingShipRestoreLocks.current.has(entry.soId))return false;
+    const savedOrder=(_visFlushRefs.current.sos||sos).find(row=>row.id===entry.soId);
+    if(!confirmed&&(!savedOrder||savedOrder.pending_ship_applied!==false))return false;
+    _pendingShipRestoreLocks.current.add(entry.soId);
+    try{
+      let balanceSaved=false;
+      for(let attempt=0;attempt<3&&!balanceSaved;attempt++){
+        if(!supabase)break;
+        const{data,error}=await supabase.rpc('release_pending_shipping_for_so',{p_so_id:entry.soId});
+        balanceSaved=!error&&data?.ok===true;
+      }
+      if(!balanceSaved){if(notify)nf('The SO shipping charge was removed, but the customer balance is still restoring. Do not remove it again; the portal will retry automatically.','error');setTimeout(()=>_finishPendingShipRestore(entry,{notify:false}),30000);return false}
+      _writePendingShipRestores(_readPendingShipRestores().filter(row=>row.soId!==entry.soId));
+      const _restore=cc=>{
+        if(cc.id!==entry.customerId||!(cc.pending_shipping_usage||[]).some(u=>u.so_id===entry.soId))return cc;
+        return{...cc,pending_shipping:(cc.pending_shipping||[]).map(r=>entry.byRow?.[r.id]?{...r,used:Math.max(0,safeNum(r.used)-entry.byRow[r.id])}:r),pending_shipping_usage:(cc.pending_shipping_usage||[]).filter(u=>u.so_id!==entry.soId)};
+      };
+      setCust(prev=>prev.map(_restore));setSelC(s=>s?_restore(s):s);
+      if(notify)nf('Prior shipping charge removed — returned to '+(entry.customerName||'the customer')+"'s balance");
+      return true;
+    }finally{_pendingShipRestoreLocks.current.delete(entry.soId)}
+  };
+  React.useEffect(()=>{if(!dbLoading)_readPendingShipRestores().forEach(entry=>{void _finishPendingShipRestore(entry,{notify:false})})},[dbLoading,cust.length,sos]);// eslint-disable-line react-hooks/exhaustive-deps
+  const releasePendingShipFromSO=async(so)=>{
     const c=cust.find(x=>x.id===so.customer_id);
     const usage=(c?.pending_shipping_usage||[]).filter(u=>u.so_id===so.id);
     let restoredCost=0;
+    const byRow={};
     if(usage.length&&c){
-      const byRow={};usage.forEach(u=>{byRow[u.pending_id]=(byRow[u.pending_id]||0)+safeNum(u.amount);restoredCost+=safeNum(u.cost)});
-      Object.entries(byRow).forEach(([pid,amt])=>{const row=(c.pending_shipping||[]).find(r=>r.id===pid);if(row)_dbSavePendingShip({...row,used:Math.max(0,safeNum(row.used)-amt)})});
-      _dbDeletePendingShipUsage(so.id);
-      const _restore=cc=>({...cc,pending_shipping:(cc.pending_shipping||[]).map(r=>byRow[r.id]?{...r,used:Math.max(0,safeNum(r.used)-byRow[r.id])}:r),pending_shipping_usage:(cc.pending_shipping_usage||[]).filter(u=>u.so_id!==so.id)});
-      setCust(prev=>prev.map(cc=>cc.id===c.id?_restore(cc):cc));setSelC(s=>s&&s.id===c.id?_restore(s):s);
+      usage.forEach(u=>{byRow[u.pending_id]=(byRow[u.pending_id]||0)+safeNum(u.amount);restoredCost+=safeNum(u.cost)});
     }
     const newShipCost=Math.max(0,Math.round((safeNum(so._shipping_cost||so._shipstation_cost||0)-restoredCost)*100)/100);
-    const locked=savSO({...so,pending_ship_applied:false,pending_ship_amount:0,_shipping_cost:newShipCost,_shipstation_cost:newShipCost});
-    setESO(prev=>prev&&prev.id===so.id?locked:prev);
-    nf('Prior shipping charge removed — returned to '+(c?.name||'the customer')+"'s balance");
+    const updated={...so,pending_ship_applied:false,pending_ship_amount:0,_shipping_cost:newShipCost,_shipstation_cost:newShipCost,updated_at:new Date().toLocaleString()};
+    const entry=usage.length&&c?{soId:so.id,customerId:c.id,customerName:c.name||'',byRow}:null;
+    if(entry&&!_writePendingShipRestores([..._readPendingShipRestores().filter(row=>row.soId!==so.id),entry])){nf('Prior shipping was not removed because browser recovery storage is unavailable. Free browser storage and try again.','error');return false}
+    return savSONow(updated,{onConfirmed:async()=>{
+      if(entry){await _finishPendingShipRestore(entry,{confirmed:true});return}
+      nf('Prior shipping charge removed — returned to '+(c?.name||'the customer')+"'s balance");
+    }});
   };
   // Lightweight art-file-only update for the artwork library (add/remove/tag a mockup or production file).
   // Persists ONLY so_art_files — never re-persists items/decorations/PO lines — so a file change can't trip the
@@ -7811,6 +7843,7 @@ export default function App(){
     nf('Memo saved','success');
   };
   const savSONow=(s,opts)=>{
+    opts=opts||s?.__editorSaveOptions;
     const deferredEffects=[];
     const historyKey='sales_orders:'+s.id,baseline=(_dbSnap.current?.sos||[]).find(row=>row.id===s.id)||null,priorHistory=_saveHistoryBases.current.get(historyKey);
     _failedDocumentSaveEffects.current.delete(historyKey);
@@ -7818,6 +7851,7 @@ export default function App(){
     const historyState={base:priorHistory?priorHistory.base:baseline,attempt:(priorHistory?.attempt||0)+1};_saveHistoryBases.current.set(historyKey,historyState);
     const sl=savSO(s,{...opts,deferDownstream:true,deferredEffects,historyPrevious:historyState.base});
     if(!sl||!sl.id){if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey);return Promise.resolve(false)}
+    if(opts?.onConfirmed)deferredEffects.push(opts.onConfirmed);
     setESO(prev=>prev&&prev.id===sl.id?sl:prev);
     const _syncedBefore=(_dbSnap.current?.sos||[]).find(x=>x.id===sl.id);// routing base, captured before staging
     stageDocumentBaseline(_dbSnap,'sos',sl);
@@ -7841,10 +7875,12 @@ export default function App(){
   // under-invoiced orders — those must stay visible in the invoicing funnel, and orders
   // whose invoices are later deleted are reverted by the delete handler, not here.
   const _autoClosedSOs=React.useRef(new Set());
+  const _autoCloseRetryAt=React.useRef(new Map());
+  const[autoCloseRevision,setAutoCloseRevision]=useState(0);
   React.useEffect(()=>{
     if(dbLoading)return;
     sos.forEach(so=>{
-      if(!so||so.status==='complete'||so.deleted_at||_autoClosedSOs.current.has(so.id))return;
+      if(!so||so.status==='complete'||so.deleted_at||_autoClosedSOs.current.has(so.id)||Date.now()<(_autoCloseRetryAt.current.get(so.id)||0))return;
       let st;try{st=calcSOStatus(so)}catch{return}
       if(st!=='ready_to_invoice')return;
       const soInvs=invs.filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
@@ -7857,11 +7893,15 @@ export default function App(){
       });
       if(!shouldAutoCloseInvoicedSO(so,{status:st,hasInvoices:soInvs.length>0,hasRemainingQty:hasRemaining}))return;
       _autoClosedSOs.current.add(so.id);
-      savSO({...so,status:'complete',updated_at:new Date().toLocaleString()});
-      logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');
-      nf(so.id+' closed — fully invoiced and production complete');
+      const closed={...so,status:'complete',updated_at:new Date().toLocaleString()};
+      savSONow(closed,{onConfirmed:()=>{
+        _autoCloseRetryAt.current.delete(so.id);
+        setSOs(prev=>prev.map(row=>row.id===so.id?closed:row));setESO(prev=>prev?.id===so.id?closed:prev);
+        logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');
+        nf(so.id+' closed — fully invoiced and production complete');
+      }}).then(saved=>{if(!saved){setSOs(prev=>prev.map(row=>row.id===so.id?so:row));setESO(prev=>prev?.id===so.id?so:prev);_autoClosedSOs.current.delete(so.id);_autoCloseRetryAt.current.set(so.id,Date.now()+30000);setTimeout(()=>{_autoCloseRetryAt.current.delete(so.id);setAutoCloseRevision(value=>value+1)},30000)}});
     });
-  },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
+  },[sos,invs,dbLoading,autoCloseRevision]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes,opts)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -12008,7 +12048,7 @@ export default function App(){
   // Refuse to order/clear a batch while any of its orders loaded without item lines: the order save that
   // records the PO would be refused, but the vendor order and queue change would still go through.
   const _blockUnloadedBatch=entries=>{const ids=unloadedBatchOrders(entries,sos);if(!ids.length)return false;nf('Not done — '+ids.join(', ')+(ids.length===1?" hasn't":" haven't")+' finished loading. Reload the page, then try again.','error');return true};
-  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
+  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null,requirePromotionBeforeCommit=false})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
     // onSubmitted) would run the whole promotion twice before state settles — duplicate
@@ -12110,7 +12150,6 @@ export default function App(){
       submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
       ...(apiStamp||{}),
       source_pos:pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
-    setSubmittedBatches(prev=>[sb,...prev]);
     // Group by SO so an order with several batch entries gets a single save — per-entry saves
     // would each read the stale pre-save SO from sos and drop the previous entry's promotion.
     const bySo={};pos.forEach(bp=>{(bySo[bp.so_id]=bySo[bp.so_id]||[]).push(bp)});
@@ -12135,7 +12174,7 @@ export default function App(){
             // By line_id, never by position alone: a line that moved or never reached the order
             // must not pin this PO onto a different garment (SO-2444). Legacy entries keep item_idx.
             const idx=resolveBatchItemIndex(updatedItems,bpIt);if(idx<0){_unplaced.push(bpIt.sku+(bpIt.color?' '+bpIt.color:''));return}
-            const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
+            const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_queue_id:bp.id,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
             Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
             updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -12150,10 +12189,14 @@ export default function App(){
       // The vendor already accepted this order (or the rep already placed it) — never mask that
       // it isn't recorded on the SO. console-only left orders that exist at the vendor but
       // nowhere in fulfillment tracking, with nobody told.
-      console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);
-      nf('⚠️ Batch '+poNum+' was placed but its PO line could not be recorded on '+soId+' — add it to the order manually','error');
+      console.error('[orderVendorBatch] promotion failed for '+soId+(requirePromotionBeforeCommit?' — retaining queue':' — clearing queue anyway'),_promoErr);
+      nf(requirePromotionBeforeCommit
+        ?'Batch not recorded — its PO line could not be saved on '+soId+'. The queue is still here; fix the save and retry.'
+        :'⚠️ Batch '+poNum+' was placed but its PO line could not be recorded on '+soId+' — add it to the order manually','error');
       if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId,reason:'Batch '+poNum+' ('+vgName+') promoted at the vendor but writing the po_line failed: '+(_promoErr&&_promoErr.message||_promoErr)});
     }}
+    if(promotionFailed&&requirePromotionBeforeCommit)return null;
+    setSubmittedBatches(prev=>[sb,...prev]);
     setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
     setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return promotionFailed?null:poNum;

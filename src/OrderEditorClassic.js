@@ -18,6 +18,7 @@ import JobGarmentMocks from './JobGarmentMocks';
 import { logoDetailCustomerUpdates, setLogoDetail, logoDetailUrl, stitchLogoNeedsSave, artLogoNeedsSave } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
+import { markPriorArtCoachSent } from './lib/priorArtReview';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
@@ -367,11 +368,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // held job is stopped through App's shared clock-out (audit L10) — the board's applyJobMove
   // is otherwise the only thing that stops timers, and a job held from here would keep
   // "running" for days in job_time_logs.
-  const _holdArtSiblings=(jobsArr,artIds,exceptId)=>jobsArr.map(jj=>{
+  const _holdArtSiblings=(jobsArr,artIds,exceptId,clocksToStop)=>jobsArr.map(jj=>{
     if(jj.id===exceptId||!_activeProd(jj.prod_status))return jj;
     const ids=jj._art_ids||[jj.art_file_id].filter(Boolean);
     if(!ids.some(id=>artIds.includes(id)))return jj;
-    if(onStopJobClock)onStopJobClock(o.id,jj.id);
+    if(clocksToStop)clocksToStop.add(jj.id);
     return{...jj,prod_status:'hold'};
   });
   const _artSiblingsInProd=(artIds,exceptId)=>safeJobs(o).filter(jj=>jj.id!==exceptId&&_activeProd(jj.prod_status)&&(jj._art_ids||[jj.art_file_id].filter(Boolean)).some(id=>artIds.includes(id))).length;
@@ -400,16 +401,17 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // pull back together or they go to press on the recalled artwork (each in-prod slice stops its
     // clock as it leaves staging/in_process).
     const _famIdx=new Set(_artFamilyIdxs(ji));
+    const _clocksToStop=new Set();
     let updJobs=safeJobs(o).map((jj,i2)=>{
       if(!_famIdx.has(i2))return jj;
       const _wp=_activeProd(jj.prod_status);
-      if(_wp&&onStopJobClock)onStopJobClock(o.id,jj.id);
+      if(_wp)_clocksToStop.add(jj.id);
       return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(_wp?{prod_status:'hold'}:{})};
     });
-    updJobs=_holdArtSiblings(updJobs,artIds,j.id);
+    updJobs=_holdArtSiblings(updJobs,artIds,j.id,_clocksToStop);
     const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
     const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
-    saveSONow(updated,'Art recall','Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''));
+    saveSONow(updated,'Art recall','Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''),()=>{if(onStopJobClock)_clocksToStop.forEach(id=>onStopJobClock(o.id,id))});
   };
   // Send a job's art back to the artist for a NEW/redone mockup — the reused mock is wrong or the
   // rep wants a change. The design identity stays (unlike Recall); the art returns to art_requested
@@ -1128,13 +1130,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
         attachment:imgs.map((u,i)=>({url:u,name:topstarAttachmentName(u,svc.deco_type,i)}))});
       }catch(e){r={ok:false,error:e.message}}
-      const completedPo=r.ok?markTopstarEmailSent(sendingPo,r):markTopstarEmailFailed(sendingPo,r.error);
+      const completedPo=r.ok?markTopstarEmailSent(sendingPo,r):r.uncertain?{...sendingPo,status:'sending',topstar_send_uncertain:true,topstar_send_error:r.error}:markTopstarEmailFailed(sendingPo,r.error);
       const updated={...sendingOrder,deco_pos:(sendingOrder.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?{...x,...completedPo}:x),updated_at:new Date().toLocaleString()};
       const completionSaved=await saveSONow(updated,'Topstar receipt',null,()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>topstarPoMatches(x,dp))||p.decoPo}:p));
       if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
       else if(r.ok){
         nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
-      } else nf('Email to Topstar failed: '+r.error,'error');
+      } else if(r.uncertain)nf('Topstar email result is uncertain. Check Brevo before retrying; do not send a duplicate.','error');
+      else nf('Email to Topstar failed: '+r.error,'error');
       setTopstarSending(false);
       return r.ok;
     };
@@ -1207,8 +1210,18 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       saveSONow(updated,'Silver Screen job','Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.',()=>{setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);setSspUnlinkKey(null)});
     };
     const _sspSendNow=async({dp,baseOrder,rows,deco_instructions,wearerBagPrep})=>{
-      const cur=baseOrder;
+      if(dp._silverscreen_send?.state==='sending'){nf('Silver Screen send is already marked in progress. Check their portal for PO '+(dp.po_id||'')+' before trying again; do not create a duplicate.','error');return false}
       setSspSending(true);
+      const sendToken=dp._silverscreen_send?.token||('ss-'+Date.now()+'-'+Math.random().toString(36).slice(2,8));
+      const sendingDp={...dp,_silverscreen_send:{token:sendToken,state:'sending',started_at:new Date().toISOString()}};
+      const sendingOrder={...baseOrder,deco_pos:(baseOrder.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?sendingDp:x),updated_at:new Date().toLocaleString()};
+      if(!(await saveSONow(sendingOrder,'Silver Screen send',null))){setSspSending(false);return false}
+      const cur=sendingOrder;
+      const persistFailure=async(message,state='failed')=>{
+        const failedDp={...sendingDp,_silverscreen_send:{...sendingDp._silverscreen_send,state,failed_at:new Date().toISOString(),error:message}};
+        const failedOrder={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?failedDp:x),updated_at:new Date().toLocaleString()};
+        await saveSONow(failedOrder,'Silver Screen send',null);
+      };
       try{
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',wearer_bag_prep:!!wearerBagPrep,
@@ -1216,20 +1229,23 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             // Finished goods ship to the CUSTOMER, not back to NSA — their create form has no
             // ship-to field, so send it for the job sheet (and for the field map once known).
             ship_to:_ssShipTo(),
-            items:rows,deco_instructions})});
+            items:rows,deco_instructions,client_token:sendToken})});
         const j=await r.json().catch(()=>({}));
-        if(!r.ok||!j.ok){nf('Silver Screen job failed: '+(j.error||('HTTP '+r.status)),'error');return}
-        const updatedDp={...dp,
+        if(!r.ok||!j.ok){const msg=j.error||('HTTP '+r.status),uncertain=r.status>=500;await persistFailure(msg,uncertain?'uncertain':'failed');nf((uncertain?'Silver Screen result is uncertain — check their portal before retrying: ':'Silver Screen job failed: ')+msg,'error');return false}
+        const updatedDp={...sendingDp,
           status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
-          _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
+          _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString(),
+          _silverscreen_send:{...sendingDp._silverscreen_send,state:'sent',sent_at:new Date().toISOString()}};
         // Whatever the send couldn't finish on their portal is a real to-do — keep it ON the PO
         // instead of only in a toast that fades in 3.5s (the checklist is too long to read).
         if(j.warning)updatedDp._silverscreen_todo=j.warning;else delete updatedDp._silverscreen_todo;
         const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
-        await saveSONow(updated,'Silver Screen job','🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''),()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
+        const receiptSaved=await saveSONow(updated,'Silver Screen job','🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''),()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
+        if(!receiptSaved){nf('Silver Screen accepted the job, but its receipt is still unsaved. Do NOT resend; keep this tab open and retry Save.','error');return false}
         if(j.warning)nf('⚠️ '+j.warning,'error');// job exists but needs a manual step — don't let it pass silently
-      }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
+      }catch(e){const msg=e?.message||'network error';await persistFailure(msg,'uncertain');nf('Silver Screen result is uncertain — check their portal before retrying: '+msg,'error');return false}
       finally{setSspSending(false)}
+      return true;
     };
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
@@ -2188,6 +2204,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     onAdjustInv(p.id,newInv);
   };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);const[apiOrder,setApiOrder]=useState(null);// apiOrder: {vendorKey,poNumber,vendorName,batchPOs} — single-PO API order modal
+  const poEmailSendRef=useRef(false);useEffect(()=>{if(!poEmail)poEmailSendRef.current=false},[poEmail]);
   // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
   const[receivedConfirm,setReceivedConfirm]=useState(null);
   // Findings from a blocked Silver Screen file / player report. Held here rather than
@@ -3339,7 +3356,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     setO(updated);oRef.current=updated;
     let saved=true;
     saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
-    if(!saved){setO(current);oRef.current=current;nf('⚠️ '+desc.vendorName+' accepted order '+oid+', but the portal could not confirm its PO record. Do NOT re-order.','error');return false}
+    if(!saved){dirtyRef2.current=true;setDirty(true);nf('⚠️ '+desc.vendorName+' accepted order '+oid+', but the portal could not confirm its PO record. The acknowledgement is kept unsaved in this tab — do NOT reload or re-order; retry Save.','error');return false}
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
     setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp},soItems:items}:pf);
@@ -3370,7 +3387,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         setO(updated);oRef.current=updated;
         let saved=true;
         saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
-        if(!saved){setO(current);oRef.current=current;return false}
+        if(!saved){dirtyRef2.current=true;setDirty(true);nf('⚠️ The vendor accepted this batch, but its acknowledgement is still unsaved in this tab. Do NOT reload or re-order; retry Save.','error');return false}
       }
       return orderedNum;
     }
@@ -3886,15 +3903,20 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     setActionSaving(count=>count+1);
     setO(updated);oRef.current=updated;dirtyRef2.current=true;setDirty(true);
     const revision=orderEditRevision.current,attempt=++editorSaveSeq.current;
+    let followUpRan=false;
+    const acknowledge=()=>{
+      if(canAcknowledgeSave(true,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){
+        setSaved(true);dirtyRef2.current=false;setDirty(false);
+        if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'));
+      }
+      if(!followUpRan){followUpRan=true;if(onConfirmed)onConfirmed()}
+    };
     let ok=false;
-    try{ok=await confirmedEditorSave(updated,{onSaveNow,onSave})}finally{setActionSaving(count=>count-1)}
-    if(canAcknowledgeSave(ok,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){
-      setSaved(true);dirtyRef2.current=false;setDirty(false);
-      if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'));
-    }else if(ok!==true&&attempt===editorSaveSeq.current){
+    try{ok=await confirmedEditorSave(updated,{onSaveNow,onSave,saveOptions:{onConfirmed:acknowledge}})}finally{setActionSaving(count=>count-1)}
+    if(ok===true)acknowledge();
+    else if(attempt===editorSaveSeq.current){
       nf('Changes are still unsaved. Your draft is preserved; review the save message and retry.','error');
     }
-    if(ok===true&&onConfirmed)onConfirmed();
     return ok===true;
   };
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
@@ -5035,20 +5057,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')+'.'+JSON.stringify(gi.sizes||{})+'.'+JSON.stringify(gi.fulSizes||{})).join('|')).sort().join(',');
     const _claimsChanged=_claimSig(currentJobs)!==_claimSig(synced);
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)||_claimsChanged){
-      setO(e=>{
-        const next={...e,jobs:synced};
-        // Persist when jobs shrink (dead _merged/released retired after line art cleared, or
-        // carry-over dropped). Without a save, so_jobs rows linger — empty jobs[] used to be a
-        // no-op delete, which is why JOB-1057-01 survived after decorations were wiped.
-        // Persist on a claim change too: a consolidated job that only lives in this component's
-        // state never reaches the production board, which reads the SAVED jobs (buildJobs returns
-        // so.jobs verbatim) — the sheets would stay duplicated on the floor no matter how many
-        // times the order was opened.
-        if(synced.length<safeJobs(e).length||_claimsChanged){
-          Promise.resolve().then(()=>{try{onSave(next)}catch(_){}});
-        }
-        return next;
-      });
+      // Persist shrink/claim repairs through the same confirmed path as user actions.
+      // A failed heal stays visibly dirty instead of silently diverging from the floor.
+      if(synced.length<currentJobs.length||_claimsChanged)saveSONow({...o,jobs:synced,updated_at:new Date().toLocaleString()},'Job repair',null);
+      else setO(e=>({...e,jobs:synced}));
     }
   },[syncJobs]);// eslint-disable-line
 
@@ -5879,11 +5891,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 // Same guard as Close Sales Order — this chip is the third way into the manual pin.
                 const _chipProdOpen=unfinishedProdSummary(o);
                 if(_chipProdOpen&&!window.confirm('Mark '+o.id+' Complete?\n\n'+_chipProdOpen+'\n\nIt will drop off the production board and show as Delivered on the coach portal. Continue?'))return;
-                sv('status','complete')}}
+                const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};saveSONow(updated,'Sales order status',o.id+' marked complete')}}
               title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
               {SO_STATUS_LABELS[sf]||sf}</span>})}
           {/* _status_reverted: deliberate reopen of a completed order — lets the save past dbEngine's header-decision guard */}
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>{const updated={...o,_status_reverted:true,status:autoSt,updated_at:new Date().toLocaleString()};saveSONow(updated,'Sales order status',o.id+' reopened — status is now '+(SO_STATUS_LABELS[autoSt]||autoSt),()=>{if(onSOReopened)onSOReopened(o,autoSt)})}}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
         <div style={{marginTop:10}}>
@@ -9382,19 +9394,22 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             // the last job finishes.
             const _prodOpen=unfinishedProdSummary(o);
             const _closeOnFinal=!_prodOpen;
-            let invSaved=true;
-            if(invType==='final'&&onInvCommit){
+            let invoiceSaved=true,soCloseSaved=null;
+            if(onInvCommit){
               // Persist the invoice and WAIT — only a confirmed invoice save may close the SO.
               // A failed insert used to leave a completed SO with no invoice (unbilled work).
-              invSaved=await onInvCommit(inv);
-              if(invSaved&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};invSaved=await saveSONow(updated,'Sales order status',null)}
+              invoiceSaved=await onInvCommit(inv);
+              if(!invoiceSaved&&onInv)onInv(prev=>prev.filter(existing=>existing.id!==inv.id));
+              if(invoiceSaved&&invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};soCloseSaved=await saveSONow(updated,'Sales order status',null)}
             }else{
               onInv(prev=>[...prev,inv]);
-              if(invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};invSaved=await saveSONow(updated,'Sales order status',null)}
+              if(invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};soCloseSaved=await saveSONow(updated,'Sales order status',null)}
             }
             setShowInvCreate(false);
-            if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
-            else nf('Invoice '+inv.id+' created but NOT saved to the database — the SO was left open. The save will retry in the background; mark the SO complete once it saves.','error');
+            if(!invoiceSaved)nf('Invoice '+inv.id+' was NOT saved to the database. The SO was left open; retry the invoice save.','error');
+            else if(soCloseSaved===false)nf('Invoice '+inv.id+' was saved for $'+invTotal.toFixed(2)+', but the SO did NOT close. Do not create another invoice; retry closing the SO.','error');
+            else nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
+            if(invoiceSaved){
             // Show invoice review page instead of navigating away
             // _shipAmt is the invoice's own saved shipping, which already folds in any prior-shipping
             // carry-over — printing invShipAmt alone dropped that charge off the page (INV-64148).
@@ -9405,6 +9420,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             setInvSendMsg(greetLine(contact?.email?[contact.email]:[],cust?.contacts)+'\n\nAttached below is your invoice'+(_invJob?' for "'+_invJob+'"':'')+', totalling '+emailMoney(invTotal)+(dueDate?', due on '+dueDate:'')+'.'+(invPortalUrl?'\n\nYou can also view it anytime through your portal:\n'+invPortalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvFollowUp(seedFollowUp(inv));setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: '+(invPortalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust?.alpha_tag||'')));
+            }
             }finally{setInvCreating(false)}
           }}>{(()=>{
             const _zeroCovered=shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied});
@@ -10523,13 +10539,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
                 attachment:topstarImgs.map((u,i)=>({url:u,name:topstarAttachmentName(u,svc.deco_type,i)}))});
               }catch(e){r={ok:false,error:e.message}}
-              const completedPo=r.ok?markTopstarEmailSent(decoPO,r):markTopstarEmailFailed(decoPO,r.error);
+              const completedPo=r.ok?markTopstarEmailSent(decoPO,r):r.uncertain?{...decoPO,status:'sending',topstar_send_uncertain:true,topstar_send_error:r.error}:markTopstarEmailFailed(decoPO,r.error);
               const completed={...updated,deco_pos:(updated.deco_pos||[]).map(x=>topstarPoMatches(x,decoPO)?completedPo:x),updated_at:new Date().toLocaleString()};
               const completionSaved=await saveSONow(completed,'Topstar receipt',null);
               if(completionSaved){setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst')}
               setTopstarSending(false);
               if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
               else if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
+              else if(r.uncertain)nf('Topstar email result is uncertain. Check Brevo before retrying; do not send a duplicate.','error');
               else nf('PO created & customer billed, but email to Topstar failed: '+r.error,'error');
             }}>{topstarSending?(planOnly?'Saving…':'Sending…'):(planOnly?'🧵 Plan Digitizing PO':'🧵 Create PO & Email Topstar')}</button>
           </div>
@@ -11515,16 +11532,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
           {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={async()=>{
             if(!window.confirm('Mark '+(batchPONum||'this batch')+' as manually ordered for '+batchReadyPopup.vendorName+'? This records all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') as placed in NSA and clears the queue — you still need to place the order on Momentec\'s website.'))return;
-            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
-            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
-            // Promote this SO's own queued lines through the editor copy — App skipped them
-            // (skipSoId), so a later save from the editor can't revert the promotion.
-            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
-            if(myBatchIds.size>0){
-              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
-              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              if(!(await saveSONow(updated,'Batch purchase order',null)))return;
-            }
+            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,requirePromotionBeforeCommit:true});
+            if(!orderedNum)return;
             setBatchReadyPopup(null);
             nf('✓ '+orderedNum+' recorded as ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+') — place the order on Momentec\'s website');
           }}>✓ Mark Ordered Manually</button>}
@@ -11534,16 +11543,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           }}>🚀 Order {batchPONum||'NSA####'} via API (${liveTotal.toFixed(2)})</button>}
           {onOrderBatch&&batchReadyPopup.vendorKey!=='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={async()=>{
             if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
-            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
-            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
-            // Promote this SO's own queued lines through the editor copy — App skipped them
-            // (skipSoId), so a later save from the editor can't revert the promotion.
-            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
-            if(myBatchIds.size>0){
-              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
-              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              if(!(await saveSONow(updated,'Batch purchase order',null)))return;
-            }
+            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,requirePromotionBeforeCommit:true});
+            if(!orderedNum)return;
             setBatchReadyPopup(null);
             nf('🚀 '+orderedNum+' ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+')');
           }}>🚀 Order {batchPONum||'batch'} for {batchReadyPopup.vendorName} (${liveTotal.toFixed(2)})</button>}
@@ -13250,11 +13251,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 count_discrepancy:countDiscModal.notes||(discs.length>0?discs.map(d2=>d2.sku+' '+d2.size+': expected '+d2.expected+' got '+d2.actual).join('; '):'')
               }:jj);
               const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};
+              const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
+              const issue=discs.length>0?{id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null}:null;
               saveSONow(updated,'Count-in',discs.length?'Count-in recorded with discrepancies':'✅ Count-in recorded',()=>{
-                if(discs.length>0){
-                  const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
-                  const issue={id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null};
-                  setIssues(prev=>[issue,...prev]);
+                if(issue){
+                  window.dispatchEvent(new CustomEvent('nsa:create-issue',{detail:issue}));
                   nf('Issue '+issue.id+' created for production team');
                 }
                 setCountDiscModal(null);
@@ -13309,9 +13310,9 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
-          if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
+          const _clocksToStop2=new Set();if(_wasInProd2&&j2job)_clocksToStop2.add(j2job.id);
           let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
-          updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
+          updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id,_clocksToStop2);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
           // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
@@ -13323,7 +13324,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           // upfront can't wave an unmocked garment through to the coach.
           if(_grp.length>1&&_grpArtId)updArtFiles2=squashMockLinks(updArtFiles2,_grpArtId,_grp);
           const _an2=(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),()=>setArtReqModal(null));
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),()=>{if(onStopJobClock)_clocksToStop2.forEach(id=>onStopJobClock(o.id,id));setArtReqModal(null)});
         };
         const hasExistingReqs2=(j2.art_requests||[]).length>0;
         const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
@@ -13415,11 +13416,19 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         const _logoRaw=_ci.logoUrl||NSA.logoUrl||'/nsa-logo.svg';
         const _logoSrc=/^https?:/i.test(_logoRaw)?_logoRaw:(window.location.origin+_logoRaw);
         const _emailLogoHtml='<div style="text-align:center;padding:12px 0 18px;border-bottom:2px solid #e2e8f0;margin-bottom:18px"><img src="'+_logoSrc+'" alt="National Sports Apparel" style="max-height:60px;display:inline-block"/></div>';
+        const pendingCoachSend=(j3.sent_history||[]).find(entry=>entry?.type==='art_approval_send'&&['sending','uncertain'].includes(entry.status));
         const doSendCoach=async()=>{
+          if(pendingCoachSend){setCoachApprovalModal(m=>m?{...m,sending:false,sendPending:true}:m);nf('A coach notification is already marked in progress. Check Brevo before retrying; do not send a duplicate.','error');return}
+          setCoachApprovalModal(m=>({...m,sending:true}));
+          const sendToken=cam.sendToken||('coach-'+Date.now()+'-'+Math.random().toString(36).slice(2,8));
+          const coachMarkerId='coach-send-'+sendToken;
+          const markerOrder=oRef.current;
+          const markerJobs=safeJobs(markerOrder).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_history:[...(jj.sent_history||[]),{id:coachMarkerId,type:'art_approval_send',status:'sending',started_at:new Date().toISOString(),to:allTargets.join(', ')}]}:jj);
+          if(!(await saveSONow({...markerOrder,jobs:markerJobs,updated_at:new Date().toLocaleString()},'Coach notification',null))){setCoachApprovalModal(m=>m?{...m,sending:false}:m);return}
+          const persistCoachFailure=async(error,status='failed')=>{const failed=oRef.current;const failedJobs=safeJobs(failed).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_history:(jj.sent_history||[]).map(h=>h.id===coachMarkerId?{...h,status,failed_at:new Date().toISOString(),error}:h)}:jj);await saveSONow({...failed,jobs:failedJobs,updated_at:new Date().toLocaleString()},'Coach notification',null)};
           const actions=[];
           if(cam.sendEmail&&allTargets.length>0){
             if(_brevoKey){
-              setCoachApprovalModal(m=>({...m,sending:true}));
               // In the HTML email, show the portal link as a friendly clickable button
               // ("View your art mockup for X") instead of a bare URL. The plain-text message
               // (used for SMS and the mailto fallback) keeps the raw URL so it stays tappable there.
@@ -13430,8 +13439,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 htmlMsg=htmlMsg.split(cam.portalUrl).join(_linkBtn);
               }
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
-              if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
+              let res;try{res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined})}catch(error){await persistCoachFailure(error?.message||'Email send failed');nf('Email failed: '+(error?.message||'Unknown error'),'error');setCoachApprovalModal(m=>m?{...m,sending:false}:m);return}
+              if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{
+                await persistCoachFailure(res.error,res.uncertain?'uncertain':'failed');
+                nf((res.uncertain?'Email result is uncertain — check Brevo before retrying: ':'Email failed: ')+res.error,'error');setCoachApprovalModal(m=>m?{...m,sending:false,...(res.uncertain?{sendPending:true}:{})}:m);return;
+              }
             }else{
               const subj=encodeURIComponent(_emailSubject);
               const body=encodeURIComponent(cam.message);
@@ -13441,7 +13453,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           }
           if(cam.sendText&&cam.contact.phone){
             if(_brevoKey){
-              const smsRes=await sendBrevoSms({to:cam.contact.phone,content:cam.message.substring(0,160)});
+              let smsRes;try{smsRes=await sendBrevoSms({to:cam.contact.phone,content:cam.message.substring(0,160)})}catch(error){await persistCoachFailure(error?.message||'SMS send failed');nf('SMS failed: '+(error?.message||'Unknown error'),'error');setCoachApprovalModal(m=>m?{...m,sending:false}:m);return}
               if(smsRes.ok){actions.push('text sent to '+cam.contact.phone)}else{nf('SMS failed: '+smsRes.error,'error')}
             }else{
               const smsBody=encodeURIComponent(cam.message);
@@ -13472,12 +13484,14 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _sentMocks=[..._sentArtFiles.flatMap(a=>a.mockup_files||a.files||[]),..._sentArtFiles.flatMap(a=>Object.values(a.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_smSeen.has(u))return false;_smSeen.add(u);return true});
           const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks,...(!_confirmedSend?{draft:true}:{})};
           const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
-          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
+          const finalHist={...histEntry,id:coachMarkerId,status:_confirmedSend?'sent':actions.length?'draft':'failed',finished_at:new Date().toISOString()};
+          const updJobs3=safeJobs(curO).map((jj,i)=>{if(i!==coachApprovalModal.jIdx)return jj;const base=_confirmedSend?markPriorArtCoachSent(jj):jj;const hist=base.sent_history||[];return{...base,...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:hist.some(h=>h.id===coachMarkerId)?hist.map(h=>h.id===coachMarkerId?finalHist:h):[...hist,finalHist]}});
           const updated3={...curO,jobs:updJobs3,updated_at:new Date().toLocaleString()};
-          setCoachApprovalModal(null);
-          await saveSONow(updated3,'Send to coach',null);
-          if(_confirmedSend)nf('Sent to coach — '+actions.join(' + '));
-          else nf(actions.length>0?'⚠️ '+actions.join(' + ')+' — finish sending from your mail app. Job NOT marked as sent (no delivery confirmation).':'No notification method selected — job NOT marked as sent','error');
+          const receiptSaved=await saveSONow(updated3,'Send to coach',null,()=>{setCoachApprovalModal(null);
+            if(_confirmedSend)nf('Sent to coach — '+actions.join(' + '));
+            else nf(actions.length>0?'⚠️ '+actions.join(' + ')+' — finish sending from your mail app. Job NOT marked as sent (no delivery confirmation).':'No notification method selected — job NOT marked as sent','error');
+          });
+          if(!receiptSaved){setCoachApprovalModal(m=>m?{...m,sending:false,sentUnrecorded:_confirmedSend}:m);if(_confirmedSend)nf('Coach notification was delivered, but its receipt is still unsaved. Do NOT resend; keep this tab open and retry Save.','error')}
         };
         return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCoachApprovalModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white'}}>
@@ -13545,9 +13559,12 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             <FollowUpAutoPanel value={cam.followUp} onChange={val=>setCoachApprovalModal(m=>({...m,followUp:val}))} defaultMessage={greetLine(allTargets,cam.contacts)+'\n\nJust a friendly reminder that your artwork mockup for "'+_emailLabel+'" is ready for your review and approval. We can\'t move it into production until it\'s approved — let us know if you\'d like any changes!\n\n'+(cu.name||'National Sports Apparel')+'\nNational Sports Apparel'}/>
           </div>
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {(pendingCoachSend||cam.sendPending)&&<div style={{width:'100%',padding:'9px 12px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:6,color:'#92400e',fontSize:12,fontWeight:700}}>A prior coach send is still marked in progress. Check Brevo before retrying; do not send a duplicate.</div>}
+            {cam.sentUnrecorded&&<div style={{width:'100%',padding:'9px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:12,fontWeight:700}}>Notification delivered, but the portal receipt is still unsaved. Do not resend. Keep this tab open and use Save.</div>}
             <button className="btn btn-secondary" onClick={()=>setCoachApprovalModal(null)}>Cancel</button>
-            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px',opacity:(!cam.sendEmail&&!cam.sendText)||cam.sending?0.5:1}} disabled={(!cam.sendEmail&&!cam.sendText)||cam.sending||(cam.sendEmail&&allTargets.length===0)} onClick={doSendCoach}>
-              {cam.sending?'Sending...':((cam.sendEmail&&cam.sendText)?'Send Email + Text':(cam.sendEmail?('Send Email to '+allTargets.length+' recipient'+(allTargets.length!==1?'s':'')):'Send Text'))}
+            {pendingCoachSend&&<button className="btn btn-secondary" onClick={async()=>{if(!window.confirm('Only clear this marker after confirming in Brevo that the notification was NOT sent. Continue?'))return;const cur=oRef.current;const updJobs=safeJobs(cur).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_history:(jj.sent_history||[]).map(h=>h.id===pendingCoachSend.id?{...h,status:'failed',cleared_at:new Date().toISOString(),error:'Confirmed not sent by user'}:h)}:jj);if(await saveSONow({...cur,jobs:updJobs,updated_at:new Date().toLocaleString()},'Coach notification marker',null))setCoachApprovalModal(m=>m?{...m,sendPending:false}:m)}}>I Confirmed It Was Not Sent</button>}
+            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px',opacity:(!cam.sendEmail&&!cam.sendText)||cam.sending||cam.sentUnrecorded||pendingCoachSend||cam.sendPending?0.5:1}} disabled={(!cam.sendEmail&&!cam.sendText)||cam.sending||cam.sentUnrecorded||!!pendingCoachSend||cam.sendPending||(cam.sendEmail&&allTargets.length===0)} onClick={doSendCoach}>
+              {pendingCoachSend||cam.sendPending?'Send pending — check Brevo':cam.sentUnrecorded?'Sent — receipt pending':cam.sending?'Sending...':((cam.sendEmail&&cam.sendText)?'Send Email + Text':(cam.sendEmail?('Send Email to '+allTargets.length+' recipient'+(allTargets.length!==1?'s':'')):'Send Text'))}
             </button>
           </div>
         </div></div>
@@ -14514,9 +14531,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
-          if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
+          const _clocksToStop3=new Set();if(_wasInProd3&&j)_clocksToStop3.add(j.id);
           let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
-          updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
+          updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id,_clocksToStop3);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
           // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
@@ -14528,7 +14545,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // upfront can't wave an unmocked garment through to the coach.
           if(_grp.length>1&&_grpArtId)updArtFiles3=squashMockLinks(updArtFiles3,_grpArtId,_grp);
           const _an3=(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),()=>setArtReqModal(null));
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),()=>{if(onStopJobClock)_clocksToStop3.forEach(id=>onStopJobClock(o.id,id));setArtReqModal(null)});
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
@@ -15615,6 +15632,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     subject:'PO '+po.po_id+' from National Sports Apparel',
                     message:defaultMsg,
                     sending:false,
+                    sendPending:['sending','uncertain'].includes(po._email_send?.state),
+                    sendToken:po._email_send?.token||null,
                     docOpts:_makePoDocOpts(),
                     filename:_pdfFilename,
                     vendorName:vendor,
@@ -15755,11 +15774,26 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           <label className="form-label" style={{fontSize:11}}>Message</label>
           <textarea className="form-input" rows={9} value={poEmail.message} onChange={e=>setPoEmail(p=>({...p,message:e.target.value}))} style={{fontSize:12,resize:'vertical',fontFamily:'inherit'}}/>
         </div>
+        {poEmail.sendPending&&<div style={{marginTop:10,padding:'9px 12px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:6,color:'#92400e',fontSize:12,fontWeight:700}}>A prior vendor email is still marked in progress. Check Brevo before retrying; do not send a duplicate.</div>}
+        {poEmail.sentUnrecorded&&<div style={{marginTop:10,padding:'9px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:12,fontWeight:700}}>The vendor email was delivered, but its portal history is still unsaved. Do not resend. Keep this tab open and retry the receipt save.</div>}
       </div>
       <div className="modal-footer">
-        <button className="btn btn-secondary" disabled={poEmail.sending} onClick={()=>setPoEmail(null)}>Cancel</button>
-        <button className="btn btn-primary" disabled={poEmail.sending||!poEmail.to||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(poEmail.to.trim())} onClick={async()=>{
+        <button className="btn btn-secondary" disabled={poEmail.sending||poEmail.sentUnrecorded} onClick={()=>setPoEmail(null)}>Cancel</button>
+        {poEmail.sendPending&&<button className="btn btn-secondary" onClick={async()=>{if(!window.confirm('Only clear this marker after confirming in Brevo that the vendor email was NOT sent. Continue?'))return;const live=oRef.current;const items=safeItems(live).map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:(it.po_lines||[]).map((p,j)=>j===poEmail.poIdx?{...p,_email_send:{...(p._email_send||{}),state:'failed',cleared_at:new Date().toISOString(),error:'Confirmed not sent by user'}}:p)}:it);if(await saveSONow({...live,items,updated_at:new Date().toLocaleString()},'Purchase order email marker',null)){poEmailSendRef.current=false;setPoEmail(p=>p?{...p,sendPending:false}:p)}}}>I Confirmed It Was Not Sent</button>}
+        {poEmail.sentUnrecorded&&<button className="btn btn-secondary" onClick={()=>saveSONow(oRef.current,'Purchase order email','PO '+poEmail.poId+' email receipt saved',()=>{poEmailSendRef.current=false;setPoEmail(null)})}>Retry Saving Receipt</button>}
+        <button className="btn btn-primary" disabled={poEmail.sending||poEmail.sendPending||poEmail.sentUnrecorded||!poEmail.to||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(poEmail.to.trim())} onClick={async()=>{
+          if(poEmailSendRef.current||poEmail.sendPending||poEmail.sentUnrecorded)return;
+          poEmailSendRef.current=true;
           setPoEmail(p=>({...p,sending:true}));
+          const sendToken=poEmail.sendToken||('po-email-'+Date.now()+'-'+Math.random().toString(36).slice(2,8));
+          const current=oRef.current;
+          const markerItems=safeItems(current).map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:(it.po_lines||[]).map((p,j)=>j===poEmail.poIdx?{...p,_email_send:{token:sendToken,state:'sending',started_at:new Date().toISOString(),to:poEmail.to.trim()}}:p)}:it);
+          const markerOrder={...current,items:markerItems,updated_at:new Date().toLocaleString()};
+          if(!(await saveSONow(markerOrder,'Purchase order email',null))){poEmailSendRef.current=false;setPoEmail(p=>p?{...p,sending:false}:p);return}
+          const persistEmailFailure=async(error,state='failed')=>{
+            const live=oRef.current;const items=safeItems(live).map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:(it.po_lines||[]).map((p,j)=>j===poEmail.poIdx?{...p,_email_send:{token:sendToken,state,failed_at:new Date().toISOString(),error}}:p)}:it);
+            await saveSONow({...live,items,updated_at:new Date().toLocaleString()},'Purchase order email',null);
+          };
           try{
             const attach=await buildPdfAttachment(poEmail.docOpts,poEmail.filename);
             const html=buildBrandedEmailHtml('<div style="white-space:pre-wrap">'+poEmail.message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>',_ci);
@@ -15773,21 +15807,26 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               attachment:[attach],
             });
             if(res.ok){
-              nf('PO '+poEmail.poId+' emailed to '+poEmail.to);
               // Record send on the PO line so it shows in history.
               const sentEntry={sent_at:new Date().toLocaleString(),sent_by:cu?.name||cu?.id||'',to:poEmail.to,method:'email',messageId:res.messageId||null};
-              const updatedItems=o.items.map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poEmail.poIdx?{...p,email_history:[...(p.email_history||[]),sentEntry]}:p)}:it);
-              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order email',null,()=>setPoEmail(null));
+              const live=oRef.current;const updatedItems=safeItems(live).map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:(it.po_lines||[]).map((p,j)=>j===poEmail.poIdx?{...p,email_history:[...(p.email_history||[]),sentEntry],_email_send:{token:sendToken,state:'sent',sent_at:new Date().toISOString(),message_id:res.messageId||null}}:p)}:it);
+              const updated={...live,items:updatedItems,updated_at:new Date().toLocaleString()};
+              const receiptSaved=await saveSONow(updated,'Purchase order email','PO '+poEmail.poId+' emailed to '+poEmail.to,()=>{poEmailSendRef.current=false;setPoEmail(null)});
+              if(!receiptSaved){setPoEmail(p=>p?{...p,sending:false,sentUnrecorded:true,messageId:res.messageId||null}:p);nf('The vendor email was delivered, but its history is still unsaved. Do NOT resend; retry saving the receipt.','error')}
             }else{
-              nf('Failed to send: '+(res.error||'Unknown error'),'error');
-              setPoEmail(p=>({...p,sending:false}));
+              await persistEmailFailure(res.error||'Unknown error',res.uncertain?'uncertain':'failed');
+              if(!res.uncertain)poEmailSendRef.current=false;
+              nf((res.uncertain?'Email result is uncertain — check Brevo before retrying: ':'Failed to send: ')+(res.error||'Unknown error'),'error');
+              setPoEmail(p=>({...p,sending:false,...(res.uncertain?{sendPending:true}:{})}));
             }
           }catch(err){
             console.warn('PO email send failed:',err);
+            await persistEmailFailure(err?.message||'unknown');
+            poEmailSendRef.current=false;
             nf('Send failed: '+(err?.message||'unknown'),'error');
             setPoEmail(p=>({...p,sending:false}));
           }
-        }}>{poEmail.sending?'Sending...':'📧 Send Email'}</button>
+        }}>{poEmail.sendPending?'Send pending — check Brevo':poEmail.sentUnrecorded?'Sent — receipt pending':poEmail.sending?'Sending...':'📧 Send Email'}</button>
       </div>
     </div></div>}
 
@@ -15814,11 +15853,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         // sum of (item qty × item rate) so downstream totals stay correct for mixed rates.
         const _rowRate=ii=>dp.item_costs&&dp.item_costs[ii]!=null?safeNum(dp.item_costs[ii]):_rate;
         const _hasPerItem=!!(dp.item_costs&&Object.keys(dp.item_costs).length>0);
-        const _saveDp=(updatedDp,msg)=>{
+        const _saveDp=async(updatedDp,msg)=>{
           let updated;
           try{updated=reviseDecoPO(oRef.current||o,dp,updatedDp,{actor:cu?.name||'Rep',artStatusForFile,activeProd:_activeProd})}catch(err){nf(err.message,'error');return false}
-          saveSONow(updated,'Decoration purchase order',msg||null,()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
-          return true;
+          return saveSONow(updated,'Decoration purchase order',msg||null,()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
         };
         // Commit a per-item rate override, pruning empties and re-deriving expected_cost.
         const _setRowCost=(ii,val)=>{
@@ -15843,9 +15881,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const qtyDrift=dp.po_mode!=='dtf_purchase'&&coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
-        const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
+        const _addTrack=async()=>{const tn=decoTrackAdd.trim();if(!tn)return;
           if((dp.tracking_numbers||[]).includes(tn)){nf('Tracking number already on this PO','error');return}
-          _saveDp({...dp,tracking_numbers:[...(dp.tracking_numbers||[]),tn]},'Added tracking '+tn);setDecoTrackAdd('')};
+          if(await _saveDp({...dp,tracking_numbers:[...(dp.tracking_numbers||[]),tn]},'Added tracking '+tn))setDecoTrackAdd('')};
         const DECO_STATUSES=[['planned','Planned (not ordered)'],['sending','Email sending'],['email_failed','Email failed'],['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
         const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
         const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
@@ -15946,9 +15984,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',po_mode:dp.topstar_service?dp.po_mode:(dp.po_mode||'send_items'),qty:String(dp.qty||0),art_file_ids:[...(dp.art_file_ids||[])],drop_ship:!!dp.drop_ship,notes:dp.notes||''})}>✎ Edit PO</button>}
-              {isTopstar&&['planned','sending','email_failed'].includes(dp.status)&&!editingPo&&<button className="btn btn-sm btn-primary" disabled={topstarSending} style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">{topstarSending?'Sending…':dp.status==='planned'?'🧵 Send to Topstar':'↻ Retry Topstar Email'}</button>}
+              {isTopstar&&['planned','email_failed'].includes(dp.status)&&!editingPo&&<button className="btn btn-sm btn-primary" disabled={topstarSending} style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">{topstarSending?'Sending…':dp.status==='planned'?'🧵 Send to Topstar':'↻ Retry Topstar Email'}</button>}
+              {isTopstar&&dp.status==='sending'&&!editingPo&&<span style={{display:'inline-flex',gap:6,alignItems:'center',padding:'4px 8px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:700}}>Topstar email pending — check Brevo before retrying.<button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Only clear this marker after confirming in Brevo that the Topstar email was NOT sent. Continue?'))return;const failed=markTopstarEmailFailed(dp,'Confirmed not sent by user');const updated={...oRef.current,deco_pos:(oRef.current.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?failed:x),updated_at:new Date().toLocaleString()};saveSONow(updated,'Topstar email marker',null)}}>I Confirmed It Was Not Sent</button></span>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
+                if(['sending','uncertain'].includes(dp._silverscreen_send?.state))return <span style={{display:'inline-flex',gap:6,alignItems:'center',padding:'4px 8px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:700}}>Silver Screen send pending — check their portal before retrying.<button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Only clear this marker after confirming on the Silver Screen portal that the job was NOT created. Continue?'))return;const cleared={...dp,_silverscreen_send:{...dp._silverscreen_send,state:'failed',cleared_at:new Date().toISOString(),error:'Confirmed not created by user'}};const updated={...oRef.current,deco_pos:(oRef.current.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?cleared:x),updated_at:new Date().toLocaleString()};saveSONow(updated,'Silver Screen marker',null)}}>I Confirmed It Was Not Created</button></span>;
                 // Already sent: show the job chip, plus a re-send. A first attempt can land
                 // incomplete (their create form is only the order header), so the rep needs a way
                 // to submit a fresh job without hand-editing the PO — this creates a NEW draft on
@@ -16061,7 +16101,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   <span style={{color:'#64748b'}}>{_draftTotals.qty||0} units · <strong style={{color:'#166534'}}>${(Number.isFinite(_draftTotals.expected_cost)?_draftTotals.expected_cost:0).toFixed(2)} expected</strong>{_hasPerItem?' (includes per-item rates)':''}</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:8}}>
                     <button className="btn btn-sm btn-secondary" onClick={()=>setDecoEditPo(null)}>Cancel</button>
-                    <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+                    <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
                       const finalVendor=decoEditPo.vendor==='Other'?decoEditPo.customVendor.trim():decoEditPo.vendor;
                       const newPoId=decoEditPo.po_id.trim();
                       if(!newPoId){nf('PO number cannot be empty','error');return}
@@ -16070,7 +16110,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       const dv=decoVendors.find(v=>v.name===finalVendor);
                       const purchase=decoEditPo.po_mode==='dtf_purchase';
                       const updatedDp={...dp,po_mode:decoEditPo.po_mode,qty:_draftTotals.qty,art_file_ids:decoEditPo.art_file_ids,item_costs:dp.item_costs,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_draftTotals.expected_cost,drop_ship:!purchase&&decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
-                      if(_saveDp(updatedDp,'✎ Updated '+newPoId))setDecoEditPo(null);
+                      if(await _saveDp(updatedDp,'✎ Updated '+newPoId))setDecoEditPo(null);
                     }}>Save Details</button>
                   </div>
                 </div>
@@ -16091,13 +16131,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 :<div style={{display:'flex',gap:6,alignItems:'center'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};editableItems.forEach(it=>{sel[it._idx]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>Select All</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setDecoEditItems(null)}>Cancel</button>
-                  <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+                  <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
                     const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
                     if(itemIdxs.length===0&&dp.po_mode!=='dtf_purchase'){nf('Pick at least one item for this PO','error');return}
                     // Drop per-item rate overrides for items no longer on the PO.
                     const prunedCosts=dp.item_costs?Object.fromEntries(Object.entries(dp.item_costs).filter(([k])=>itemIdxs.includes(Number(k)))):null;
                     const updatedDp={...dp,item_idxs:itemIdxs,qty:dp.po_mode==='dtf_purchase'?dp.qty:newQty,expected_cost:dp.po_mode==='dtf_purchase'?dp.expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
-                    const saved=_saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
+                    const saved=await _saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
                     if(saved)setDecoEditItems(null);
                   }}>Save Items</button>
                 </div>}

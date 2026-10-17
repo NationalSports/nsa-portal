@@ -34,6 +34,14 @@ describe('confirmedEditorSave', () => {
     )).resolves.toBe(false);
     consoleError.mockRestore();
   });
+
+  test('forwards retry confirmation callbacks to the durable save', async () => {
+    const onConfirmed = jest.fn();
+    const onSaveNow = jest.fn().mockResolvedValue(true);
+    const updated = { id: 'SO-1' };
+    await confirmedEditorSave(updated, { onSaveNow, saveOptions: { onConfirmed } });
+    expect(onSaveNow).toHaveBeenCalledWith(updated, { onConfirmed });
+  });
 });
 
 describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s confirmed action wiring', file => {
@@ -49,12 +57,11 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s confirmed action 
 
   test('user actions do not update local state and fire onSave directly', () => {
     expect(source).not.toMatch(/setO\([^\n]+\);onSave\(/);
-    // The only legacy call left is background server-copy repair, not a user action.
-    expect(source.match(/onSave\s*\(/g)).toHaveLength(1);
+    expect(source.match(/onSave\s*\(/g) || []).toHaveLength(0);
   });
 
   test('uses the shared strict acknowledgement helper', () => {
-    expect(source).toContain("confirmedEditorSave(updated,{onSaveNow,onSave})");
-    expect(source).toContain('if(ok===true&&onConfirmed)onConfirmed();');
+    expect(source).toContain("confirmedEditorSave(updated,{onSaveNow,onSave,saveOptions:{onConfirmed:acknowledge}})");
+    expect(source).toContain('if(!followUpRan){followUpRan=true;if(onConfirmed)onConfirmed()}');
   });
 });

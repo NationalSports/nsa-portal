@@ -93,9 +93,10 @@ describe('sendBrevoEmail — transport failures are actionable', () => {
     global.fetch = jest.fn(blocked);
     const r = await sendBrevoEmail(MAIL);
     expect(r.ok).toBe(false);
+    expect(r.uncertain).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(r.error).toMatch(/blocked before it left your browser/i);
-    expect(r.error).toMatch(/ad blocker/i);
+    expect(r.error).toMatch(/did not confirm the result/i);
+    expect(r.error).toMatch(/check Brevo before retrying/i);
   });
 
   test('oversized payload is caught before the request is fired', async () => {

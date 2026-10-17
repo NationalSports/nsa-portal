@@ -31,6 +31,12 @@ test('artwork-file save carries the active ownership fence',async()=>{
  const result=await latest.onSaveArtFiles({...latest.order,art_files:[{id:'art-1'}]});
  expect(result).toBe(true);expect(saveArt.mock.calls[0][0]).toMatchObject({art_files:[{id:'art-1'}],_editLease:{generation:1}});
 });
+test('result-checked save forwards retry confirmation options through the lease gate',async()=>{
+ await render();await click('Edit order');const onConfirmed=jest.fn();
+ await latest.onSaveNow({...latest.order,memo:'retry-safe'},{onConfirmed});
+ expect(saved.mock.calls[0][0]).toMatchObject({memo:'retry-safe',_editLease:{generation:1}});
+ expect(saved.mock.calls[0][1]).toEqual({onConfirmed});
+});
 test('takeover notification freezes mounted editor and blocks a retained callback',async()=>{
  const preserve=jest.fn().mockResolvedValue({});const ref={current:null};const saveArt=jest.fn().mockResolvedValue(true);await render({recoveryEditorRef:ref,onSaveArtFiles:saveArt});await click('Edit order');
  ref.current={preserve};const previous=latest;await act(async()=>window.dispatchEvent(new CustomEvent('nsa:edit-lease-lost',{detail:{id:'SO-1',session:latest.order._editLease.session}})));

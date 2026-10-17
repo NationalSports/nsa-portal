@@ -176,7 +176,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     const{res:r,netErr}=await mailProxyFetch('',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body});
     // fetch() itself threw on both paths: the request never left the browser (or died on
     // the wire). Name the usual cause instead of surfacing a bare "Failed to fetch".
-    if(netErr)return{ok:false,error:'Could not reach the mail server — the request was blocked before it left your browser. This is almost always an ad blocker, privacy extension, or network/DNS filter. Try again with extensions disabled (or in an incognito window), or on a different network. ('+(netErr.message||'network error')+')'};
+    if(netErr)return{ok:false,uncertain:true,error:'The mail server did not confirm the result. Check Brevo before retrying because the email may already have been sent. ('+(netErr.message||'network error')+')'};
     const d=await r.json().catch(()=>({}));// 413s and gateway errors come back with no JSON body
     if(!r.ok){
       // authFetch already retried once with a hard session refresh; a 401 that
@@ -184,7 +184,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
       // elsewhere, revoked, etc.) rather than just a stale-token blip.
       if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
       if(r.status===413)return{ok:false,error:'This email is too large to send. Remove or shrink the attachments and send again.'};
-      return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
+      return{ok:false,uncertain:d.uncertain===true||r.status>=500,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
     }
     return{ok:true,messageId:d.messageId,via:d.via,from:d.from}}
   catch(e){return{ok:false,error:e.message}}

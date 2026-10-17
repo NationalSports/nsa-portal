@@ -63,8 +63,10 @@ export function EnabledSalesOrderEditGate({editor:Editor,...props}) {
     finally{if(mounted.current)setBusy(false)}
   };
   const blocked=()=>{props.nf?.('Editing is paused. Your draft is kept; reopen the saved order before continuing.','error');return false};
-  const save=fn=>payload=>{
-    const stamped=lease.stamp(payload);return stamped&&fn?fn(stamped):blocked();
+  const save=fn=>(payload,options)=>{
+    const stamped=lease.stamp(payload);
+    if(stamped&&options)Object.defineProperty(stamped,'__editorSaveOptions',{value:options,configurable:true});
+    return stamped&&fn?fn(stamped,options):blocked();
   };
   const back=async()=>{
     if(busy)return;
