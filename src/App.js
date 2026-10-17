@@ -27197,11 +27197,13 @@ export default function App(){
       // branch also cleared preflight + initialMigrationApproved, which put the supplier-bill
       // push back into one-bill canary mode for every browser: 126 bills ($57.9K) sat applied
       // in the Portal but not in QuickBooks while the daily email kept asking Andrea to push.
-      if(r.status===409){
+      // qb-api also answers 409 with code NOT_CONNECTED when no token is stored at all — that one
+      // IS a disconnect and falls through to the branch below.
+      if(r.status===409&&d?.code!=='NOT_CONNECTED'){
         nf(d?.error||'QuickBooks writes for this record are handled by the hourly server sync','error');
         return null;
       }
-      if(r.status===401){
+      if(r.status===401||r.status===409){
         // The token is gone: drop connected + preflight (preflight re-verifies the company before
         // any push). The owner's migration approval is a reviewed decision and is NOT a token;
         // it is reset only when the connection moves to a different QuickBooks company

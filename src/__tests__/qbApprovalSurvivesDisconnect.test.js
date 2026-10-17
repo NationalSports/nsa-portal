@@ -36,15 +36,15 @@ describe('QuickBooks approval survives transient disconnects', () => {
     expect(fn(null, '9341')).toBe(false);
   });
 
-  test('a qb-api 409 (server owns the write) is a message, not a disconnect', () => {
-    const b = block(/if\(r\.status===409\)\{/, 'if(r.status===401){');
+  test('a qb-api 409 from the ownership guard is a message, not a disconnect', () => {
+    const b = block(/if\(r\.status===409&&d\?\.code!=='NOT_CONNECTED'\)\{/, 'if(r.status===401||r.status===409){');
     expect(b).not.toMatch(/setQBConfig/);
     expect(b).not.toMatch(/initialMigrationApproved/);
     expect(b).toMatch(/return null/);
   });
 
-  test('a qb-api 401 drops connected + preflight but keeps the approval', () => {
-    const b = block(/if\(r\.status===401\)\{/, 'return d;');
+  test('a 401, or a 409 with code NOT_CONNECTED, drops connected + preflight but keeps the approval', () => {
+    const b = block(/if\(r\.status===401\|\|r\.status===409\)\{/, 'return d;');
     expect(b).toMatch(/connected:false/);
     expect(b).toMatch(/preflight:null/);
     expect(b).not.toMatch(/initialMigrationApproved/);
