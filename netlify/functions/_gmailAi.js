@@ -1,15 +1,25 @@
 const SALES_EMAIL = (process.env.GMAIL_AI_INBOX || 'sales@nationalsportsapparel.com').toLowerCase();
 const GMAIL_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me';
+const AI_MAILBOXES = ['stores@nationalsportsapparel.com', 'hello@nationalsportsapparel.com'];
+const tokenMailboxes = new Map();
+function mailboxConfig(email) {
+  if (!AI_MAILBOXES.includes(email)) throw new Error('Unsupported AI mailbox');
+  const prefix = email.startsWith('stores@') ? 'GMAIL_STORES' : 'GMAIL_HELLO';
+  return { email, clientId: process.env[`${prefix}_CLIENT_ID`] || process.env.GMAIL_CLIENT_ID,
+    clientSecret: process.env[`${prefix}_CLIENT_SECRET`] || process.env.GMAIL_CLIENT_SECRET,
+    refreshToken: process.env[`${prefix}_REFRESH_TOKEN`] };
+}
 
 const b64url = (value) => Buffer.from(value).toString('base64url');
 const fromB64url = (value) => Buffer.from(String(value || ''), 'base64url').toString('utf8');
 const cleanHeader = (value) => String(value || '').replace(/[\r\n]+/g, ' ').trim();
 const wrapBase64 = (value) => String(value || '').replace(/\s+/g, '').match(/.{1,76}/g)?.join('\r\n') || '';
 
-async function getAccessToken() {
-  const clientId = process.env.GMAIL_CLIENT_ID;
-  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
-  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+async function getAccessToken(email = SALES_EMAIL) {
+  const config = AI_MAILBOXES.includes(email) ? mailboxConfig(email) : null;
+  const clientId = config ? config.clientId : process.env.GMAIL_CLIENT_ID;
+  const clientSecret = config ? config.clientSecret : process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = config ? config.refreshToken : process.env.GMAIL_REFRESH_TOKEN;
   if (!clientId || !clientSecret || !refreshToken) {
     throw new Error('Gmail OAuth is not configured');
   }
@@ -27,7 +37,8 @@ async function getAccessToken() {
   if (!response.ok || !data.access_token) {
     throw new Error(`Gmail token refresh failed (${response.status}): ${data.error_description || data.error || 'unknown error'}`);
   }
-  await assertAuthorizedMailbox(data.access_token);
+  await assertAuthorizedMailbox(data.access_token, email);
+  tokenMailboxes.set(data.access_token, email);
   return data.access_token;
 }
 
@@ -48,13 +59,13 @@ async function gmailFetch(token, path, options = {}) {
   return data;
 }
 
-async function assertAuthorizedMailbox(token) {
+async function assertAuthorizedMailbox(token, expectedEmail = SALES_EMAIL) {
   const profile = await gmailFetch(token, '/profile');
   const authorizedEmail = String(profile.emailAddress || '').trim().toLowerCase();
-  if (authorizedEmail !== SALES_EMAIL) {
+  if (authorizedEmail !== expectedEmail) {
     throw new Error(
-      `Gmail OAuth is authorized as ${authorizedEmail || 'an unknown account'}; expected ${SALES_EMAIL}. ` +
-      `Re-authorize while signed into ${SALES_EMAIL}.`
+      `Gmail OAuth is authorized as ${authorizedEmail || 'an unknown account'}; expected ${expectedEmail}. ` +
+      `Re-authorize while signed into ${expectedEmail}.`
     );
   }
   return profile;
@@ -137,13 +148,14 @@ function parseMessage(message) {
   };
 }
 
-function isAddressedToSales(message) {
+function isAddressedToSales(message, email = SALES_EMAIL) {
   return Array.isArray(message?.to_emails) &&
-    message.to_emails.some((email) => String(email || '').trim().toLowerCase() === SALES_EMAIL);
+    message.to_emails.some((recipient) => String(recipient || '').trim().toLowerCase() === email);
 }
 
 async function listInboxMessages(token, maxResults = 20) {
-  const query = encodeURIComponent(`in:inbox newer_than:30d to:${SALES_EMAIL} -from:${SALES_EMAIL}`);
+  const email = tokenMailboxes.get(token) || SALES_EMAIL;
+  const query = encodeURIComponent(`in:inbox newer_than:30d to:${email} -from:${email}`);
   const data = await gmailFetch(token, `/messages?q=${query}&maxResults=${Math.min(100, maxResults)}`);
   return data.messages || [];
 }
@@ -208,9 +220,12 @@ function buildMime({ to, subject, text, html, inReplyTo, references, attachments
 }
 
 async function createReplyDraft(token, message, payload) {
+  const email = tokenMailboxes.get(token) || SALES_EMAIL;
+  if (message.mailbox_email && message.mailbox_email !== email) throw new Error('Reply mailbox mismatch');
   const subject = /^re:/i.test(payload.subject || '') ? payload.subject : `Re: ${payload.subject || message.subject || ''}`;
   const references = [message.references_header, message.internet_message_id].filter(Boolean).join(' ').trim();
   const raw = buildMime({
+    from: `National Sports Apparel <${email}>`,
     to: message.sender_email,
     subject,
     text: payload.text,
@@ -231,9 +246,12 @@ async function createReplyDraft(token, message, payload) {
 }
 
 async function sendReply(token, message, payload) {
+  const email = tokenMailboxes.get(token) || SALES_EMAIL;
+  if (message.mailbox_email && message.mailbox_email !== email) throw new Error('Reply mailbox mismatch');
   const subject = /^re:/i.test(payload.subject || '') ? payload.subject : `Re: ${payload.subject || message.subject || ''}`;
   const references = [message.references_header, message.internet_message_id].filter(Boolean).join(' ').trim();
   const raw = buildMime({
+    from: `National Sports Apparel <${email}>`,
     to: payload.to || message.sender_email,
     subject,
     text: payload.text,
@@ -252,6 +270,8 @@ async function sendReply(token, message, payload) {
 }
 
 module.exports = {
+  AI_MAILBOXES,
+  mailboxConfig,
   SALES_EMAIL,
   assertAuthorizedMailbox,
   getAccessToken,

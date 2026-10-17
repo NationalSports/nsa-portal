@@ -3,6 +3,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const SECRET_KEYS: Record<string, string> = (() => {
+  try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}"); } catch { return {}; }
+})();
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
 const MODEL = Deno.env.get("AI_EMAIL_ASSISTANT_MODEL") || "claude-sonnet-4-6";
 
@@ -110,7 +113,9 @@ Rules:
 serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   const authorization = req.headers.get("Authorization") || "";
-  if (!SERVICE_ROLE_KEY || authorization !== `Bearer ${SERVICE_ROLE_KEY}`) {
+  const apiKey = req.headers.get("apikey") || "";
+  const allowedKeys = [SERVICE_ROLE_KEY, ...Object.values(SECRET_KEYS)].filter(Boolean);
+  if (!allowedKeys.some(key => authorization === `Bearer ${key}` && apiKey === key)) {
     return json({ error: "Unauthorized" }, 401);
   }
   if (!SUPABASE_URL || !ANTHROPIC_API_KEY) {

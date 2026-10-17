@@ -4,6 +4,7 @@ const {
   buildMime,
   getAccessToken,
   sendReply,
+  mailboxConfig,
 } = require('../../netlify/functions/_gmailAi');
 const {
   extractForwardedMessage,
@@ -51,6 +52,14 @@ test('only messages explicitly addressed To: sales trigger the agent', () => {
   expect(isAddressedToSales({
     to_emails: ['sales-alias@nationalsportsapparel.com'],
   })).toBe(false);
+});
+
+test('Stores and Hello route separately and personal mailboxes are rejected', () => {
+  expect(mailboxConfig('stores@nationalsportsapparel.com').email).toBe('stores@nationalsportsapparel.com');
+  expect(() => mailboxConfig('steve@nationalsportsapparel.com')).toThrow('Unsupported AI mailbox');
+  const hello = { to_emails: ['hello@nationalsportsapparel.com'], cc_emails: ['stores@nationalsportsapparel.com'] };
+  expect(isAddressedToSales(hello, 'hello@nationalsportsapparel.com')).toBe(true);
+  expect(isAddressedToSales(hello, 'stores@nationalsportsapparel.com')).toBe(false);
 });
 
 test('buildMime creates a threaded multipart reply with a PDF attachment', () => {

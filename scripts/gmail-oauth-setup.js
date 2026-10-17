@@ -27,8 +27,10 @@ const scopes = [
   'https://www.googleapis.com/auth/gmail.compose',
 ];
 const expectedMailbox = String(
-  process.env.GMAIL_AI_INBOX || 'sales@nationalsportsapparel.com'
+  process.env.GMAIL_AI_INBOX || 'stores@nationalsportsapparel.com'
 ).trim().toLowerCase();
+if (!['stores@nationalsportsapparel.com', 'hello@nationalsportsapparel.com'].includes(expectedMailbox)) throw new Error('Choose Stores or Hello using GMAIL_AI_INBOX');
+const mailboxPrefix = expectedMailbox.startsWith('stores@') ? 'GMAIL_STORES' : 'GMAIL_HELLO';
 
 if (!clientId || !clientSecret) {
   console.error(
@@ -94,14 +96,11 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end(`NSA Portal Gmail authorization complete for ${expectedMailbox}. Return to the terminal.`);
-    const outputPath = path.join(__dirname, '.env');
-    const syncSecret = crypto.randomBytes(32).toString('hex');
+    const outputPath = path.join(__dirname, `.${mailboxPrefix.toLowerCase()}.env`);
     const envFile = [
-      `GMAIL_CLIENT_ID=${clientId}`,
-      `GMAIL_CLIENT_SECRET=${clientSecret}`,
-      `GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`,
-      `GMAIL_AI_INBOX=${expectedMailbox}`,
-      `GMAIL_AI_SYNC_SECRET=${syncSecret}`,
+      `${mailboxPrefix}_CLIENT_ID=${clientId}`,
+      `${mailboxPrefix}_CLIENT_SECRET=${clientSecret}`,
+      `${mailboxPrefix}_REFRESH_TOKEN=${tokens.refresh_token}`,
       '',
     ].join('\n');
     fs.writeFileSync(outputPath, envFile, { mode: 0o600 });

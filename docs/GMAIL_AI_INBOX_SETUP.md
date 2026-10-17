@@ -1,5 +1,40 @@
 # Gmail AI Inbox setup
 
+## Shared Stores / Hello / webstore workflow
+
+The AI worker now monitors only `stores@nationalsportsapparel.com` and
+`hello@nationalsportsapparel.com`. Each requires its own Google authorization.
+The existing generic Gmail credentials remain separate for other email features.
+
+Run the OAuth helper once for each account, using the downloaded Desktop OAuth JSON:
+
+```bash
+GMAIL_AI_INBOX=stores@nationalsportsapparel.com node scripts/gmail-oauth-setup.js /path/to/client.json
+GMAIL_AI_INBOX=hello@nationalsportsapparel.com node scripts/gmail-oauth-setup.js /path/to/client.json
+```
+
+Import the resulting private `.gmail_stores.env` and `.gmail_hello.env` files into
+Netlify Functions environment variables. They contain separate
+`GMAIL_STORES_CLIENT_ID`, `GMAIL_STORES_CLIENT_SECRET`, `GMAIL_STORES_REFRESH_TOKEN`
+and the equivalent `GMAIL_HELLO_*` credentials. Do not commit or share these files.
+Keep `GMAIL_AI_SYNC_SECRET` configured for manually authorized worker runs.
+
+Apply the shared AI channels migration before deploying the Netlify functions.
+New customer messages on webstore orders are queued transactionally by a database
+trigger. Staff replies do not enter the AI queue. Existing July failures are
+history and are not automatically replayed.
+
+Gmail ingestion and AI processing are separate scheduled workers. The processor
+claims one queued request per run; failed requests can be retried from AI Inbox.
+Responses always remain drafts for staff review. Gmail replies use the authorized
+account recorded on the request; webstore replies use **Approve & post response**
+to publish into the existing order conversation and send its Stores notification.
+
+The UI polls every 30 seconds alongside Realtime updates and supports channel
+filters, search, and a separate view of legacy history.
+
+The sections below describe the original Sales setup for historical reference.
+
 This integration imports mail from `sales@nationalsportsapparel.com`, analyzes
 the request, checks Connect inventory, prepares a draft estimate, and creates a
 reply draft in the original Gmail thread. It never sends Gmail messages.
