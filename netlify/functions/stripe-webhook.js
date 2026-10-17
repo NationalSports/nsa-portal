@@ -116,7 +116,7 @@ exports.handler = async (event) => {
         const { data: claimed } = await sb.from('webstore_orders')
           .update({ confirmation_sent: true })
           .eq('stripe_pi_id', pi.id).eq('status', 'paid').neq('confirmation_sent', true)
-          .select('id,store_id,buyer_email,buyer_name,total,shipping_fee,discount_amt,coupon_code,payment_mode,ship_method,ship_address').limit(1);
+          .select('id,order_number,store_id,buyer_email,buyer_name,total,shipping_fee,discount_amt,coupon_code,payment_mode,ship_method,ship_address').limit(1);
         const order = claimed && claimed[0];
         if (order) {
           if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code, order.id);

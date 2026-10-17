@@ -113,13 +113,13 @@ async function sendOrderConfirmation(sb, order) {
   const html = emailShell({
     store, portal,
     headline: paid ? 'Order confirmed &amp; paid' : 'Order confirmed',
-    subhead: order.order_number ? `Order #${order.order_number}` : '',
+    subhead: order.order_number ? `Order #${esc(order.order_number)}` : '',
     bodyHtml,
   });
   await postBrevo(brevoKey, {
     fromName: store.name,
     toEmail: order.buyer_email, toName: order.buyer_name || '',
-    subject: order.order_number ? `Your ${store.name} order #${order.order_number} is confirmed` : `Your ${store.name} order is confirmed`,
+    subject: order.order_number ? `${store.name} - Order #${order.order_number}` : `${store.name} - Order confirmed`,
     html,
   });
 }

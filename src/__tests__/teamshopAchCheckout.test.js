@@ -55,12 +55,15 @@ const DECO = require('../lib/decoPricing');
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // Scripted fake supabase — same contract as teamshopCheckout.test.js's.
-function fakeSb(script) {
+function fakeSb(script, projectSelect = false) {
   const calls = [];
   const nextResult = (key, call) => {
     const queue = script[key] || [];
     const result = queue.length ? queue.shift() : { data: [], error: null };
     call.result = result;
+    if (projectSelect && call.columns && call.columns !== '*' && Array.isArray(result.data)) {
+      return { ...result, data: result.data.map(row => Object.fromEntries(call.columns.split(',').map(col => [col, row[col]]))) };
+    }
     return result;
   };
   return {
@@ -74,7 +77,7 @@ function fakeSb(script) {
       const call = { table, op: 'select', filters: [], payload: null };
       calls.push(call);
       const chain = {
-        select: () => chain,
+        select: (columns) => { call.columns = columns; return chain; },
         eq: (col, val) => { call.filters.push([col, val]); return chain; },
         neq: () => chain, in: () => chain, order: () => chain,
         ilike: () => chain, limit: () => chain, single: () => chain,
@@ -216,6 +219,22 @@ async function runWebhook(sb, evt) {
 }
 
 describe('stripe-webhook × teamshop ACH', () => {
+  test('fallback confirmation loads the order number when the buyer closes checkout', async () => {
+    const order = { id: 'ord1', store_id: 'store1', order_number: 12345, buyer_email: 'buyer@example.com', buyer_name: 'Buyer', total: TOTAL, payment_mode: 'paid' };
+    const sb = fakeSb({
+      'webstore_orders.select': [
+        { data: [{ id: 'ord1', total: TOTAL }], error: null },
+        { data: [{ id: 'ord1', order_source: 'webstore', status: 'paid' }], error: null },
+      ],
+      'webstore_orders.update': [
+        { data: null, error: null },
+        { data: [order], error: null },
+      ],
+    }, true);
+    await runWebhook(sb, { type: 'payment_intent.succeeded', data: { object: ACH_PI() } });
+    expect(require('../../netlify/functions/_webstoreEmail').sendOrderConfirmation).toHaveBeenCalledWith(sb, expect.objectContaining({ order_number: 12345, buyer_email: order.buyer_email }));
+  });
+
   test('payment_intent.succeeded settles the ACH order: pending_payment → paid, then converts to a Sales Order', async () => {
     const sb = fakeSb({
       'webstore_orders.select': [
