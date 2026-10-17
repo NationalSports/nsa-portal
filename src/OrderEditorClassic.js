@@ -44,6 +44,7 @@ import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArt
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
+import { confirmedEditorSave } from './lib/confirmedEditorSave';
 import * as ALL_SCHOOL_JOBS from './lib/allSchoolJobs';
 const { isAllSchoolRecipeOrder } = ALL_SCHOOL_JOBS;
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
@@ -323,7 +324,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs).filter(j=>!missingJobMocks(j,o).length);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
-  const moveJobToDeco=async(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(isOutsideArtJob(jj)){nf('This is an art-only job for an outside decorator — it never goes on our production floor.','error');return}if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}{const tm=jj&&await _jobThreadMsg(jj);if(tm){nf(tm,'error');return}}const _cur=oRef.current;const updJobs=safeJobs(_cur).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={..._cur,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  const moveJobToDeco=async(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(isOutsideArtJob(jj)){nf('This is an art-only job for an outside decorator — it never goes on our production floor.','error');return}if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}{const tm=jj&&await _jobThreadMsg(jj);if(tm){nf(tm,'error');return}}const _cur=oRef.current;const updJobs=safeJobs(_cur).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={..._cur,jobs:updJobs,updated_at:new Date().toLocaleString()};await saveSONow(updated,'Production status','🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
   // Approve a job's art, routing it to either 'art_complete' (a production separation is CONFIRMED)
   // or its production-files stage (the artist still owes the separation). stampProd marks the
   // per-design prod_files_attached flag so a confirmed job stays out of the seps stage on the next
@@ -408,8 +409,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     updJobs=_holdArtSiblings(updJobs,artIds,j.id);
     const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
     const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
-    setO(updated);onSave(updated);setDirty(false);
-    nf('Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''),(wasInProd||sibs)?'error':'success');
+    saveSONow(updated,'Art recall','Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''));
   };
   // Send a job's art back to the artist for a NEW/redone mockup — the reused mock is wrong or the
   // rep wants a change. The design identity stays (unlike Recall); the art returns to art_requested
@@ -558,9 +558,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const mine=(ev)=>!!(ev&&ev.detail)&&String(ev.detail.orderId||'')===String(o.id||'');
     const answer=(ev,r)=>{try{if(typeof ev.detail.respond==='function')ev.detail.respond(r)}catch(e2){}};
     const commit=(next,ev,okMsg)=>{
-      setO(next);oRef.current=next;
-      if(isSO){onSave(next);answer(ev,{ok:true,saved:true,message:okMsg+' — saved.'});}
-      else{setDirty(true);answer(ev,{ok:true,saved:false,message:okMsg+' — review the estimate and Save when it looks right.'});}
+      if(isSO){saveSONow(next,'Assistant change',null).then(ok=>answer(ev,ok?{ok:true,saved:true,message:okMsg+' — saved.'}:{ok:false,saved:false,error:'The change is still unsaved. Keep this order open and retry.'}));}
+      else{setO(next);oRef.current=next;setDirty(true);answer(ev,{ok:true,saved:false,message:okMsg+' — review the estimate and Save when it looks right.'});}
     };
     const findErr=(f)=>f.error==='ambiguous'?'More than one line matches that now — be more specific.':"That line isn't on the order any more.";
     const hGet=(ev)=>{if(!mine(ev))return;answer(ev,{ok:true,order:oRef.current||o});};
@@ -1110,10 +1109,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       setTopstarSending(true);
       const sendingPo={...dp,status:'sending',topstar_send_error:null};
       const sendingOrder={...o,deco_pos:(o.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?{...x,...sendingPo}:x),updated_at:new Date().toLocaleString()};
-      let sendingSaved=false;
-      try{sendingSaved=onSaveNow?await onSaveNow(sendingOrder):(onSave(sendingOrder)!==false)}catch(e){console.error('[Topstar] pre-send save failed',e)}
+      const sendingSaved=await saveSONow(sendingOrder,'Topstar purchase order',null);
       if(!sendingSaved){setTopstarSending(false);nf('Topstar email was not sent because the PO could not be saved. Check your connection and retry.','error');return false}
-      setO(sendingOrder);
       const custName=cust?.name||cust?.alpha_tag||'';
       const imgList=imgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
       const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -1133,9 +1130,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       }catch(e){r={ok:false,error:e.message}}
       const completedPo=r.ok?markTopstarEmailSent(sendingPo,r):markTopstarEmailFailed(sendingPo,r.error);
       const updated={...sendingOrder,deco_pos:(sendingOrder.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?{...x,...completedPo}:x),updated_at:new Date().toLocaleString()};
-      setO(updated);let completionSaved=false;
-      try{completionSaved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(e){console.error('[Topstar] result save failed',e)}
-      setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>topstarPoMatches(x,dp))||p.decoPo}:p);
+      const completionSaved=await saveSONow(updated,'Topstar receipt',null,()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>topstarPoMatches(x,dp))||p.decoPo}:p));
       if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
       else if(r.ok){
         nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
@@ -1209,10 +1204,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const stripped={...dp,status:dp.status==='ordered'?'waiting':dp.status};
       delete stripped._silverscreen_job_id;delete stripped._silverscreen_job_url;delete stripped._silverscreen_sent_at;
       const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
-      setO(updated);onSave(updated);setDirty(true);
-      setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
-      setSspUnlinkKey(null);
-      nf('Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.');
+      saveSONow(updated,'Silver Screen job','Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.',()=>{setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);setSspUnlinkKey(null)});
     };
     const _sspSendNow=async({dp,baseOrder,rows,deco_instructions,wearerBagPrep})=>{
       const cur=baseOrder;
@@ -1234,9 +1226,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         // instead of only in a toast that fades in 3.5s (the checklist is too long to read).
         if(j.warning)updatedDp._silverscreen_todo=j.warning;else delete updatedDp._silverscreen_todo;
         const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
-        setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
-        nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
+        await saveSONow(updated,'Silver Screen job','🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''),()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
         if(j.warning)nf('⚠️ '+j.warning,'error');// job exists but needs a manual step — don't let it pass silently
       }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
       finally{setSspSending(false)}
@@ -3332,7 +3322,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
   // Returns true once the ack is stamped and saved — the vendor modals show a loud "order placed
   // but NOT recorded" warning on a falsy return, so a successful record must say so explicitly.
-  const _recordApiOrder=(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
+  const _recordApiOrder=async(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
     const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||'',estimated_arrival:l.estimated_arrival||null}))}:null;
@@ -3343,11 +3333,16 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const k=_vkN(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
       return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
     const stamp=_stampFor('');// legacy shape for the full-page badge below
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
-    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+    const current=oRef.current||o;
+    const items=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
+    const updated={...current,items,updated_at:new Date().toLocaleString()};
+    setO(updated);oRef.current=updated;
+    let saved=true;
+    saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
+    if(!saved){setO(current);oRef.current=current;nf('⚠️ '+desc.vendorName+' accepted order '+oid+', but the portal could not confirm its PO record. Do NOT re-order.','error');return false}
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
-    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp}}:pf);
+    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp},soItems:items}:pf);
     nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);
     return true;};
   // Shared onSubmitted for the vendor API modals below. Batch submits promote the whole queue
@@ -3369,9 +3364,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
       const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
       if(myBatchIds.size>0){
-        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
-        const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
+        const current=oRef.current||o;
+        const items2=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
+        const updated={...current,items:items2,updated_at:new Date().toLocaleString()};
+        setO(updated);oRef.current=updated;
+        let saved=true;
+        saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
+        if(!saved){setO(current);oRef.current=current;return false}
       }
       return orderedNum;
     }
@@ -3387,7 +3386,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const updated={...sourceOrder,items:result.items,updated_at:new Date().toLocaleString()};
     if(sourceOrder.id===current.id){setO(updated);oRef.current=updated}
     let saved=true;
-    try{saved=onSaveNow?await onSaveNow(updated):(sourceOrder.id===current.id&&onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeApiOrderLine] durable save failed',_saveErr)}
+    saved=sourceOrder.id!==current.id&&!onSaveNow?false:await confirmedEditorSave(updated,{onSaveNow,onSave});
     if(!saved){if(sourceOrder.id===current.id){setO(current);oRef.current=current}nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
     apiRemovalOrderCache.current[sourceOrder.id]=updated;
     if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
@@ -3692,7 +3691,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const note=window.prompt('Close '+o.id+' as created in error?\n\nIt will NOT be invoiced and drops off Ready to Invoice, Shipped-not-invoiced and the rep invoice TODOs. POs and costs stay on the order. Undo any time with Actions → Reopen Sales Order.\n\nOptional — what went wrong?','');
     if(note==null)return;
     const updated={...closeCreatedInError(o,{note,by:cu?.id}),updated_at:new Date().toLocaleString()};
-    setO(updated);onSave(updated);nf(o.id+' closed — created in error, will not be invoiced');
+    saveSONow(updated,'Created in error',o.id+' closed — created in error, will not be invoiced');
   };
   // Deco PO guard for the opt-in outside art flow: a design still in the art flow (not approved /
   // production files not confirmed) shouldn't go to the decorator unnoticed. Warn, never block.
@@ -3823,7 +3822,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const updated={...oRef.current,art_files:trackedArtFiles,updated_at:new Date().toLocaleString()};
     setO(updated);
     if(onSaveArtFiles||onSaveNow){nf('Saving '+(label||'file')+'...');const ok=await (onSaveArtFiles?onSaveArtFiles(updated):onSaveNow(updated));if(ok){setSaved(true);setDirty(false);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
-    onSave(updated);setSaved(true);return true;
+    const ok=await confirmedEditorSave(updated,{onSaveNow,onSave});
+    if(ok){setSaved(true);setDirty(false);return true}
+    setDirty(true);nf('⚠️ '+(label||'File')+' was NOT saved to the portal. Do NOT reload; your work is still here.','error');return false;
   };
   // Embroidery with a DST: the stitch render IS the color way's web logo. ColorWaysEditor calls this
   // once a color way's threads are all set and have settled; stitchLogoNeedsSave skips an unchanged
@@ -3881,18 +3882,19 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   // saveArtFilesNow's failure contract: on a failed persist, keep the editor dirty and tell the user NOT
   // to reload. Uses onSaveNow (App savSONow) which returns true/false; falls back to fire-and-forget onSave.
   const [actionSaving,setActionSaving]=useState(0);
-  const saveSONow=async(updated,label,okMsg)=>{
+  const saveSONow=async(updated,label,okMsg,onConfirmed)=>{
     setActionSaving(count=>count+1);
     setO(updated);oRef.current=updated;dirtyRef2.current=true;setDirty(true);
     const revision=orderEditRevision.current,attempt=++editorSaveSeq.current;
     let ok=false;
-    try{if(onSaveNow)ok=await onSaveNow(updated);else onSave(updated)}catch(error){console.error('[Editor] save failed:',error)}finally{setActionSaving(count=>count-1)}
+    try{ok=await confirmedEditorSave(updated,{onSaveNow,onSave})}finally{setActionSaving(count=>count-1)}
     if(canAcknowledgeSave(ok,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){
       setSaved(true);dirtyRef2.current=false;setDirty(false);
       if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'));
     }else if(ok!==true&&attempt===editorSaveSeq.current){
       nf('Changes are still unsaved. Your draft is preserved; review the save message and retry.','error');
     }
+    if(ok===true&&onConfirmed)onConfirmed();
     return ok===true;
   };
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
@@ -5193,8 +5195,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             return upd;
           });
           const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};
-          setO(updated);onSave(updated);setDirty(false);setEditMockJob(null);
-          nf('Mockup updated — the coach portal now shows the new version');
+          saveSONow(updated,'Quick mock','Mockup updated — the coach portal now shows the new version',()=>setEditMockJob(null));
         }}/>;
     })()}
     {/* Sticky header — appears when scrolling */}
@@ -5241,8 +5242,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             <div style={{fontSize:13,color:'#78350f',marginTop:2}}>{req.text}</div>
           </div>
           <div style={{display:'flex',gap:4,flexShrink:0,marginLeft:8}}>
-            <button className="btn btn-sm" style={{fontSize:10,background:'#3b82f6',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{if(onAssignTodo){onAssignTodo({title:'Coach update request: '+(o.memo||o.id),description:req.text,so_id:'',customer_id:o.customer_id||'',priority:1})}const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'in_progress'}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Assigned to CSR')}}>Assign to CSR</button>
-            <button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'completed',completed_at:new Date().toISOString()}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Update request completed')}}>Done</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#3b82f6',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'in_progress'}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};saveSONow(updated,'Update request','Assigned to CSR',()=>{if(onAssignTodo)onAssignTodo({title:'Coach update request: '+(o.memo||o.id),description:req.text,so_id:'',customer_id:o.customer_id||'',priority:1})})}}>Assign to CSR</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'completed',completed_at:new Date().toISOString()}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};saveSONow(updated,'Update request','Update request completed')}}>Done</button>
           </div>
         </div>
       </div>)}
@@ -5422,7 +5423,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;
           if(preparingRevision!==orderEditRevision.current){nf('Newer edits are still here. Click Save again to include them.','error');return}
           await saveSONow(synced.order,isE?'Estimate':'Sales order')}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
-        {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
+        {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>saveSONow({...o,status:'approved'},'Estimate approval','Estimate approved')}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!o.customer_id){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -5533,7 +5534,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{if(safeItems(o).length===0){nf('Add at least one line item before sending.','error');setShowActionsDD(false);return}setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               printDoc(_makeDocOpts());
-              const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
+              const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];saveSONow({...o,print_history:ph},'Print history',null);
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const packItems=safeItems(o);
@@ -5580,7 +5581,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📥 Download</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
             {isSO&&onCopySalesOrder&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this sales order?'))return;onCopySalesOrder(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
-            {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
+            {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;const updated={...o,status:'open',approved_by:null,approved_at:null};saveSONow(updated,'Estimate status','Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
             {/* Reopen — the way back out of an accidental close. Closing an SO (a Final invoice,
                 "Close Sales Order", the stepper's Complete chip) hides Create Invoice behind a
                 "✓ Sales Order Closed" badge, and the only undo used to be a small "Reset to Auto"
@@ -5598,9 +5599,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               if(isCreatedInError(o)){
                 if(!window.confirm('Undo Created in Error for '+o.id+'? This restores normal invoicing eligibility and keeps the actual fulfillment status.'))return;
                 const updated={...undoCreatedInError(o,calcSOStatus({...o,status:null},{ignoreOverride:true})),updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);
-                if(onSOReopened)onSOReopened(o,updated.status);
-                nf(o.id+' — Created in Error undone; normal invoicing eligibility restored');return;
+                saveSONow(updated,'Sales order status',o.id+' — Created in Error undone; normal invoicing eligibility restored',()=>{if(onSOReopened)onSOReopened(o,updated.status)});return;
               }
               const _auto=calcSOStatus({...o,status:null},{ignoreOverride:true});
               const _lbl=SO_STATUS_LABELS[_auto]||_auto;
@@ -5611,11 +5610,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               // treating it as a stale tab clobbering the close (same marker the invoice-delete
               // reopen and "Reset to Auto" stamp). Session-only, consumed by the save that carries it.
               const updated={...(isCreatedInError(o)?clearNoInvoice(o):o),status:_auto,_status_reverted:true,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
-              // Tells the app the reopen was deliberate: the fully-invoiced auto-closer would
-              // otherwise slam a reopened ready_to_invoice order straight back to complete.
-              if(onSOReopened)onSOReopened(o,_auto);
-              nf(o.id+' reopened — status is now '+_lbl)}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Reopen Sales Order</button>}
+              saveSONow(updated,'Sales order status',o.id+' reopened — status is now '+_lbl,()=>{if(onSOReopened)onSOReopened(o,_auto)})}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Reopen Sales Order</button>}
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
@@ -5789,13 +5784,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(!window.confirm(_closeProdOpen
               ?'Close sales order '+o.id+'?\n\n'+_closeProdOpen+'\n\nClosing marks it Complete — it drops off the production board and the coach portal will show it as Delivered. Close anyway?'
               :'Close sales order '+o.id+'? It will be marked complete.'))return;
-            const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
+            const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};saveSONow(updated,'Sales order status',o.id+' closed');
           }}><Icon name="check" size={14}/> Close Sales Order</button>;
         })()}
         {o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays)<=0.005:true)&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
           const synced=await reconcilePromoDraw(o,promoTotals?.promoAmount);if(!synced.ok)return;
-          const updated={...synced.order,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
+          const updated={...synced.order,status:'complete',updated_at:new Date().toLocaleString()};await saveSONow(updated,'Sales order status',o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>)}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
@@ -5866,7 +5861,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(!window.confirm('Add $'+safeNum(pendingShipAvail.amount).toFixed(2)+' of prior shipping to '+o.id+'? It will be billed on this order\'s invoice.'))return;
             const _nc=Math.round((safeNum(o._shipping_cost||o._shipstation_cost||0)+safeNum(pendingShipAvail.cost))*100)/100;
             const updated={...o,pending_ship_applied:true,pending_ship_amount:safeNum(pendingShipAvail.amount),...(_nc>0?{_shipping_cost:_nc,_shipstation_cost:_nc}:{}),updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated)}}>Add to this order</button>}
+            saveSONow(updated,'Prior shipping','Prior shipping added to this order')}}>Add to this order</button>}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
@@ -7318,7 +7313,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>📂 Previous Artwork</button><StandaloneArtRequest supabase={supabase} customer={cust||ic} order={o} mode={isE?'estimate':'so'} cu={cu} reps={REPS||[]} beforeCreate={()=>saveSONow(oRef.current,'Art request',null)} onSynced={result=>{const updated={...oRef.current,...result,art_files:(result.art_files||[]).map(_loadArtRow)};oRef.current=updated;setO(updated);onArtRequestResult?.({orders:[result]})}}/><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
+        else{await saveSONow(updated,'Art','Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>📂 Previous Artwork</button><StandaloneArtRequest supabase={supabase} customer={cust||ic} order={o} mode={isE?'estimate':'so'} cu={cu} reps={REPS||[]} beforeCreate={()=>saveSONow(oRef.current,'Art request',null)} onSynced={result=>{const updated={...oRef.current,...result,art_files:(result.art_files||[]).map(_loadArtRow)};oRef.current=updated;setO(updated);onArtRequestResult?.({orders:[result]})}}/><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -8124,8 +8119,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     _shipping_status:o._shipping_status||'partial',
                     ...(_newCost>0?{_shipping_cost:_newCost,_shipstation_cost:_newCost}:{}),
                     updated_at:new Date().toLocaleString()};
-                  setO(updatedSO);onSave(updatedSO);setDirty(false);setAddShp(null);
-                  nf('Shipment added'+(_cost>0?' — $'+_cost.toFixed(2)+' shipping cost recorded':''));
+                  saveSONow(updatedSO,'Shipment','Shipment added'+(_cost>0?' — $'+_cost.toFixed(2)+' shipping cost recorded':''),()=>setAddShp(null));
                 }}>Save Shipment</button>
               </div>
             </div>}
@@ -8156,9 +8150,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                       const idx=(o._shipments||[]).findIndex(s=>s.id===shp.id);
                       if(idx>=0){const updated=(o._shipments||[]).map((s,i)=>i===idx?{...s,tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:s.ship_date||new Date().toLocaleDateString()}:s);
                         const updatedSO={...o,_shipments:updated,_tracking_number:updated[0]?.tracking_number||'',_carrier:updated[0]?.carrier||'',_tracking_url:updated[0]?.tracking_url||'',updated_at:new Date().toLocaleString()};
-                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
+                        saveSONow(updatedSO,'Shipment tracking','Shipment tracking updated')}
                       else if(shp.id==='legacy'){const updatedSO={...o,_tracking_number:tn,_carrier:carrier||o._carrier,_tracking_url:trackUrl(tn),updated_at:new Date().toLocaleString()};
-                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
+                        saveSONow(updatedSO,'Shipment tracking','Shipment tracking updated')}
                     }}>Edit</button>}
                     {/* Delete shipment — only for non-legacy shipments */}
                     {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
@@ -8181,8 +8175,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                         _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
                         _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
                         updated_at:new Date().toLocaleString()};
-                      setO(updatedSO);onSave(updatedSO);setDirty(false);
-                      nf('Shipment deleted');
+                      saveSONow(updatedSO,'Shipment','Shipment deleted');
                     }}>Delete</button>}
                   </div>
                   {/* Package contents */}
@@ -8754,8 +8747,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry],
         // Automation columns only exist on estimates — SOs don't get them (sales_orders has no such columns).
         ...(isE?{follow_up_auto:!!_auto,follow_up_interval_days:_auto?(_fu.intervalDays||0):null,follow_up_message:_auto?(_fu.message||''):null,follow_up_to:_auto?(_toEmails||''):null,follow_up_max:_auto?(_fu.max||4):null,follow_up_count:0,follow_up_last_sent_at:null}:{})};
-      if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
-      else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
+      if(isE&&o.status!=='approved'&&o.status!=='converted')saveSONow({...o,status:'sent',...updates},'Estimate status','Estimate sent!');
+      else saveSONow({...o,...updates},isE?'Estimate':'Sales order',(isE?'Estimate':'Sales Order')+' sent!')}}/>
 
     {/* DST UPLOAD DRAG & DROP MODAL */}
     {dstUploadModal&&(()=>{
@@ -9315,7 +9308,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               // _closeOnFinal note below.
               const _paidProdOpen=unfinishedProdSummary(o);
               if(_paidProdOpen){nf(o.id+' is fully paid — left open, still in production ('+_paidProdOpen.split('\n')[0]+')');setShowInvCreate(false);return;}
-              const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
+              const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};await saveSONow(updated,'Sales order status',o.id+' closed — fully paid',()=>setShowInvCreate(false));return;}
             setInvCreating(true);
             try{
             // Re-read this SO's invoices immediately before creation. A second tab may have
@@ -9394,10 +9387,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               // Persist the invoice and WAIT — only a confirmed invoice save may close the SO.
               // A failed insert used to leave a completed SO with no invoice (unbilled work).
               invSaved=await onInvCommit(inv);
-              if(invSaved&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
+              if(invSaved&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};invSaved=await saveSONow(updated,'Sales order status',null)}
             }else{
               onInv(prev=>[...prev,inv]);
-              if(invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
+              if(invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};invSaved=await saveSONow(updated,'Sales order status',null)}
             }
             setShowInvCreate(false);
             if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
@@ -9907,11 +9900,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         openSz.forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
         const updatedItems=safeItems(o).map((x,i)=>i===idx?{...x,po_lines:[...(x.po_lines||[]),poLine]}:x);
         const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
         const poIdx=updatedItems[idx].po_lines.length-1;
-        setShowPO(null);
-        setEditPO({lineIdx:idx,poIdx,po:poLine,allLines:[{lineIdx:idx,poIdx}]});
-        nf('🎁 '+poId+' created — receive the customer-delivered goods (no vendor cost)');
+        saveSONow(updated,'Customer-delivered goods','🎁 '+poId+' created — receive the customer-delivered goods (no vendor cost)',()=>{setShowPO(null);setEditPO({lineIdx:idx,poIdx,po:poLine,allLines:[{lineIdx:idx,poIdx}]})});
       };
       const openCustDelivered=(it)=>{
         const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
@@ -10027,7 +10017,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const poLine={po_id:finalPoId,vendor:poManualVendor.trim()||'Manual purchase',po_type:'manual_cost',status:'received',unit_cost:0,received:{},shipments:[],created_at:new Date().toLocaleDateString(),_manual_cost:amount,_payment_method:normalizePoPaymentMethod(poPaymentMethod),_manual_cost_created_at:createdAt,_manual_cost_created_by:cu?.name||cuEmail||cu?.id||'Unknown staff member',_manual_cost_created_by_id:cu?.id||'',_manual_cost_created_by_email:cuEmail||'',...(note?{memo:note,_manual_cost_note:note}:{})};
           const updatedItems=safeItems(o).map((it,i)=>i===targetIdx?{...it,po_lines:[...safePOs(it),poLine]}:it);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-          const saved=onSaveNow?await onSaveNow(updated):(onSave(updated),true);
+          const saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
           if(saved===false){_poCreatingRef.current=false;nf('Manual cost was not saved — no email was sent. Check your connection and try again.','error');return}
           setO(updated);_consumeHeldPoNumber(true,false);
           setShowPO(null);setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setTab('costs');
@@ -10326,12 +10316,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 ?{...dp,item_idxs:merged,qty,expected_cost:Math.round(qty*unitCost*100)/100}
                 :dp);
               const updated={...o,deco_pos:updatedDeco,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
               const _added='🎨 '+fresh.length+' item'+(fresh.length!==1?'s':'')+' added to '+linkDpo.po_id+' — now '+merged.length+' item'+(merged.length!==1?'s':'')+', '+qty+' pcs ($'+(qty*unitCost).toFixed(2)+')';
-              // Newly covered items whose blanks aren't bought yet: go straight to the garment PO
-              // module so the rep sees everything still open to order for those vendors.
-              if(_openBlanksModule(fresh,linkDpo.po_id,linkDpo.deco_vendor_id)){nf(_added+' — opening the garment PO for the blanks still to order')}
-              else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setLinkDpoId(null);nf(_added)}
+              saveSONow(updated,'Decoration purchase order',_added,()=>{
+                // Newly covered items whose blanks aren't bought yet: go straight to the garment PO
+                // module so the rep sees everything still open to order for those vendors.
+                if(_openBlanksModule(fresh,linkDpo.po_id,linkDpo.deco_vendor_id))nf('Opening the garment PO for the blanks still to order');
+                else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setLinkDpoId(null)}
+              });
             }}>➕ Add to {linkDpo.po_id}</button>:<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
               if(_poCreatingRef.current)return;
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
@@ -10390,7 +10381,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 return allDone&&j.art_status!=='art_complete'?{...j,art_status:'art_complete'}:j;
               }):null;
               const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),...(_updJobs?{jobs:_updJobs}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              if(!(await saveSONow(updated,'Decoration purchase order',null)))return;
               if(!preexistingPO)_consumeHeldPoNumber();
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               nf(_dpoMode==='dtf'
@@ -10437,7 +10428,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               // API order box with the decorator ship-to + DPO number prefilled — and draws its own
               // PO number, so this path no longer needs the second draw main added for its blanks.
               const updated={...o,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              if(!(await saveSONow(updated,'Decoration purchase order',null)))return;
               _consumeHeldPoNumber();
               const _dpoMsg='🎨 '+effectiveDpoId+' created for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+', '+totalQty+' pcs ($'+expectedCost.toFixed(2)+')';
               const _toBlanks=()=>{
@@ -10506,9 +10497,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               const updated={...o,items:[...safeItems(o),lineItem],deco_pos:[...(o.deco_pos||[]),decoPO],updated_at:new Date().toLocaleString()};
               // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
               // during the await) must not be able to drop the optimistic deco_pos record.
-              let initialSaved=false;
-              try{initialSaved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(e){console.error('[Topstar] initial PO save failed',e)}
-              setO(updated);
+              const initialSaved=await saveSONow(updated,'Topstar purchase order',null);
               if(!initialSaved){setTopstarSending(false);nf('Topstar email was not sent because the PO could not be saved. Check your connection and retry.','error');return}
               _consumeHeldPoNumber();
               if(planOnly){
@@ -10536,9 +10525,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               }catch(e){r={ok:false,error:e.message}}
               const completedPo=r.ok?markTopstarEmailSent(decoPO,r):markTopstarEmailFailed(decoPO,r.error);
               const completed={...updated,deco_pos:(updated.deco_pos||[]).map(x=>topstarPoMatches(x,decoPO)?completedPo:x),updated_at:new Date().toLocaleString()};
-              setO(completed);let completionSaved=false;
-              try{completionSaved=onSaveNow?await onSaveNow(completed):(onSave(completed)!==false)}catch(e){console.error('[Topstar] result save failed',e)}
-              setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
+              const completionSaved=await saveSONow(completed,'Topstar receipt',null);
+              if(completionSaved){setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst')}
+              setTopstarSending(false);
               if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
               else if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
               else nf('PO created & customer billed, but email to Topstar failed: '+r.error,'error');
@@ -11154,15 +11143,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
             });
-            // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
-            // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
-            if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
             // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race).
             // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in
             // place. Joining an existing DPO consumes no PO number, so only a NEW deco PO releases the
             // second held number.
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
+            if(!(await saveSONow(updated,'Batch purchase order',null)))return;
+            if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
+            _consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
             setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');nf('Added to '+batchConfig.name+' batch queue as '+finalPoId+' ($'+totalCost.toFixed(2)+')'+(poManualCostValue>0?' including $'+poManualCostValue.toFixed(2)+' manual cost':'')+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
@@ -11279,7 +11267,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
           // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in place.
           const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
-          setO(updated);onSave(updated);
+          if(!(await saveSONow(updated,'Purchase order',null)))return;
           // Durably persist each just-created PO line immediately, so it survives a two-tab overwrite even
           // if the async SO save above is lost before it flushes (SO-1663 "PO dropped from portal"). This is
           // a fire-and-forget safety net alongside onSave, not a replacement — idempotent and no-ops on a
@@ -11426,7 +11414,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               return{...it,po_lines:pls};
             });
             const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);
+            saveSONow(updated,'Batch purchase order cost',null);
           }
         };
         return<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',overflow:'auto'}}>
@@ -11535,7 +11523,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(myBatchIds.size>0){
               const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
               const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              if(!(await saveSONow(updated,'Batch purchase order',null)))return;
             }
             setBatchReadyPopup(null);
             nf('✓ '+orderedNum+' recorded as ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+') — place the order on Momentec\'s website');
@@ -11554,7 +11542,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(myBatchIds.size>0){
               const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
               const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              if(!(await saveSONow(updated,'Batch purchase order',null)))return;
             }
             setBatchReadyPopup(null);
             nf('🚀 '+orderedNum+' ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+')');
@@ -11673,13 +11661,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               }
             });
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);
             // NOTE: Inventory is NOT decremented on pick creation (status:'pick')
             // It only decrements when status is changed to 'pulled' via the edit handler
             // This prevents double-decrement: create → edit to pulled
-            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickDecoPoId('');setPickShipAddr('default');
             const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
-            nf(pickId+' sent to warehouse ('+destLabel+')');
+            saveSONow(updated,'Inventory fulfillment',pickId+' sent to warehouse ('+destLabel+')',()=>{setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickDecoPoId('');setPickShipAddr('default')});
           }} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>
         </>:<button className="btn btn-secondary" onClick={()=>{setShowPick(false);setPickSel({})}}>Cancel</button>}
       </div>
@@ -11814,7 +11800,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
 
       // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
       // merged/split/released jobs; picks up any newly added items that don't yet have a job.
-      const refreshJobs=()=>{const _before=safeJobs(o).length;const synced=syncJobs({retireOrphans:true});const _removed=_before-synced.length;const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s')+(_removed>0?' · '+_removed+' stale job'+(_removed===1?'':'s')+' removed':''))};
+      const refreshJobs=()=>{const _before=safeJobs(o).length;const synced=syncJobs({retireOrphans:true});const _removed=_before-synced.length;const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job sync','🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s')+(_removed>0?' · '+_removed+' stale job'+(_removed===1?'':'s')+' removed':''))};
 
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
@@ -11920,7 +11906,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         // Original job keeps the received units and stays producible.
         const keepJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepTotal,item_status:'items_received',priced_separately:true,price_override:null};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,keepJob,splitJob2);
-        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id);
+        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job split','Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id,()=>setSplitModal(null));
       };
 
       // Split job by SKU — separate into one job per garment
@@ -11948,7 +11934,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         // PO (e.g. a unit un-received just before the split), and split jobs are preserved
         // verbatim by the job sync, so a stale snapshot here never self-heals (SO-1069).
         const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2},safeItems(o));
-        const updated=stampSplitRuns({...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        const updated=stampSplitRuns({...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job split','Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)',()=>setSplitModal(null));
       };
       // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
       // Used when merging jobs back together so a previously size-split item rejoins as a single line.
@@ -12061,7 +12047,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepFul,priced_separately:true,price_override:null,
           item_status:keepFul>=keepTotal&&keepTotal>0?'items_received':keepFul>0?'partially_received':'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' — '+splitTotal+' units ('+(splitTotal-splitFul)+' not yet received · '+splitFul+' received)');
+        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job split','Custom split! '+splitId+' — '+splitTotal+' units ('+(splitTotal-splitFul)+' not yet received · '+splitFul+' received)',()=>setSplitModal(null));
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       // Set/clear a split job's pricing-override state and immediately re-stamp + save, so the
@@ -12070,7 +12056,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const _setJobPriceOverride=(jIdx,po)=>{
         const updJobs=jobs.map((jj,i)=>i===jIdx?{...jj,price_override:po}:jj);
         const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleString()}).order;
-        setO(updated);onSave(updated);setDirty(false);
+        saveSONow(updated,'Job pricing',null);
       };
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
@@ -13058,7 +13044,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art status','Art status updated')}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
@@ -13172,8 +13158,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   {(r.files||[]).length>0&&<div style={{fontSize:10,color:'#64748b'}}>📎 {r.files.length} file(s) attached</div>}
                 </div>
                 <div style={{display:'flex',gap:4}}>
-                  {r.status==='requested'&&<button className="btn btn-sm" style={{fontSize:9,background:'#3b82f6',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'in_progress'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>Start Working</button>}
-                  {r.status==='in_progress'&&<button className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'completed'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>Mark Done</button>}
+                  {r.status==='requested'&&<button className="btn btn-sm" style={{fontSize:9,background:'#3b82f6',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'in_progress'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request status','Art request marked in progress')}}>Start Working</button>}
+                  {r.status==='in_progress'&&<button className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'completed'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request status','Art request marked complete')}}>Mark Done</button>}
                 </div>
               </div>)}
             </div>
@@ -13215,8 +13201,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                   <div style={{display:'flex',gap:8}}>
                     <button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
                       const upd=jobs.map((jj,i)=>i===ji?{...jj,counted_at:new Date().toLocaleString(),counted_by:cu?.name||'Unknown',count_discrepancies:[]}:jj);
-                      const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);
-                      nf('✅ Count-in confirmed — all items match');
+                      const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};saveSONow(updated,'Count-in','✅ Count-in confirmed — all items match');
                     }}>✅ All Confirmed</button>
                     <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
                       // Build discrepancy modal data
@@ -13264,17 +13249,16 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 count_discrepancies:discs,
                 count_discrepancy:countDiscModal.notes||(discs.length>0?discs.map(d2=>d2.sku+' '+d2.size+': expected '+d2.expected+' got '+d2.actual).join('; '):'')
               }:jj);
-              const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);
-              // Create production team issue for missing pieces
-              if(discs.length>0){
-                const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
-                const issue={id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null};
-                setIssues(prev=>[issue,...prev]);
-                nf('⚠️ Count-in recorded with discrepancies — Issue '+issue.id+' created for production team');
-              } else {
-                nf('✅ Count-in recorded');
-              }
-              setCountDiscModal(null);
+              const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};
+              saveSONow(updated,'Count-in',discs.length?'Count-in recorded with discrepancies':'✅ Count-in recorded',()=>{
+                if(discs.length>0){
+                  const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
+                  const issue={id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null};
+                  setIssues(prev=>[issue,...prev]);
+                  nf('Issue '+issue.id+' created for production team');
+                }
+                setCountDiscModal(null);
+              });
             }}>Submit Count-In with Discrepancies</button>
             <button className="btn btn-secondary" onClick={()=>setCountDiscModal(null)}>Cancel</button>
           </div>
@@ -13339,7 +13323,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           // upfront can't wave an unmocked garment through to the coach.
           if(_grp.length>1&&_grpArtId)updArtFiles2=squashMockLinks(updArtFiles2,_grpArtId,_grp);
           const _an2=(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),(_wasInProd2||sibs2)?'error':'success');
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),()=>setArtReqModal(null));
         };
         const hasExistingReqs2=(j2.art_requests||[]).length>0;
         const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
@@ -14162,8 +14146,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             // snapshot baked in here would never self-heal. Runs on the POST-filter array so the
             // merged-away jobs are already gone and every surviving slice points at a live parent.
             const recalcedMerged=recalcJobFulfillment({...o,jobs:newJobs},safeItems(o));
-            const updated=stampSplitRuns({...o,jobs:recalcedMerged,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
-            nf('Merged '+(_plan.mergeIdxs.length+1)+' jobs into '+target.id);
+            const updated=stampSplitRuns({...o,jobs:recalcedMerged,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job merge','Merged '+(_plan.mergeIdxs.length+1)+' jobs into '+target.id,()=>setMergeMode(null));
           }}>Merge {mergeMode.selected.length} Selected</button>
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>})()}
         </div>
@@ -14175,7 +14158,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           <button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}}
             onClick={()=>{const newJobs=jobs.map(j=>{if(j.prod_status!=='draft'&&!j._draft)return j;
               return{...j,prod_status:'hold',_draft:false}});
-              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated! Use the wizard to release jobs for art with artist assignments.')}}>Activate All</button>
+              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};saveSONow(updated,'Job status','All draft jobs activated! Use the wizard to release jobs for art with artist assignments.')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
         {jobs.length===0&&(()=>{
@@ -14263,7 +14246,7 @@ if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id
 // updJobs, so the reunited parent claims the full line again instead of inheriting the two
 // halves' summed snapshots.
 const recalcedBack=recalcJobFulfillment({...o,jobs:updJobs},safeItems(o));
-const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
+const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLocaleString()}).order;saveSONow(updated,'Job merge','Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
                 {j.priced_separately&&(()=>{const po=j.price_override;const _isAdm=cu?.role==='admin'||cu?.role==='super_admin';
                   if(po?.status==='approved')return<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#f1f5f9',color:'#475569',marginLeft:3}} title={'Pricing override approved — design bills at the combined qty tier again. Approved by '+(po.approved_by||'admin')+(po.reason?'. Request reason: '+po.reason:'')}>$ Combined ✓</span>;
                   return<><span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#ede9fe',color:'#6d28d9',marginLeft:3}} title="Split jobs are separate press runs — this design is priced per run (each run bills at its own qty tier, blended into the line's per-piece price)">$ Split-priced</span>
@@ -14544,7 +14527,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // upfront can't wave an unmocked garment through to the coach.
           if(_grp.length>1&&_grpArtId)updArtFiles3=squashMockLinks(updArtFiles3,_grpArtId,_grp);
           const _an3=(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),(_wasInProd3||sibs3)?'error':'success');
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art request',(hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),()=>setArtReqModal(null));
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
@@ -14831,7 +14814,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{info.item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{info.item.name}</span>
             {info.item.color&&<span className="badge badge-gray">{info.item.color}</span>}
-            {(picks.length>1||isShortPullIF)&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'3px 10px',fontWeight:700}} onClick={()=>{const newPicks=editPick.picks.filter((_,i)=>i!==info.idx);if(newPicks.length===0){const pkId=editPick.pickId;const affected=new Set(editPick.picks.map(p=>p.lineIdx));o.items.forEach((it,i)=>{if((it.pick_lines||[]).some(pl=>pl.pick_id===pkId))affected.add(i)});const updatedItems=o.items.map((it,i)=>affected.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Removed from IF');}else{setEditPick(p=>({...p,picks:newPicks}));}}}>{isShortPullIF?'✕ Remove from IF':'✕ Remove'}</button>}
+            {(picks.length>1||isShortPullIF)&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'3px 10px',fontWeight:700}} onClick={()=>{const newPicks=editPick.picks.filter((_,i)=>i!==info.idx);if(newPicks.length===0){const pkId=editPick.pickId;const affected=new Set(editPick.picks.map(p=>p.lineIdx));o.items.forEach((it,i)=>{if((it.pick_lines||[]).some(pl=>pl.pick_id===pkId))affected.add(i)});const updatedItems=o.items.map((it,i)=>affected.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Inventory fulfillment','Removed from IF',()=>setEditPick(null));}else{setEditPick(p=>({...p,picks:newPicks}));}}}>{isShortPullIF?'✕ Remove from IF':'✕ Remove'}</button>}
           </div>
           <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -14887,11 +14870,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
-          // Reverse inventory for any pulled picks before removing
-          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
+          // Reverse inventory only after the order write confirms.
+          const restoreInventory=()=>picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
           const removeMap=new Map();picks.forEach(p=>{if(!removeMap.has(p.lineIdx))removeMap.set(p.lineIdx,new Set());removeMap.get(p.lineIdx).add(p.pickIdx)});
           const updatedItems=o.items.map((it,i)=>removeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter((_,pi)=>!removeMap.get(i).has(pi))}:it);
-          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
+          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};saveSONow(updated,'Inventory fulfillment','Pick deleted',()=>{restoreInventory();setEditPick(null)});
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
           // Rebuild each affected item's pick lines for this pick_id from the modal state. This covers quantity
@@ -14904,14 +14887,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // pulled footprint must move inventory: reopening a pulled IF returns its units, pulling draws
           // them, and editing the quantities of an IF that stays pulled settles the per-size difference
           // (previously skipped — an in-place edit silently desynced stock).
-          affected.forEach(i=>{const it=o.items[i];const old=(it.pick_lines||[]).find(pl=>pl.pick_id===pkId);const cur=curByLine.get(i);
+          const reconcileInventory=()=>affected.forEach(i=>{const it=o.items[i];const old=(it.pick_lines||[]).find(pl=>pl.pick_id===pkId);const cur=curByLine.get(i);
             const oldPulled=!!(old&&old.status==='pulled');const curPulled=!!(cur&&cur.status==='pulled');
             if(oldPulled&&!curPulled)adjustInvForPick(old,it,1);
             else if(!oldPulled&&curPulled)adjustInvForPick(cur,it,-1);
             else if(oldPulled&&curPulled)reconcilePulledInv(old,cur,it);});
           const updatedItems=o.items.map((it,i)=>{if(!affected.has(i))return it;const others=(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId);const cur=curByLine.get(i);return{...it,pick_lines:cur?[...others,cur]:others}});
           // Recalc job fulfillment so deco-readiness reflects the reopened/edited pull state, matching the warehouse pull path.
-          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
+          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};saveSONow(updated,'Inventory fulfillment','Pick updated',()=>{reconcileInventory();setEditPick(null)});
         }}>Save Changes</button>
       </div>
     </div></div>})()}
@@ -15043,9 +15026,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 return{...p,drop_ship:target,status:st};
               })}));
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
-              setEditPO(prev=>({...prev,po:{...prev.po,drop_ship:target}}));
-              nf(po.po_id+' switched to '+label);
+              saveSONow(updated,'Purchase order status',po.po_id+' switched to '+label,()=>setEditPO(prev=>({...prev,po:{...prev.po,drop_ship:target}})));
             }}/>
           </div>}
           {/* Decoration PO(s) created alongside this product PO — SO-level deco buckets
@@ -15138,15 +15119,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           </table>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12,flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',gap:16,fontSize:12,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Unit Cost: $<input key={unitCost} defaultValue={unitCost.toFixed(2)} style={{width:64,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''));if(isNaN(val)||val===unitCost)return;const updatedPO={...po,unit_cost:val};const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:updatedPO}));nf('Unit cost updated to $'+val.toFixed(2))}}/></span>
+              <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Unit Cost: $<input key={unitCost} defaultValue={unitCost.toFixed(2)} style={{width:64,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''));if(isNaN(val)||val===unitCost)return;const updatedPO={...po,unit_cost:val};const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order cost','Unit cost updated to $'+val.toFixed(2),()=>setEditPO(prev=>({...prev,po:updatedPO})))}}/></span>
               <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Shipping: $<input key={'ship-'+(po.shipping||0)} defaultValue={safeNum(po.shipping).toFixed(2)} placeholder="0.00" style={{width:70,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''))||0;const cur=safeNum(po.shipping);if(val===cur)return;// Shipping is PO-level — mirror to every po_line sharing this po_id.
                 const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>p.po_id===po.po_id?{...p,shipping:val}:p)}));
-                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
-                setEditPO(prev=>({...prev,po:{...prev.po,shipping:val}}));
-                nf('Shipping updated to $'+val.toFixed(2));
+                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order shipping','Shipping updated to $'+val.toFixed(2),()=>setEditPO(prev=>({...prev,po:{...prev.po,shipping:val}})));
               }}/></span>
-              <span style={{color:'#92400e',display:'flex',alignItems:'center',gap:4}} title={_manualNote||'One-off internal cost applied once to the sales order'}>Manual Cost: $<input key={'manual-'+_manualCost} defaultValue={_manualCost.toFixed(2)} placeholder="0.00" style={{width:70,fontWeight:800,color:'#92400e',border:'1px solid #fcd34d',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'#fffbeb'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=Math.max(0,parseFloat(String(e.target.value).replace(/[$,\s]/g,''))||0);if(val===_manualCost)return;let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored&&val>0){stored=true;return{...p,_manual_cost:val}}const{_manual_cost,_manual_cost_note,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:stored?{...prev.po,_manual_cost:val}:(()=>{const{_manual_cost,...rest}=prev.po;return rest})()}));nf(val>0?'Manual PO cost updated to $'+val.toFixed(2):'Manual PO cost removed')}}/></span>
-              <label style={{color:'#0f766e',display:'flex',alignItems:'center',gap:4}}>Paid by: <select value={_paymentMethod} onChange={e=>{const method=normalizePoPaymentMethod(e.target.value);let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored){stored=true;return{...p,_payment_method:method}}const{_payment_method,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:{...prev.po,_payment_method:method}}));nf('PO payment method updated to '+poPaymentMethodLabel(method))}} style={{border:'1px solid #99f6e4',borderRadius:4,padding:'2px 5px',fontSize:12,fontWeight:700,color:'#0f766e',background:'#f0fdfa'}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></label>
+              <span style={{color:'#92400e',display:'flex',alignItems:'center',gap:4}} title={_manualNote||'One-off internal cost applied once to the sales order'}>Manual Cost: $<input key={'manual-'+_manualCost} defaultValue={_manualCost.toFixed(2)} placeholder="0.00" style={{width:70,fontWeight:800,color:'#92400e',border:'1px solid #fcd34d',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'#fffbeb'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=Math.max(0,parseFloat(String(e.target.value).replace(/[$,\s]/g,''))||0);if(val===_manualCost)return;let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored&&val>0){stored=true;return{...p,_manual_cost:val}}const{_manual_cost,_manual_cost_note,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order cost',val>0?'Manual PO cost updated to $'+val.toFixed(2):'Manual PO cost removed',()=>setEditPO(prev=>({...prev,po:stored?{...prev.po,_manual_cost:val}:(()=>{const{_manual_cost,...rest}=prev.po;return rest})()})))}}/></span>
+              <label style={{color:'#0f766e',display:'flex',alignItems:'center',gap:4}}>Paid by: <select value={_paymentMethod} onChange={e=>{const method=normalizePoPaymentMethod(e.target.value);let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored){stored=true;return{...p,_payment_method:method}}const{_payment_method,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order payment','PO payment method updated to '+poPaymentMethodLabel(method),()=>setEditPO(prev=>({...prev,po:{...prev.po,_payment_method:method}})))}} style={{border:'1px solid #99f6e4',borderRadius:4,padding:'2px 5px',fontSize:12,fontWeight:700,color:'#0f766e',background:'#f0fdfa'}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></label>
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               {allLines.length>1&&<span style={{color:'#64748b',fontSize:11}}>Line Total: <strong style={{color:'#0f172a'}}>${poTotal.toFixed(2)}</strong></span>}
             </div>
@@ -15390,13 +15369,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     // the Delete PO button makes, so it needs the same tombstone or the save's restore
                     // guard re-injects it (see that handler's note).
                     const updated={...o,items:items3,...(newAllLines.length===0&&po.po_id?{_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),po.po_id])]}:{}),updated_at:new Date().toLocaleString()};
-                    setO(updated);onSave(updated);
-                    if(newAllLines.length===0){setEditPO(null);nf('PO '+po.po_id+' removed from order')}
-                    else{
-                      const first=newAllLines[0];
-                      setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:items3[first.lineIdx].po_lines[first.poIdx],allLines:newAllLines});
-                      nf('PO '+po.po_id+' updated'+(addedCount>0?' — '+addedCount+' item'+(addedCount!==1?'s':'')+' added':'')+(clampedAny?' (some sizes kept at received qty)':''));
-                    }
+                    const msg=newAllLines.length===0?'PO '+po.po_id+' removed from order':'PO '+po.po_id+' updated'+(addedCount>0?' — '+addedCount+' item'+(addedCount!==1?'s':'')+' added':'')+(clampedAny?' (some sizes kept at received qty)':'');
+                    saveSONow(updated,'Purchase order',msg,()=>{if(newAllLines.length===0)setEditPO(null);else{const first=newAllLines[0];setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:items3[first.lineIdx].po_lines[first.poIdx],allLines:newAllLines})}});
                   }}>✓ Apply Changes</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_draft:null}))}>Cancel</button>
                 </div>
@@ -15485,7 +15459,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   // Deliberate receipt edit can REDUCE received units — stamp the session tombstone so the
                   // save engine's receiving-rollback guard honors the reduction instead of restoring it.
                   const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),...receiptLines.map(rl=>rl.pl.po_id)])].filter(Boolean),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt updated'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));notifyDecoReady(o.jobs,updated.jobs);
+                  saveSONow(updated,'PO receipt','Receipt updated'+(receiptLines.length>1?' — '+receiptLines.length+' items':''),()=>{setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});notifyDecoReady(o.jobs,updated.jobs)});
                 }}>Save</button>
                 <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
                   if(!window.confirm(receiptLines.length>1?'Delete this receipt for all '+receiptLines.length+' items? Received quantities will be recalculated.':'Delete this shipment receipt? Received quantities will be recalculated.'))return;
@@ -15502,7 +15476,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   });
                   // Deliberate receipt delete reduces received units — stamp the tombstone (see edit above).
                   const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),...receiptLines.map(rl=>rl.pl.po_id)])].filter(Boolean),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt deleted'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));
+                  saveSONow(updated,'PO receipt','Receipt deleted'+(receiptLines.length>1?' — '+receiptLines.length+' items':''),()=>setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null}));
                 }}><Icon name="trash" size={10}/> Delete</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:null}))}>Cancel</button>
               </div>
@@ -15575,13 +15549,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               let updatedItems=[...o.items];
               updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
               const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
               const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
-              setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
               // Capture received items for the confirmation modal so the user can print/download a box label.
               const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
               const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
-              setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
+              saveSONow(updated,'PO receipt','Shipment received',()=>{notifyDecoReady(o.jobs,updated.jobs);setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal})});
             }}>✓ Receive These Items</button>
             </>}
             {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Click an item in “Items on this PO” above to receive it.</div>}
@@ -15665,7 +15637,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             // tells the save layer's stale-restore guard this removal is deliberate. Without it the guard
             // has to infer intent from _hydratedPoIds and re-injects the PO whenever that marker is
             // missing, so the deletion comes back on the next reload (SO-2015 / PO 57204 SAHV).
-            const updated={...o,items:updatedItems,_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),_editPoId,..._rmPoIds])].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
+            const updated={...o,items:updatedItems,_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),_editPoId,..._rmPoIds])].filter(Boolean),updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order','PO deleted',()=>setEditPO(null));
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or the Claude bot) to order this PO" onClick={()=>{
@@ -15804,8 +15776,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               // Record send on the PO line so it shows in history.
               const sentEntry={sent_at:new Date().toLocaleString(),sent_by:cu?.name||cu?.id||'',to:poEmail.to,method:'email',messageId:res.messageId||null};
               const updatedItems=o.items.map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poEmail.poIdx?{...p,email_history:[...(p.email_history||[]),sentEntry]}:p)}:it);
-              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
-              setPoEmail(null);
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};saveSONow(updated,'Purchase order email',null,()=>setPoEmail(null));
             }else{
               nf('Failed to send: '+(res.error||'Unknown error'),'error');
               setPoEmail(p=>({...p,sending:false}));
@@ -15845,9 +15816,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _saveDp=(updatedDp,msg)=>{
           let updated;
           try{updated=reviseDecoPO(oRef.current||o,dp,updatedDp,{actor:cu?.name||'Rep',artStatusForFile,activeProd:_activeProd})}catch(err){nf(err.message,'error');return false}
-          setO(updated);onSave(updated);
-          setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
-          if(msg)nf(msg);
+          saveSONow(updated,'Decoration purchase order',msg||null,()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p));
           return true;
         };
         // Commit a per-item rate override, pruning empties and re-deriving expected_cost.
@@ -15970,9 +15939,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11,whiteSpace:'nowrap'}} title="I've completed these steps on the Silver Screen portal" onClick={()=>{
                     const stripped={...dp};delete stripped._silverscreen_todo;
                     const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
-                    setO(updated);onSave(updated);setDirty(true);
-                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
-                    nf('Marked done — '+(dp.po_id||'this PO')+' no longer flags unfinished Silver Screen steps');
+                    saveSONow(updated,'Silver Screen job','Marked done — '+(dp.po_id||'this PO')+' no longer flags unfinished Silver Screen steps',()=>setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p));
                   }}>✓ Done</button>
                 </div>
               </div>})()}
@@ -16040,7 +16007,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   // stale-restore guard this removal is deliberate, so it won't re-inject the entry.
                   _deletedDecoPoIds:[...(o._deletedDecoPoIds||[]),dp.po_id].filter(Boolean),
                   deco_pos:_remaining,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null);nf('Deleted '+(dp.po_id||'decoration PO')+' — covered items returned to in-house');
+                saveSONow(updated,'Decoration purchase order','Deleted '+(dp.po_id||'decoration PO')+' — covered items returned to in-house',()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)});
               }}>🗑 Delete PO</button>
             </div>
             <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
@@ -16493,7 +16460,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             if(allShipments.length===0)return null;
             const fpEdit=poFullPage._editShip||null;// `${lineIdx}-${shipIdx}`
             const isEditing=key=>fpEdit===key;
-            const writeShipUpdate=(lineIdx,poIdx,newShipmentsBuilder)=>{
+            const writeShipUpdate=(lineIdx,poIdx,newShipmentsBuilder,okMsg)=>{
               const it=o.items[lineIdx];if(!it)return;
               const pl=it.po_lines[poIdx];if(!pl)return;
               const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
@@ -16506,9 +16473,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               // Shipment-history edit/delete can REDUCE received units — stamp the session tombstone so
               // the save engine's receiving-rollback guard honors the reduction instead of restoring it.
               const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),pl.po_id])].filter(Boolean),updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
-              // If the active editPO row is this one, refresh its snapshot too
-              setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev);
+              saveSONow(updated,'PO receipt',okMsg,()=>{notifyDecoReady(o.jobs,updated.jobs);setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev)});
               return updatedPO;
             };
             return<div className="card" style={{marginBottom:16}}>
@@ -16543,13 +16508,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         const updatedSh={date:dateEl?.value||sh.date};
                         sh.szKeys.forEach(sz=>{const el=document.getElementById('fp-sh-'+key+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}});
                         if(sh.raw.memo)updatedSh.memo=sh.raw.memo;
-                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.map((s,i)=>i===sh.shipIdx?updatedSh:s));
-                        nf('Shipment updated');
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.map((s,i)=>i===sh.shipIdx?updatedSh:s),'Shipment updated');
                       }}>Save</button>
                       <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
                         if(!window.confirm('Delete this shipment? Received quantities will be recalculated.'))return;
-                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.filter((_,i)=>i!==sh.shipIdx));
-                        nf('Shipment deleted');
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.filter((_,i)=>i!==sh.shipIdx),'Shipment deleted');
                       }}><Icon name="trash" size={10}/> Delete</button>
                       <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setPoFullPage(p=>({...p,_editShip:null}))}>Cancel</button>
                     </div>
@@ -16643,12 +16606,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 let updatedItems=[...o.items];
                 updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
                 const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
                 const firstUpdate=updates[0];
-                setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
                 const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
                 const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
-                setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
+                saveSONow(updated,'PO receipt','Shipment received',()=>{notifyDecoReady(o.jobs,updated.jobs);setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal})});
               }}>Receive These Items</button>
               </>}
               {fpRecvLines.length===0&&allFpRecvLines.length>1&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
@@ -16668,7 +16629,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const updatedItems=o.items.map((it,i)=>affectedIdxs.has(i)?{...it,po_lines:(it.po_lines||[]).filter(p=>p.po_id!==po.po_id)}:it);
               // Deliberate-removal tombstone — see the edit-PO modal's Delete PO above.
               const updated={...o,items:updatedItems,_deletedPoIds:[...(o._deletedPoIds||[]),po.po_id].filter(Boolean),updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);setPoFullPage(null);nf('PO deleted');
+              saveSONow(updated,'Purchase order','PO deleted',()=>setPoFullPage(null));
             }}>Delete PO</button>
           </div>
         </div>
@@ -16683,7 +16644,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         if(!onBatchPO){nf('Batch queue is unavailable. Reload and try again.','error');return false}
         const updated={...o,items:removeQueuedBatchLines(safeItems(o),bp.id),updated_at:new Date().toLocaleString()};
         let saved=false;
-        try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_){saved=false}
+        saved=await confirmedEditorSave(updated,{onSaveNow,onSave});
         if(!saved){nf('Could not remove the batch PO from the order. The items remain queued; retry after reloading.','error');return false}
         setO(updated);onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);return true;
       };

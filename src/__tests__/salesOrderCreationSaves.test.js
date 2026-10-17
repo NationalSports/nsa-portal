@@ -18,7 +18,7 @@ function harness(){
       if(!baseline||_soDiffCmp(row)!==_soDiffCmp(baseline))backgroundWrites.push(row);
     }
   };
-  return {_dbSnap,state,backgroundWrites,setSOs:publish('sos'),setEsts:publish('ests'),
+  return {_dbSnap,_saveHistoryBases:{current:new Map()},_failedDocumentSaveEffects:{current:new Map()},_confirmedSaveBaselines:{current:new Map()},_soDiffCmp,state,backgroundWrites,setSOs:publish('sos'),setEsts:publish('ests'),
     stageDocumentBaseline,setESO:jest.fn(),setESOC:jest.fn(),setEEst:jest.fn(),setPg:jest.fn(),nf:jest.fn(),
     cust:[],sos:[],cu:{id:'rep'},mintSOId:async()=> 'SO-NEW'};
 }
@@ -75,6 +75,28 @@ test('first manual save stages a new order so the background effect does not dup
   ctx.setSOs(()=>[row]);
   expect(ctx.backgroundWrites).toEqual([]);
   commit.resolve(true);expect(await pending).toBe(true);
+});
+
+test.each([true, false])('result-checked saves run downstream effects only after success (save=%s)', async saved => {
+  const ctx=harness(),row={id:'SO-NEW'},effect=jest.fn();
+  Object.assign(ctx,{
+    savSO:(_row,opts)=>{opts.deferredEffects.push(effect);return row;},
+    _dbSavePendingIds:new Set(),
+    _dbSaveSO:jest.fn(async()=>saved),
+    _hasActiveDocumentSave:()=>false,
+    _markRecentlyPulled:jest.fn(),
+  });
+  const start=app.indexOf('  const savSONow=(s,opts)=>{'),end=app.indexOf('  // ── Auto-close',start);
+  await execute(app.slice(start,end)+'return savSONow(row);',{...ctx,row});
+  expect(ctx._dbSaveSO).toHaveBeenCalledWith(row,expect.objectContaining({exactAttempt:true}));
+  expect(effect).toHaveBeenCalledTimes(saved?1:0);
+  expect(ctx._dbSnap.current.sos.some(item=>item.id===row.id)).toBe(saved);
+  if(!saved){
+    const retried={...row,_version:2};
+    ctx._failedDocumentSaveEffects.current.get('sales_orders:'+row.id).confirm(retried);
+    expect(effect).toHaveBeenCalledTimes(1);
+    expect(ctx._dbSnap.current.sos.find(item=>item.id===row.id)).toBe(retried);
+  }
 });
 
 afterEach(()=>Object.keys(localStorage).filter(k=>k.startsWith('nsa_outbox')).forEach(k=>localStorage.removeItem(k)));

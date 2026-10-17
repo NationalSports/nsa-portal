@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import BatchPoReservationsNotice from '../BatchPoReservationsNotice';
 import { itemBatchReservations, checkBatchPoReservations, batchPoReservationMessage, removeQueuedBatchLines } from '../lib/batchPoReservations';
+import { confirmedEditorSave } from '../lib/confirmedEditorSave';
 
 const item = { sku: '5157751', name: 'Backpack', color: 'Grey', sizes: { OSFA: 5 }, po_lines: [] };
 const order = { id: 'SO-2850', items: [item] };
@@ -90,7 +91,7 @@ test.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s keeps a batch queued 
   for (const saved of [false, true]) {
     const o = { ...order, items: [{ ...item, po_lines: [{ status: 'queued', batch_queue_id: batch.id, OSFA: 5 }] }] };
     const deps = { o, bp: batch, safeItems: so => so.items, removeQueuedBatchLines,
-      onSaveNow: jest.fn().mockResolvedValue(saved), onSave: jest.fn(), onBatchPO: jest.fn(), setO: jest.fn(), setEditBatchPO: jest.fn(), nf: jest.fn() };
+      onSaveNow: jest.fn().mockResolvedValue(saved), onSave: jest.fn(), confirmedEditorSave, onBatchPO: jest.fn(), setO: jest.fn(), setEditBatchPO: jest.fn(), nf: jest.fn() };
     const remove = Function(...Object.keys(deps), 'return (' + code + ')')(...Object.values(deps));
     expect(await remove()).toBe(saved);
     if (saved) {

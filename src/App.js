@@ -656,6 +656,7 @@ import {
   _outboxList,
   _outboxGate,
   _setOnOutboxConflict,
+  _setOnDocumentSaveConfirmed,
   _dbSaveFailedErrors,
   _clearSaveError,
   _permDenialParked,
@@ -2678,7 +2679,14 @@ export default function App(){
   // stale-rejection path (dbEngine calls back here the moment the server refuses a stale write).
   const[outboxConflicts,setOutboxConflicts]=useState([]);
   const[recoveryReview,setRecoveryReview]=useState(null);
+  const _failedDocumentSaveEffects=useRef(new Map());
+  const _confirmedSaveBaselines=useRef(new Map());
+  const _saveHistoryBases=useRef(new Map());
   _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==en.table||x.id!==en.id||x.session!==en.session||x.payload?._draftRecovery),en])});
+  _setOnDocumentSaveConfirmed(({table,id,payload,signature})=>{
+    const key=table+':'+id,held=_failedDocumentSaveEffects.current.get(key);
+    if(held&&held.signature===signature){_failedDocumentSaveEffects.current.delete(key);held.confirm(payload)}
+  });
   React.useEffect(()=>{
     const confirmed=event=>setOutboxConflicts(prev=>reconcileOutboxNotices(prev,_outboxList(),event.detail));
     window.addEventListener('nsa:document-save-confirmed',confirmed);
@@ -7511,7 +7519,8 @@ export default function App(){
         return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
-  const savE=e=>{stampEstimateDraftLineIds(e,ests.find(x=>x.id===e.id));const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);
+  const savE=(e,opts)=>{stampEstimateDraftLineIds(e,ests.find(x=>x.id===e.id));const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);
+    const afterSave=fn=>{if(opts?.deferDownstream)opts.deferredEffects?.push(fn);else fn()};
     const prev=ests.find(x=>x.id===e2.id);
     // Last-line client guard: refuse to silently drop all items. If the previous in-memory state had items but the
     // incoming save has none, alert and abort — mirrors the savSO guard that protected SO-1001.
@@ -7524,19 +7533,29 @@ export default function App(){
     if(prev&&prev.status!==e2.status)_markEstStatusChange(e2);
     // Snapshot the prior state before overwriting so a blanked estimate can be restored from Estimate Version
     // History. Appends a durable per-document snapshot without rewriting other estimates.
-    if(prev)_recordHistory('est_history',e2.id,prev);
+    const historyPrev=opts?.historyPrevious||prev;
+    if(historyPrev)afterSave(()=>_recordHistory('est_history',e2.id,historyPrev));
     setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
-    logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+    afterSave(()=>logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||''));return e2};
   // Result-checked estimate save, matching savSONow. Autosave and emergency editor flushes must enter the
   // database queue directly instead of hoping the later [ests] diff effect runs before an unmount/reload.
   const savENow=(e,opts)=>{
-    const e2=savE(e);if(!e2||!e2.id)return Promise.resolve(false);
+    const deferredEffects=[];
+    const historyKey='estimates:'+e.id,baseline=(_dbSnap.current?.ests||[]).find(row=>row.id===e.id)||null,priorHistory=_saveHistoryBases.current.get(historyKey);
+    _failedDocumentSaveEffects.current.delete(historyKey);
+    if(!priorHistory){if(baseline)_confirmedSaveBaselines.current.set(historyKey,baseline);else _confirmedSaveBaselines.current.delete(historyKey)}
+    const historyState={base:priorHistory?priorHistory.base:baseline,attempt:(priorHistory?.attempt||0)+1};_saveHistoryBases.current.set(historyKey,historyState);
+    const e2=savE(e,{...opts,deferDownstream:true,deferredEffects,historyPrevious:historyState.base});
+    if(!e2||!e2.id){if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey);return Promise.resolve(false)}
     setEEst(prev=>prev&&prev.id===e2.id?e2:prev);
     const snap=_dbSnap.current?.ests;
     if(Array.isArray(snap)&&snap.some(x=>x.id===e2.id))_dbSnap.current.ests=snap.map(x=>x.id===e2.id?e2:x);
     if(opts?.stageOutbox)_outboxAdd('estimates',e2);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(e2.id);
-    const _p=_dbSaveEstimate(e2);
+    const effectSignature=_estDiffCmp(e2);
+    const _p=_dbSaveEstimate(e2,{exactAttempt:true});
+    const confirmSave=payload=>{stageDocumentBaseline(_dbSnap,'ests',payload);_confirmedSaveBaselines.current.set(historyKey,payload);deferredEffects.forEach(run=>run());if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey)};
+    Promise.resolve(_p).then(ok=>{if(ok===true)confirmSave(e2);else{const restore=_confirmedSaveBaselines.current.get(historyKey)||historyState.base;if(Array.isArray(_dbSnap.current?.ests)&&_dbSnap.current.ests.find(row=>row.id===e2.id)===e2)_dbSnap.current.ests=restore?_dbSnap.current.ests.map(row=>row.id===e2.id?restore:row):_dbSnap.current.ests.filter(row=>row.id!==e2.id);if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_failedDocumentSaveEffects.current.set(historyKey,{signature:effectSignature,confirm:confirmSave})}});
     Promise.resolve(_p).finally(()=>{(!_hasActiveDocumentSave(e2.id)&&_dbSavePendingIds.delete(e2.id))});
     return _p;
   };
@@ -7578,6 +7597,7 @@ export default function App(){
   // settles — remember what was already announced so production gets one message, not two.
   const _rosterAlertSeen=useRef(new Map());
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
+    const afterSave=fn=>{if(opts?.deferDownstream)opts.deferredEffects?.push(fn);else fn()};
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     // A customer's pending shipping balance is NOT auto-attached to a new SO — it used to be, and
@@ -7599,7 +7619,8 @@ export default function App(){
       const lost=prev.items.length-(sl.items?.length||0);
       if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
-    if(prev)_recordHistory('so_history',sl.id,prev);
+    const historyPrev=opts?.historyPrevious||prev;
+    if(historyPrev)afterSave(()=>_recordHistory('so_history',sl.id,historyPrev));
     // Numbers/names edited after a job was lined up: the printed sheet is now wrong (SO-2506).
     // Keep an unacknowledged flag across saves from editors that never loaded it, flag newly
     // changed jobs, and tell production. Only the production board's "Reprinted" clears it.
@@ -7614,17 +7635,19 @@ export default function App(){
       const _rc=detectFloorRosterChanges(prev,sl);
       if(_rc.length){
         sl.jobs=stampRosterChanges(sl,_rc,{by:cu?.name||''}).jobs;
-        const _sig=sl.id+'|'+JSON.stringify(_rc);const _now=Date.now();
-        const _dup=_now-(_rosterAlertSeen.current.get(_sig)||0)<60000;_rosterAlertSeen.current.set(_sig,_now);
-        if(!_dup){
-        const _stLabel=st=>st==='in_process'?'In Process':'In Line';
-        const _jobIds=_rc.map(r=>r.jobId);
-        const _assigned=new Set(sl.jobs.filter(j=>_jobIds.includes(j.id)).map(j=>j.assigned_to).filter(Boolean));
-        const _tag=REPS.filter(r=>r.is_active!==false&&(r.role==='prod_manager'||_assigned.has(r.name))).map(r=>r.id);
-        const _txt='⚠️ Numbers/names changed after the sheet was printed — reprint before pressing.\n'+_rc.map(r=>r.jobId+' ('+_stLabel(r.status)+'): '+r.changes.slice(0,8).map(describeRosterChange).join('; ')+(r.changes.length>8?' (+'+(r.changes.length-8)+' more)':'')).join('\n')+(cu?.name?'\nChanged by '+cu.name+'.':'');
-        setMsgs(p=>[...p,{id:'m'+Date.now()+'-rc',so_id:sl.id,author_id:cu?.id,text:_txt,ts:new Date().toLocaleString(),read_by:cu?.id?[cu.id]:[],dept:'production',tagged_members:_tag,entity_type:'so',entity_id:sl.id}]);
-        nf('Heads up: '+_jobIds.join(', ')+' '+(_rc.length>1?'are':'is')+' already on the floor. Production was told to reprint the sheet.','warn');
-        }
+        afterSave(()=>{
+          const _sig=sl.id+'|'+JSON.stringify(_rc);const _now=Date.now();
+          const _dup=_now-(_rosterAlertSeen.current.get(_sig)||0)<60000;_rosterAlertSeen.current.set(_sig,_now);
+          if(!_dup){
+            const _stLabel=st=>st==='in_process'?'In Process':'In Line';
+            const _jobIds=_rc.map(r=>r.jobId);
+            const _assigned=new Set(sl.jobs.filter(j=>_jobIds.includes(j.id)).map(j=>j.assigned_to).filter(Boolean));
+            const _tag=REPS.filter(r=>r.is_active!==false&&(r.role==='prod_manager'||_assigned.has(r.name))).map(r=>r.id);
+            const _txt='⚠️ Numbers/names changed after the sheet was printed — reprint before pressing.\n'+_rc.map(r=>r.jobId+' ('+_stLabel(r.status)+'): '+r.changes.slice(0,8).map(describeRosterChange).join('; ')+(r.changes.length>8?' (+'+(r.changes.length-8)+' more)':'')).join('\n')+(cu?.name?'\nChanged by '+cu.name+'.':'');
+            setMsgs(p=>[...p,{id:'m'+Date.now()+'-rc',so_id:sl.id,author_id:cu?.id,text:_txt,ts:new Date().toLocaleString(),read_by:cu?.id?[cu.id]:[],dept:'production',tagged_members:_tag,entity_type:'so',entity_id:sl.id}]);
+            nf('Heads up: '+_jobIds.join(', ')+' '+(_rc.length>1?'are':'is')+' already on the floor. Production was told to reprint the sheet.','warn');
+          }
+        });
       }
     }
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
@@ -7657,16 +7680,16 @@ export default function App(){
       sl._tracking_url=prev._tracking_url;sl._shipping_cost=prev._shipping_cost;
     }
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
-    logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
-    // Team stores (OMG shadow + native webstore): auto-advance the linked parent
-    // orders' tracking status from this SO's receiving + jobs (fire-and-forget;
-    // never blocks the save). The player/coach order pages read line_status.
-    if(sl.omg_store_id)pushOmgStatusSync(sl);
-    else if(sl.webstore_id)pushWebstoreStatusSync(sl);
+    afterSave(()=>logChange(prev?'updated':'created','SO',sl.id,sl.memo||''));
+    // Fire-and-forget editor saves retain their historical behavior. Result-checked
+    // saves defer these effects until savSONow's database promise confirms success.
+    afterSave(()=>{
+      if(sl.omg_store_id)pushOmgStatusSync(sl);
+      else if(sl.webstore_id)pushWebstoreStatusSync(sl);
+      if(sl.pending_ship_applied&&safeNum(sl.pending_ship_amount)>0)_consumePendingShipForSO(sl);
+    });
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
-    // Consume any pending shipping charge this SO carries (idempotent — safe on every save).
-    if(sl.pending_ship_applied&&safeNum(sl.pending_ship_amount)>0)_consumePendingShipForSO(sl);
     return sl;
   };
   // Remove a carried pending shipping charge from an SO: restore the customer's balance (so it
@@ -7788,16 +7811,23 @@ export default function App(){
     nf('Memo saved','success');
   };
   const savSONow=(s,opts)=>{
-    const sl=savSO(s,opts);
-    if(!sl||!sl.id)return Promise.resolve(false);
+    const deferredEffects=[];
+    const historyKey='sales_orders:'+s.id,baseline=(_dbSnap.current?.sos||[]).find(row=>row.id===s.id)||null,priorHistory=_saveHistoryBases.current.get(historyKey);
+    _failedDocumentSaveEffects.current.delete(historyKey);
+    if(!priorHistory){if(baseline)_confirmedSaveBaselines.current.set(historyKey,baseline);else _confirmedSaveBaselines.current.delete(historyKey)}
+    const historyState={base:priorHistory?priorHistory.base:baseline,attempt:(priorHistory?.attempt||0)+1};_saveHistoryBases.current.set(historyKey,historyState);
+    const sl=savSO(s,{...opts,deferDownstream:true,deferredEffects,historyPrevious:historyState.base});
+    if(!sl||!sl.id){if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey);return Promise.resolve(false)}
     setESO(prev=>prev&&prev.id===sl.id?sl:prev);
     const _syncedBefore=(_dbSnap.current?.sos||[]).find(x=>x.id===sl.id);// routing base, captured before staging
     stageDocumentBaseline(_dbSnap,'sos',sl);
     if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
+    const effectSignature=_soDiffCmp(sl);
     // Unload / forced re-auth saves stay full saves (they are staged in the outbox above).
-    const _p=opts?.stageOutbox?_dbSaveSOFull(sl):_dbSaveSO(sl,{before:_syncedBefore});
-    Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{(!_hasActiveDocumentSave(sl.id)&&_dbSavePendingIds.delete(sl.id))});
+    const _p=opts?.stageOutbox?_dbSaveSOFull(sl,{exactAttempt:true}):_dbSaveSO(sl,{before:_syncedBefore,exactAttempt:true});
+    const confirmSave=payload=>{stageDocumentBaseline(_dbSnap,'sos',payload);_confirmedSaveBaselines.current.set(historyKey,payload);_markRecentlyPulled(sl.id);deferredEffects.forEach(run=>run());if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_saveHistoryBases.current.delete(historyKey)};
+    Promise.resolve(_p).then(ok=>{if(ok===true)confirmSave(sl);else{const restore=_confirmedSaveBaselines.current.get(historyKey)||historyState.base;if(Array.isArray(_dbSnap.current?.sos)&&_dbSnap.current.sos.find(row=>row.id===sl.id)===sl)_dbSnap.current.sos=restore?_dbSnap.current.sos.map(row=>row.id===sl.id?restore:row):_dbSnap.current.sos.filter(row=>row.id!==sl.id);if(_saveHistoryBases.current.get(historyKey)?.attempt===historyState.attempt)_failedDocumentSaveEffects.current.set(historyKey,{signature:effectSignature,confirm:confirmSave})}}).finally(()=>{(!_hasActiveDocumentSave(sl.id)&&_dbSavePendingIds.delete(sl.id))});
     return _p;
   };
   // ── Auto-close fully-invoiced finished orders ──
