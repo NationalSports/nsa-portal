@@ -334,9 +334,9 @@ Items 1–4 close the two live money gaps this week; item 15 closes the one sile
 | 15 invoice chargebacks | **Done.** Dispute on an invoice payment is noted on the payment intent and emailed to accounting + Steve. |
 | 17 database refusals | **Done.** Stale payments, reconciliation hold and duplicate reference each give a plain "reload" message instead of the retry loop. |
 | 18 block delete of QuickBooks invoices | **Done.** Delete refuses and points to Void; deleting an order voids its unpaid QuickBooks-linked invoices. |
-| 1 unblock the 126 bills | **Needs an admin click** after deploy: QuickBooks page → preflight → Approve, then push in batches. |
+| 1 unblock the 126 bills | **PR 2586 merged Oct 17.** Still needs an admin click: QuickBooks page → preflight → Approve, then push in batches. The shared **Auto-send to QB** switch was turned on the same day (owner's decision); it does nothing until that approval exists, then every bill applied to the Portal is also created in QuickBooks right after. |
 | 20 void 28 ghost invoices, 21 duplicate bills | **Needs your go-ahead**: these are writes in QuickBooks (Appendix A and C list every number). |
-| security leftovers | **Needs your go-ahead**: disable the three legacy token functions and the four unauthenticated runners. |
+| security leftovers | **Partly done (Oct 17, after merge).** `qb-auth`, `qb-callback`, `qb-refresh-token` on Supabase are now 410 stubs with JWT verification on (anonymous call → 401, verified). The four unauthenticated runners (`qbo-postportal-vendor-payment-preflight`, `qbo-postportal-vendor-payment-runner`, `qbo-postportal-ready-vendor-payment-runner`, `qbo-ns-held-payment-audit`) are still live and still need a go-ahead. |
 | 3, 5–13, 16, 19, 22 | Not started. | Item 5 is the structural fix and the largest
 single reduction in daily accounting work; items 10 and 11 make everything after it cheaper.
 
