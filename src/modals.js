@@ -776,6 +776,10 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
         data=await res.json();
         if(!res.ok)throw new Error(data.error||'Failed to create payment');
       }
+      if(data&&data.alreadyPaid&&data.intentId){
+        onSuccess({intentId:data.intentId,amount:Number(data.subtotal)||totalDue,fee:Number(data.fee)||0,status:'succeeded',invoices});
+        return;
+      }
       if(!data||!data.clientSecret)throw new Error((data&&data.error)||'Failed to create payment');
       if(Number.isFinite(Number(data.subtotal)))setServerSubtotal(Number(data.subtotal));
       if(Number.isFinite(Number(data.fee)))setServerFee(Number(data.fee));

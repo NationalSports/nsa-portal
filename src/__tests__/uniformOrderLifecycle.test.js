@@ -9,6 +9,7 @@ class MockQuery {
   insert(payload) { this.operation = 'insert'; this.payload = Array.isArray(payload) ? payload : [payload]; return this; }
   update(payload) { this.operation = 'update'; this.payload = payload; return this; }
   eq(key, value) { this.filters.push([key, value, 'eq']); return this; }
+  is(key, value) { this.filters.push([key, value, 'eq']); return this; }
   neq(key, value) { this.filters.push([key, value, 'neq']); return this; }
   order(key, options = {}) { this.orders.push([key, !!options.ascending]); return this; }
   limit(value) { this.max = value; return this; }
@@ -23,7 +24,7 @@ class MockQuery {
       order_number: row.order_number || `UB-${String(mockOrderSeq++).padStart(6, '0')}`,
       public_token: row.public_token || `token-${Math.random().toString(36).slice(2)}`,
       proof_version: 0, approved_proof_version: null, locked_at: null,
-      production_status: 'submitted', payment_status: 'unpaid',
+      production_status: 'submitted', payment_status: 'unpaid', stripe_intent_id: null,
       created_at: now, updated_at: now, ...row,
     };
     if (table === 'uniform_order_events') return { id: mockEventSeq++, created_at: now, ...row };
@@ -62,6 +63,11 @@ const mockStripeCreate = jest.fn(async (params) => {
   return intent;
 });
 const mockStripeRetrieve = jest.fn(async (id) => ({ ...mockPaymentIntents.get(id), status: 'succeeded' }));
+const mockStripeCancel = jest.fn(async (id) => {
+  const intent = mockPaymentIntents.get(id);
+  Object.assign(intent, { status: 'canceled' });
+  return intent;
+});
 
 jest.mock('../../netlify/functions/_shared', () => ({
   corsHeaders: () => ({ 'Content-Type': 'application/json' }),
@@ -70,7 +76,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
   pickCols: (obj, allowed) => Object.fromEntries(Object.entries(obj || {}).filter(([key]) => allowed.has(key))),
 }));
 jest.mock('../../netlify/functions/_uniformOrderEmail', () => ({ sendCustomerEmail: (...args) => mockCustomerEmail(...args), sendStaffEmail: (...args) => mockStaffEmail(...args) }));
-jest.mock('stripe', () => () => ({ paymentIntents: { create: (...args) => mockStripeCreate(...args), retrieve: (...args) => mockStripeRetrieve(...args) } }));
+jest.mock('stripe', () => () => ({ paymentIntents: { create: (...args) => mockStripeCreate(...args), retrieve: (...args) => mockStripeRetrieve(...args), cancel: (...args) => mockStripeCancel(...args) } }));
 
 const { handler } = require('../../netlify/functions/uniform-order');
 
@@ -85,7 +91,7 @@ describe('uniform order lifecycle', () => {
     mockState.uniform_order_proofs.length = 0;
     mockState.uniform_order_events.length = 0;
     mockOrderSeq = 1001; mockEventSeq = 1; mockCustomerEmail.mockClear(); mockStaffEmail.mockClear();
-    mockPaymentIntents.clear(); mockStripeCreate.mockClear(); mockStripeRetrieve.mockClear();
+    mockPaymentIntents.clear(); mockStripeCreate.mockClear(); mockStripeRetrieve.mockClear(); mockStripeCancel.mockClear();
     mockStripeCreate.mockImplementation(async (params) => {
       const intent = { id: 'pi_uniform_test', client_secret: 'secret_uniform_test', status: 'requires_payment_method', ...params };
       mockPaymentIntents.set(intent.id, intent);
@@ -183,6 +189,12 @@ describe('uniform order lifecycle', () => {
     expect(prepared.body.subtotal).toBe(960);
     expect(prepared.body.fee).toBe(27.84);
     expect(mockStripeCreate).toHaveBeenCalledWith(expect.objectContaining({ amount: 98784, metadata: expect.objectContaining({ uniform_order_id: prepared.body.order.id }) }), expect.any(Object));
+
+    const retried = await call({ ...createPayload, action: 'prepare_card', client_ref: 'order-first-card', method: 'card' });
+    expect(retried.status).toBe(200);
+    expect(retried.body.intentId).toBe(prepared.body.intentId);
+    expect(retried.body.alreadyPaid).toBe(true);
+    expect(mockStripeCreate).toHaveBeenCalledTimes(1);
 
     const finalized = await call({ action: 'finalize_card', order_number: prepared.body.order.order_number, token: prepared.body.order.token, stripe_intent_id: prepared.body.intentId });
     expect(finalized.status).toBe(200);

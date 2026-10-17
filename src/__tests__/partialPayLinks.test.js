@@ -5,6 +5,7 @@
 
 function fakeAdmin(seed) {
   const db = JSON.parse(JSON.stringify(seed));
+  const attempts = new Map();
   const q = table => {
     const st = { op: 'select', filters: [], payload: null, single: false };
     const match = r => st.filters.every(([c, v]) => Array.isArray(v) ? v.map(String).includes(String(r[c])) : String(r[c]) === String(v));
@@ -29,7 +30,29 @@ function fakeAdmin(seed) {
     };
     return b;
   };
-  return { db, from: q };
+  const rpc = async (name, args) => {
+    if (name === 'claim_stripe_payment_attempt') {
+      let row = attempts.get(args.p_payable_scope_key);
+      if (!row) {
+        row = {
+          payable_scope_key: args.p_payable_scope_key,
+          payable_key: args.p_payable_key, attempt_version: 1,
+          idempotency_key: `nsa_pi_${args.p_payable_key}_v1`,
+          amount_cents: args.p_amount_cents, currency: args.p_currency,
+          stripe_intent_id: null, stripe_status: 'claimed',
+        };
+        attempts.set(args.p_payable_scope_key, row);
+      }
+      return { data: { ...row }, error: null };
+    }
+    if (name === 'attach_stripe_payment_intent') {
+      const row = [...attempts.values()].find((attempt) => attempt.payable_key === args.p_payable_key);
+      Object.assign(row, { stripe_intent_id: args.p_stripe_intent_id, stripe_status: args.p_stripe_status });
+      return { data: { ...row }, error: null };
+    }
+    throw new Error(`Unexpected RPC ${name}`);
+  };
+  return { db, from: q, rpc };
 }
 
 // Settlement business cases run against real PostgreSQL in scripts/test-stripe-invoice-atomic.cjs.
@@ -42,7 +65,7 @@ describe('stripe-payment with a pay link',()=>{
     jest.resetModules();
     process.env.STRIPE_SECRET_KEY='sk_test_x';
     mockCreated=[];
-    mockAdminDb=fakeAdmin({invoices:[{id:'INV-5',total:5000,paid:0,status:'open',customer_id:'C1'}],invoice_pay_requests:[{id:TOKEN,invoice_id:'INV-5',amount:2000,status:'open',note:'1st installment'}]});
+    mockAdminDb=fakeAdmin({invoices:[{id:'INV-5',total:5000,paid:0,status:'open',customer_id:'C1',so_id:'SO-5'}],invoice_pay_requests:[{id:TOKEN,invoice_id:'INV-5',amount:2000,status:'open',note:'1st installment'}]});
     jest.doMock('stripe',()=>()=>({paymentIntents:{
       create:async(p)=>{mockCreated.push(p);return{id:'pi_new',client_secret:'cs'};},
       list:async()=>({data:[],has_more:false}),
@@ -66,8 +89,8 @@ describe('stripe-payment with a pay link',()=>{
     expect(mockCreated[0]).toMatchObject({amount:205800,metadata:{invoice_id:'INV-5',pay_request_id:TOKEN}});
   });
   test('refuses any other amount, or another invoice, on a pay link',async()=>{
-    expect((await call({action:'create_intent',pay_request_id:TOKEN,invoice_id:'INV-5',amount_cents:500000,method:'card'})).status).toBe(400);
-    expect((await call({action:'create_intent',pay_request_id:TOKEN,invoice_id:'INV-5',amount_cents:100000,method:'bank'})).status).toBe(400);
+    expect((await call({action:'create_intent',pay_request_id:TOKEN,invoice_id:'INV-5',amount_cents:500000,method:'card'})).status).toBe(409);
+    expect((await call({action:'create_intent',pay_request_id:TOKEN,invoice_id:'INV-5',amount_cents:100000,method:'bank'})).status).toBe(409);
     expect((await call({action:'create_intent',pay_request_id:TOKEN,invoice_id:'INV-9',amount_cents:200000,method:'bank'})).status).toBe(400);
     expect(mockCreated).toHaveLength(0);
   });
