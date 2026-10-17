@@ -1,42 +1,26 @@
 // Momentec image verifier / corrector.
 //
-// The Momentec catalog sync derives each product image straight from the SKU as
-// {IMG_BASE}/{dz}_{color}_front.jpg WITHOUT checking the file exists. Momentec's
-// CDN is inconsistent: most apparel really is at `_front.jpg`, but a chunk of
-// styles (belts/accessories like FBC73M) only exist at the plain `.jpg` URL, and
-// many (sublimation "ALL-OVER PATTERN"/"ARGYLE" lines, some hard goods) have no
-// photo at all — the API returns `_NoPicture.jpg` for those and the CDN answers
-// HTTP 403. The blind `_front` guess therefore (a) 403s for the plain-`.jpg`
-// styles and (b) leaves real-but-missing styles pointing at a broken image.
-// Either way the non-null-but-dead URL defeats every "no image" guard: the
-// Featured Styles "No image" count and the LiveLook imageless-hide both treat it
-// as imaged and render a broken/"coming soon" card.
+// Momentec serves two catalog image shapes: newer records use Images.front and
+// Images.back, while older records use Images.imageURL. The catalog often only
+// photographs one hero color. Design-level legacy rows may use that hero image,
+// but colorway rows only accept URLs that contain their own color code.
 //
-// This function fixes image_front_url to the truth, per colorway:
-//   1. try {dz}_{color}_front.jpg          (most apparel)
-//   2. else try {dz}_{color}.jpg           (FBC73M-style accessories)
-//   3. else ask the /v2/Style API for the design's real Images.imageURL /
-//      altImages (shared photos live under the parent design, e.g. youth
-//      jersey 9583 → adult 9582_280.jpg)
-//   4. else NULL it                        (genuinely no photo)
-// Only a definitive 403/404 on BOTH candidates nulls a row; timeouts/5xx leave
-// it untouched so a CDN hiccup can't wipe a good image. image_back_url follows
-// the chosen front (`_back.jpg` for the _front pattern, none for plain `.jpg`).
-//
-// It scans every active Momentec product (not just non-null ones) so it also
-// repairs rows an earlier blind pass cleared. Idempotent and self-healing — if
-// Momentec later publishes a photo the next run picks it up. Runs daily right
-// after the catalog sync (momentec-image-verify-cron).
+// Existing live URLs always win. Missing/dead fields try the SKU-derived flat
+// image, then the matching catalog field. A timeout/5xx is "unknown" and leaves
+// the field untouched. Runs daily after the catalog sync.
 //
 // Trigger manually:  POST /.netlify/functions/momentec-image-verify-background
-// Optional query:    ?brand=Momentec&concurrency=35
+// Optional query:    ?brand=Momentec&concurrency=35&dryRun=true&frontMissingOnly=true
 
+const { extractCatalogImages, splitColorwaySku } = require('../_momentecCatalogImages');
 const IMG_BASE = 'https://static.momentecbrands.com/product';
 const V2_HOST = 'https://api.momentecbrands.com'; // /v2/Style — public catalog read
 
 exports.handler = async (event) => {
   const qs = (event && event.queryStringParameters) || {};
   const brand = qs.brand || 'Momentec';
+  const dryRun = /^(?:1|true|yes)$/i.test(String(qs.dryRun || ''));
+  const frontMissingOnly = /^(?:1|true|yes)$/i.test(String(qs.frontMissingOnly || ''));
   const CONC = Math.min(60, Math.max(1, parseInt(qs.concurrency, 10) || 35));
   const PAGE = 1000;
   const TIME_BUDGET_MS = 13 * 60 * 1000; // background fns get ~15 min
@@ -66,20 +50,20 @@ exports.handler = async (event) => {
   // missing ones 403/404. Anything else is "unknown".
   const probe = async (url) => {
     try {
-      const res = await fetch(encodeURI(url), { method: 'GET', headers: { Range: 'bytes=0-0' } });
+      // Catalog/database URLs are already encoded. Encoding them again changes
+      // `%20` into `%2520` and can make a valid existing image look missing.
+      const res = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-0' } });
       return res.status;
     } catch (e) {
       return 0;
     }
   };
 
-  // API fallback: when a colorway's own photo is missing, Momentec often shares
-  // one under the parent design (e.g. youth jersey 9583 → adult 9582_280.jpg).
-  // The /v2/Style response carries the real URLs in Images.imageURL + altImages
-  // (excluding the _NoPicture.jpg sentinel). Resolve once per design and cache
-  // the promise so sibling colorways reuse it instead of re-calling the API.
-  const designCache = new Map(); // design -> Promise<resolved url | null>
-  const styleImage = (design) => {
+  // Cache the raw response by design. Image extraction remains per SKU because
+  // a catalog hero photo is only safe for a colorway when its URL names that
+  // exact color code.
+  const designCache = new Map();
+  const styleData = (design) => {
     if (designCache.has(design)) return designCache.get(design);
     const p = (async () => {
       try {
@@ -89,19 +73,7 @@ exports.handler = async (event) => {
           body: JSON.stringify({ productOrDesignNumber: design }),
         });
         if (!res.ok) return null;
-        const data = await res.json();
-        const pis = Array.isArray(data.productInfo) ? data.productInfo : (data.productInfo ? [data.productInfo] : []);
-        const cands = [];
-        for (const pi of pis) {
-          const main = pi && pi.Images && pi.Images.imageURL;
-          if (main) cands.push(main);
-          if (Array.isArray(pi && pi.altImages)) cands.push(...pi.altImages);
-        }
-        for (const u of cands) {
-          if (!u || /_NoPicture/i.test(u)) continue;
-          const s = await probe(u);
-          if (s === 200 || s === 206) return u;
-        }
+        return await res.json();
       } catch (e) { /* fall through to null */ }
       return null;
     })();
@@ -109,61 +81,79 @@ exports.handler = async (event) => {
     return p;
   };
 
-  // Resolve the correct front URL for a row. Returns:
-  //   { kind:'found', url, viaApi? } | { kind:'dead' } | { kind:'unknown' }
-  const resolve = async (sku) => {
-    let sawUnknown = false;
-    for (const c of candidates(sku)) {
-      const s = await probe(c);
-      if (s === 200 || s === 206) return { kind: 'found', url: c };
-      if (s === 403 || s === 404) continue;
-      sawUnknown = true; // transient — don't trust a null decision
-      break;
+  const isLive = (status) => status === 200 || status === 206;
+  const isDead = (status) => status === 403 || status === 404;
+
+  const resolveField = async (current, alternatives) => {
+    if (current) {
+      const status = await probe(current);
+      if (isLive(status) || !isDead(status)) return { url: current, preserved: true, unknown: !isLive(status) };
     }
-    if (sawUnknown) return { kind: 'unknown' };
-    // Own photo is definitively missing — try the design's real API image.
-    const i = String(sku || '').indexOf('.');
-    const design = i >= 0 ? sku.slice(0, i) : sku;
-    const apiUrl = design ? await styleImage(design) : null;
-    if (apiUrl) return { kind: 'found', url: apiUrl, viaApi: true };
-    return { kind: 'dead' };
+    let unknown = false;
+    for (const url of alternatives.filter(Boolean)) {
+      if (url === current) continue;
+      const status = await probe(url);
+      if (isLive(status)) return { url, preserved: false, unknown: false };
+      if (!isDead(status)) unknown = true;
+    }
+    return { url: unknown && current ? current : null, preserved: false, unknown };
   };
 
-  // Writes use PATCH (not upsert): we touch only image columns, so the INSERT
-  // arm of an upsert would trip products' NOT NULL columns (sku/name/brand).
-  // Dead rows all get the same value, so they batch into one id=in.() PATCH;
-  // recovered rows each have a distinct URL, so they go one at a time.
-  const patchMany = async (ids, body) => {
-    for (let i = 0; i < ids.length; i += 150) {
-      const chunk = ids.slice(i, i + 150).map((id) => encodeURIComponent(id)).join(',');
-      const r = await sb(`products?id=in.(${chunk})`, {
-        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(body),
-      });
-      if (!r.ok) console.error('[momentec-image-verify] patch-null', r.status, (await r.text()).slice(0, 200));
+  const resolve = async (row) => {
+    const currentFront = row.image_front_url || null;
+    const currentBack = row.image_back_url || null;
+    const ownFronts = candidates(row.sku);
+    let front = await resolveField(currentFront, ownFronts);
+    let back = await resolveField(currentBack, front.url ? [backFor(front.url)] : []);
+
+    if (!front.url || !back.url) {
+      const { design } = splitColorwaySku(row.sku);
+      const data = design ? await styleData(design) : null;
+      const catalog = extractCatalogImages(data, row.sku);
+      if (!front.url && !front.unknown) front = await resolveField(null, [catalog.front]);
+      if (!back.url && !back.unknown) back = await resolveField(null, [catalog.back]);
     }
+
+    const patch = {};
+    if (!front.unknown && front.url !== currentFront) patch.image_front_url = front.url;
+    if (!back.unknown && back.url !== currentBack) patch.image_back_url = back.url;
+    return {
+      patch,
+      front: front.url,
+      back: back.url,
+      frontPreserved: front.preserved,
+      backPreserved: back.preserved,
+      unknown: front.unknown || back.unknown,
+      viaCatalog: Boolean(front.url && !ownFronts.includes(front.url) && front.url !== currentFront),
+    };
   };
-  const patchOne = async (id, front, back) => {
+
+  // PATCH only changed image fields. In particular, recovering a front never
+  // clears an independently valid back (and vice versa).
+  const patchOne = async (id, body) => {
     const r = await sb(`products?id=eq.${encodeURIComponent(id)}`, {
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ image_front_url: front, image_back_url: back }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) console.error('[momentec-image-verify] patch-one', id, r.status, (await r.text()).slice(0, 150));
   };
-  const flush = async (toNull, toSet) => {
-    if (toNull.length) await patchMany(toNull, { image_front_url: null, image_back_url: null });
-    for (let i = 0; i < toSet.length; i += 12) {
-      await Promise.all(toSet.slice(i, i + 12).map((c) => patchOne(c.id, c.image_front_url, c.image_back_url)));
+  const flush = async (changes) => {
+    if (dryRun) return;
+    for (let i = 0; i < changes.length; i += 12) {
+      await Promise.all(changes.slice(i, i + 12).map((change) => patchOne(change.id, change.patch)));
     }
   };
 
   const t0 = Date.now();
   let last = '';
-  let scanned = 0, found_front = 0, found_plain = 0, found_api = 0, nulled = 0, unknown = 0, written = 0, pages = 0;
+  let scanned = 0, fronts_found = 0, backs_found = 0, fronts_preserved = 0, backs_preserved = 0;
+  let found_catalog = 0, cleared_front = 0, cleared_back = 0, unknown = 0, planned = 0, written = 0, pages = 0;
 
   for (;;) {
     if (Date.now() - t0 > TIME_BUDGET_MS) { console.warn('[momentec-image-verify] time budget reached at', last); break; }
     // Keyset pagination by id so writes mid-run can't shift an offset window.
-    let path = `products?select=id,sku,image_front_url&brand=eq.${encodeURIComponent(brand)}&is_active=eq.true&order=id.asc&limit=${PAGE}`;
+    let path = `products?select=id,sku,image_front_url,image_back_url&brand=eq.${encodeURIComponent(brand)}&is_active=eq.true&order=id.asc&limit=${PAGE}`;
+    if (frontMissingOnly) path += '&image_front_url=is.null';
     if (last) path += `&id=gt.${encodeURIComponent(last)}`;
     const r = await sb(path);
     if (!r.ok) { console.error('[momentec-image-verify] select', r.status, (await r.text()).slice(0, 200)); break; }
@@ -172,29 +162,36 @@ exports.handler = async (event) => {
     pages++;
     last = rows[rows.length - 1].id;
 
-    const toNull = [], toSet = [];
+    const changes = [];
     for (let i = 0; i < rows.length; i += CONC) {
       const chunk = rows.slice(i, i + CONC);
-      const results = await Promise.all(chunk.map((row) => resolve(row.sku)));
+      const results = await Promise.all(chunk.map(resolve));
       results.forEach((res, j) => {
         scanned++;
         const row = chunk[j];
-        const cur = row.image_front_url || null;
-        if (res.kind === 'unknown') { unknown++; return; }
-        const desiredFront = res.kind === 'found' ? res.url : null;
-        if (res.kind === 'found') { if (res.viaApi) found_api++; else if (res.url.endsWith('_front.jpg')) found_front++; else found_plain++; }
-        else nulled++;
-        if (cur === desiredFront) return;
-        if (desiredFront === null) toNull.push(row.id);
-        else toSet.push({ id: row.id, image_front_url: desiredFront, image_back_url: backFor(desiredFront) });
+        if (res.front) fronts_found++;
+        if (res.back) backs_found++;
+        if (res.frontPreserved) fronts_preserved++;
+        if (res.backPreserved) backs_preserved++;
+        if (res.viaCatalog) found_catalog++;
+        if (res.unknown) unknown++;
+        if ('image_front_url' in res.patch && !res.patch.image_front_url && row.image_front_url) cleared_front++;
+        if ('image_back_url' in res.patch && !res.patch.image_back_url && row.image_back_url) cleared_back++;
+        if (Object.keys(res.patch).length) changes.push({ id: row.id, patch: res.patch });
       });
     }
-    await flush(toNull, toSet);
-    written += toNull.length + toSet.length;
+    await flush(changes);
+    planned += changes.length;
+    if (!dryRun) written += changes.length;
     if (rows.length < PAGE) break;
   }
 
-  const summary = { brand, pages, scanned, found_front, found_plain, found_api, nulled, unknown_left: unknown, rows_written: written, seconds: Math.round((Date.now() - t0) / 1000) };
+  const summary = {
+    brand, dry_run: dryRun, front_missing_only: frontMissingOnly, pages, scanned, fronts_found, backs_found,
+    fronts_preserved, backs_preserved, found_catalog, cleared_front, cleared_back,
+    unknown_left: unknown, rows_planned: planned, rows_written: written,
+    seconds: Math.round((Date.now() - t0) / 1000),
+  };
   console.log('[momentec-image-verify] done', JSON.stringify(summary));
   return { statusCode: 200, body: JSON.stringify(summary) };
 };

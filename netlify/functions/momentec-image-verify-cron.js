@@ -1,7 +1,6 @@
 // Scheduled trigger: fires momentec-image-verify-background daily, just after
-// the Momentec catalog sync (which re-derives image URLs from the SKU without
-// checking they exist). Clears image_front_url/image_back_url for styles whose
-// CDN photo is missing so the "no image" filters stay accurate.
+// the Momentec catalog sync. Verifies existing images and fills missing
+// front/back URLs from Momentec's current catalog response.
 exports.handler = async () => {
   const site = (process.env.URL || '').replace(/\/+$/, '');
   if (!site) return { statusCode: 500, body: 'No site URL' };
