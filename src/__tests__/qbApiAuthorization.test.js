@@ -8,13 +8,18 @@ jest.mock('../../netlify/functions/_qb', () => ({
 }));
 
 const { verifyQBOUser } = require('../../netlify/functions/_shared');
-const { getStoredTokens, getValidAccessToken } = require('../../netlify/functions/_qb');
+const { getStoredTokens, getValidAccessToken, qbRequest } = require('../../netlify/functions/_qb');
 const { handler } = require('../../netlify/functions/qb-api');
 
 const event = (action) => ({
   httpMethod: 'POST',
   headers: { origin: 'https://connect.nationalsportsapparel.com', authorization: 'Bearer test' },
   body: JSON.stringify({ action }),
+});
+const billEvent = payload => ({
+  httpMethod: 'POST',
+  headers: { origin: 'https://connect.nationalsportsapparel.com', authorization: 'Bearer test' },
+  body: JSON.stringify({ action: 'upsert_bill', ...payload }),
 });
 
 describe('QuickBooks API role gate', () => {
@@ -43,5 +48,29 @@ describe('QuickBooks API role gate', () => {
     const response = await handler(event('connection_status'));
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({ connected: false, requires_reconnect: true, code: 'REFRESH_FAILED' });
+  });
+
+  test('old bundles cannot create a QBO bill without the shared stable request id', async () => {
+    verifyQBOUser.mockResolvedValue({ ok: true, role: 'accounting', teamMemberId: 'acct-1' });
+    getValidAccessToken.mockResolvedValue({ realm_id: 'realm-1', access_token: 'server-only' });
+    const response = await handler(billEvent({ bill: { DocNumber: 'INV-1' } }));
+    expect(response.statusCode).toBe(409);
+    expect(qbRequest).not.toHaveBeenCalled();
+  });
+
+  test('bill updates remain allowed and new bills forward a validated request id', async () => {
+    verifyQBOUser.mockResolvedValue({ ok: true, role: 'accounting', teamMemberId: 'acct-1' });
+    getValidAccessToken.mockResolvedValue({ realm_id: 'realm-1', access_token: 'server-only' });
+    qbRequest.mockResolvedValue({ status: 200, data: { Bill: { Id: '9' } } });
+    expect((await handler(billEvent({ bill: { Id: '9', SyncToken: '0' } }))).statusCode).toBe(200);
+    const requestId = 'NSA-bill-0123456789abcdef0123456789abcdef';
+    expect((await handler(billEvent({ bill: { DocNumber: 'INV-2' }, request_id: requestId }))).statusCode).toBe(200);
+    expect(qbRequest).toHaveBeenLastCalledWith(
+      'POST',
+      `/v3/company/realm-1/bill?requestid=${requestId}`,
+      'server-only',
+      { DocNumber: 'INV-2' },
+      undefined,
+    );
   });
 });

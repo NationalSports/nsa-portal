@@ -18,7 +18,7 @@ function normalizeCompanyKey(value) {
   return key;
 }
 
-function httpsPost(url, body, headers) {
+function httpsPost(url, body, headers, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'POST', headers };
@@ -28,6 +28,7 @@ function httpsPost(url, body, headers) {
       res.on('end', () => { try { resolve({ status: res.statusCode, data: JSON.parse(data) }); } catch { resolve({ status: res.statusCode, data }); } });
     });
     req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('QB upstream request timed out')));
     req.write(body);
     req.end();
   });
@@ -47,16 +48,19 @@ function basicAuth(companyKey = 'national') {
   return 'Basic ' + Buffer.from(`${credentials.clientId}:${credentials.clientSecret}`).toString('base64');
 }
 
-async function getStoredTokens(admin, companyKey = 'national') {
+const withAbort = (query, signal) =>
+  signal && typeof query?.abortSignal === 'function' ? query.abortSignal(signal) : query;
+
+async function getStoredTokens(admin, companyKey = 'national', options = {}) {
   const key = normalizeCompanyKey(companyKey);
   let query = admin.from('qb_oauth_tokens').select('*');
   // The guard preserves the existing token-race unit-test fake and lets National
   // continue reading the legacy one-row table while the migration is rolling out.
   if (typeof query.eq === 'function') query = query.eq('company_key', key);
-  let result = await query.order('updated_at', { ascending: false }).limit(1).maybeSingle();
+  let result = await withAbort(query.order('updated_at', { ascending: false }).limit(1).maybeSingle(), options.signal);
   if (result.error && key === 'national' && /company_key|column/i.test(result.error.message || '')) {
-    result = await admin.from('qb_oauth_tokens').select('*')
-      .order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    result = await withAbort(admin.from('qb_oauth_tokens').select('*')
+      .order('updated_at', { ascending: false }).limit(1).maybeSingle(), options.signal);
   }
   const { data, error } = result;
   if (error) throw new Error('QB token read failed: ' + error.message);
@@ -64,7 +68,7 @@ async function getStoredTokens(admin, companyKey = 'national') {
   return data || null;
 }
 
-async function saveTokens(admin, t, companyKey = t.company_key || 'national') {
+async function saveTokens(admin, t, companyKey = t.company_key || 'national', options = {}) {
   const key = normalizeCompanyKey(companyKey);
   const row = {
     company_key: key,
@@ -75,7 +79,7 @@ async function saveTokens(admin, t, companyKey = t.company_key || 'national') {
     token_created_at: t.token_created_at || Date.now(),
     updated_at: new Date().toISOString(),
   };
-  const { error } = await admin.from('qb_oauth_tokens').upsert(row, { onConflict: 'company_key' });
+  const { error } = await withAbort(admin.from('qb_oauth_tokens').upsert(row, { onConflict: 'company_key' }), options.signal);
   if (error) throw new Error('QB token write failed: ' + error.message);
   return row;
 }
@@ -90,11 +94,12 @@ async function clearTokens(admin, companyKey = 'national') {
 }
 
 // Exchange the stored refresh token for a fresh access token and persist it.
-async function refreshStoredTokens(admin, current, companyKey = current.company_key || 'national') {
+async function refreshStoredTokens(admin, current, companyKey = current.company_key || 'national', options = {}) {
   const key = normalizeCompanyKey(companyKey);
   const result = await httpsPost(QB_TOKEN_URL,
     `grant_type=refresh_token&refresh_token=${encodeURIComponent(current.refresh_token)}`,
-    { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(key), 'Accept': 'application/json' });
+    { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(key), 'Accept': 'application/json' },
+    options.timeoutMs || 8000);
   if (result.status !== 200 || !result.data || !result.data.access_token) {
     const e = new Error('QB token refresh failed'); e.code = 'REFRESH_FAILED'; e.details = result.data; throw e;
   }
@@ -106,18 +111,18 @@ async function refreshStoredTokens(admin, current, companyKey = current.company_
     refresh_token: result.data.refresh_token || current.refresh_token,
     expires_in: result.data.expires_in,
     token_created_at: Date.now(),
-  }, key);
+  }, key, options);
 }
 
 // Return a currently-valid { access_token, realm_id }, refreshing server-side if stale.
 // Throws an error with code 'NOT_CONNECTED' when no tokens are stored.
-async function getValidAccessToken(admin, companyKey = 'national') {
+async function getValidAccessToken(admin, companyKey = 'national', options = {}) {
   const key = normalizeCompanyKey(companyKey);
-  let row = await getStoredTokens(admin, key);
+  let row = await getStoredTokens(admin, key, options);
   if (!row) { const e = new Error('QuickBooks not connected'); e.code = 'NOT_CONNECTED'; throw e; }
   if (Date.now() - (Number(row.token_created_at) || 0) > ACCESS_TTL_MS) {
     try {
-      row = await refreshStoredTokens(admin, row, key);
+      row = await refreshStoredTokens(admin, row, key, options);
     } catch (e) {
       // Refresh race: two concurrent calls can both see a stale row and race the rotating
       // refresh token — the loser's exchange fails at Intuit even though the winner already
@@ -125,7 +130,7 @@ async function getValidAccessToken(admin, companyKey = 'national') {
       // refreshed while we were in flight, use its tokens instead of forcing a spurious
       // "reconnect QuickBooks" on staff.
       if (e && e.code === 'REFRESH_FAILED') {
-        const latest = await getStoredTokens(admin, key);
+        const latest = await getStoredTokens(admin, key, options);
         if (latest && latest.access_token && latest.access_token !== row.access_token &&
             Date.now() - (Number(latest.token_created_at) || 0) <= ACCESS_TTL_MS) {
           return { access_token: latest.access_token, realm_id: latest.realm_id };

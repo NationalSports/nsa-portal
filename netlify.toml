@@ -265,6 +265,15 @@
 [functions."ss-orders-sync-cron"]
   schedule = "30 12 * * *"
 
+# Supplier-bill processor — once daily at 14:00 UTC: about 6:00 AM Pacific
+# during standard time and 7:00 AM during daylight time (Netlify cron is fixed
+# UTC and does not follow DST). The private scheduled trigger starts an
+# authenticated 15-minute background worker, which drains the safe Portal and
+# QBO backlog in batches. Env: existing Supabase service role + QBO OAuth env.
+[functions."supplier-bill-process-scheduled"]
+  schedule = "0 14 * * *"
+  timeout = 26
+
 # Supplier-bill anomaly report — daily at 21:30 UTC (~4:30-5:30 PM ET, after the day's
 # pulls and pushes). Emails accounting + Steve any bill from the last day that looks out
 # of line: adidas/UA freight >10% of merchandise, billed price >25% off the order cost,

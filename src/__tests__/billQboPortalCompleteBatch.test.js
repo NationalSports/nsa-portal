@@ -32,6 +32,7 @@ describe('QBO bill batches after portal auto-push',()=>{
   it('persists verified bill receipts before reporting the batch complete',()=>{
     expect(APP).toContain("supabase.rpc('record_qbo_bill_receipts',{p_receipts:payload})");
     expect(APP).toContain('const receiptOutcome=await _recordQboBillReceipts(');
+    expect(APP).toContain("if(!result.qbBillId||!source||result.portalStatus==='error')return null");
     expect(APP.indexOf('const receiptOutcome=await _recordQboBillReceipts(')).toBeLessThan(APP.indexOf("QBO receipt(s) saved on this browser only"));
   });
 
