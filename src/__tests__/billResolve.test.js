@@ -1313,6 +1313,8 @@ describe('autoPushSafety direct-path gate', () => {
     expect(vendorsCompatible('RICHARDSON CAP CO', 'SanMar')).toBe(false);
     expect(vendorsCompatible('S&S Activewear', 'Adidas')).toBe(false);
     expect(vendorsCompatible('BADGER SPORTSWEAR', 'SanMar')).toBe(false);
+    // Under Armour direct is its own house: a UA bill still cannot land on Momentec lines.
+    expect(vendorsCompatible('Under Armour', 'Momentec')).toBe(false);
     expect(autoPushSafety({ ...base, billVendor: 'RICHARDSON CAP CO', targetVendors: ['SanMar'] }).length).toBe(1);
   });
   test('poExactMatch: same characters ignoring case and spacing, nothing looser', () => {

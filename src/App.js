@@ -29877,10 +29877,19 @@ export default function App(){
         let tItems=[];
         if(p.matchedPOSource==='so_po'){
           tItems=_soPoTargetItems(p);
-          // A proposal/wizard match stores the order's customer PO or id as po_id, not the
-          // PO line the bill names. The target lines are the order's own po_lines (exact,
-          // prefix or prefix-stripped hits): exact on any of them is exact (poExactMatch).
-          if(!poExact)poExact=tItems.some(t=>poExactMatch(p.po_number,t.po_id));
+          // A proposal/wizard match stores the order's customer PO or id as matchedPO.po_id,
+          // not the PO line the bill names, so compare the PO AS PRINTED ON THE BILL against
+          // the lines the bill will be applied to. Accepting a proposal rewrites po_number to
+          // the tied lines' PO (the original moves to _po_raw), so po_number alone would be
+          // exact by construction — "PO 25850 MWB" tied to "PO8325 Clovis" must stay held.
+          // With mappings, EVERY mapped line must sit on the bill's PO (ties can land on a
+          // sibling PO of the same order); without, any of the bill-PO lines. poExactMatch
+          // only — a prefix, a dropped tag or a different PO is not exact.
+          if(!poExact){
+            const billPo=p._po_raw||p.po_number;
+            const mappedPos=(p._lineMappings||[]).map(m=>m&&m.po_id);
+            poExact=mappedPos.length?mappedPos.every(id=>poExactMatch(billPo,id)):tItems.some(t=>poExactMatch(billPo,t.po_id));
+          }
           if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
           if(!pairs){
             pairs=[];
