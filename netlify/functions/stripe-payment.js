@@ -80,21 +80,137 @@ async function loadOpenPayRequest(admin, token) {
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
+const DEFAULT_CARD_FEE_PCT = 0.029;
+const REUSABLE_INTENT_STATUSES = new Set([
+  'requires_payment_method', 'requires_confirmation', 'requires_action',
+  'requires_capture', 'processing', 'succeeded',
+]);
 
-// Find a still-'processing' PaymentIntent overlapping any of realIds within the last
+const sortedUnique = (values) => [...new Set((values || []).map((v) => String(v || '').trim()).filter(Boolean))].sort();
+
+async function loadCardFeePct(admin) {
+  const { data, error } = await admin.from('app_state').select('value').eq('id', 'portal_settings').maybeSingle();
+  if (error) throw new Error('Payment settings verification is unavailable');
+  const configured = data && data.value && data.value.ccFeePct;
+  const raw = typeof configured === 'number' ? configured : Number.NaN;
+  return Number.isFinite(raw) && raw >= 0 && raw <= 0.1 ? raw : DEFAULT_CARD_FEE_PCT;
+}
+
+function paymentAttemptKey({ customerIds, invoiceIds, salesOrderIds, payRequestId, amountCents, currency, method }) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    version: 1,
+    payable_type: 'invoice',
+    customer_ids: sortedUnique(customerIds),
+    invoice_ids: sortedUnique(invoiceIds),
+    sales_order_ids: sortedUnique(salesOrderIds),
+    pay_request_id: payRequestId || null,
+    amount_cents: amountCents,
+    currency,
+    method,
+  })).digest('hex');
+}
+exports.paymentAttemptKey = paymentAttemptKey;
+
+function paymentScopeKey({ customerIds, invoiceIds, salesOrderIds, payRequestId, currency }) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    version: 1,
+    payable_type: 'invoice',
+    customer_ids: sortedUnique(customerIds),
+    invoice_ids: sortedUnique(invoiceIds),
+    sales_order_ids: sortedUnique(salesOrderIds),
+    pay_request_id: payRequestId || null,
+    currency,
+  })).digest('hex');
+}
+exports.paymentScopeKey = paymentScopeKey;
+
+const rpcRow = (data) => Array.isArray(data) ? data[0] : data;
+
+async function claimPaymentAttempt(admin, facts) {
+  const payableKey = paymentAttemptKey(facts);
+  const payableScopeKey = paymentScopeKey(facts);
+  const { data, error } = await admin.rpc('claim_stripe_payment_attempt', {
+    p_payable_scope_key: payableScopeKey,
+    p_payable_key: payableKey,
+    p_payable_type: 'invoice',
+    p_customer_ids: sortedUnique(facts.customerIds),
+    p_invoice_ids: sortedUnique(facts.invoiceIds),
+    p_sales_order_ids: sortedUnique(facts.salesOrderIds),
+    p_pay_request_id: facts.payRequestId || null,
+    p_amount_cents: facts.amountCents,
+    p_currency: facts.currency,
+    p_method: facts.method,
+  });
+  if (error) throw new Error('Payment attempt could not be reserved: ' + error.message);
+  const row = rpcRow(data);
+  if (!row || !row.idempotency_key) throw new Error('Payment attempt reservation returned no claim');
+  return row;
+}
+
+async function attachPaymentIntent(admin, attempt, intent) {
+  const { data, error } = await admin.rpc('attach_stripe_payment_intent', {
+    p_payable_key: attempt.payable_key,
+    p_attempt_version: attempt.attempt_version,
+    p_stripe_intent_id: intent.id,
+    p_stripe_status: intent.status,
+  });
+  if (error) throw new Error('Payment intent could not be recorded: ' + error.message);
+  return rpcRow(data);
+}
+
+function isFullyRefunded(intent) {
+  const received = Number(intent && intent.amount_received) || 0;
+  const refunded = Number(intent && intent.latest_charge && intent.latest_charge.amount_refunded) || 0;
+  return received > 0 && refunded >= received;
+}
+
+async function supersedePaymentAttempt(admin, attempt, intent, terminalStatus, facts) {
+  const desiredPayableKey = paymentAttemptKey(facts);
+  const { data, error } = await admin.rpc('supersede_stripe_payment_attempt', {
+    p_payable_scope_key: attempt.payable_scope_key,
+    p_prior_intent_id: intent.id,
+    p_terminal_status: terminalStatus,
+    p_payable_key: desiredPayableKey,
+    p_payable_type: 'invoice',
+    p_customer_ids: sortedUnique(facts.customerIds),
+    p_invoice_ids: sortedUnique(facts.invoiceIds),
+    p_sales_order_ids: sortedUnique(facts.salesOrderIds),
+    p_pay_request_id: facts.payRequestId || null,
+    p_amount_cents: facts.amountCents,
+    p_currency: facts.currency,
+    p_method: facts.method,
+  });
+  if (error) throw new Error('Payment attempt could not be advanced: ' + error.message);
+  const row = rpcRow(data);
+  if (!row || !row.idempotency_key) throw new Error('Payment attempt advancement returned no claim');
+  if (row.payable_key !== desiredPayableKey) {
+    throw new Error('Another payment replacement won the race; reload before trying again');
+  }
+  return row;
+}
+
+function intentMatchesAttempt(intent, attempt) {
+  return !!intent
+    && intent.currency === attempt.currency
+    && Number(intent.amount) === Number(attempt.amount_cents)
+    && String((intent.metadata && intent.metadata.payment_attempt_key) || attempt.payable_key) === attempt.payable_key;
+}
+
+// Find every still-actionable PaymentIntent overlapping any of realIds within the last
 // `days`. Stripe lists newest-first at up to 100/page, so this PAGINATES (bounded)
 // instead of trusting page one: an ACH debit settles over 1–4 business days, and on a
 // busy week the older in-flight intent — exactly the one the double-debit guard exists
 // to find — is the first thing pushed off page 1 by newer volume from every channel
 // sharing the Stripe account. maxPages bounds serverless runtime; exported for tests.
-const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20, admin } = {}) => {
+const findInFlightIntents = async (client, realIds, { days = 14, maxPages = 20, admin } = {}) => {
+  const found = new Map();
   if (admin) {
     const { data, error } = await admin.from('invoice_payment_intents').select('id').overlaps('invoice_ids', realIds)
       .is('applied_at', null).in('status', ['processing','succeeded']);
     if (error) throw error;
     for (const row of data || []) {
-      const current = await client.paymentIntents.retrieve(row.id);
-      if (['processing','succeeded'].includes(current.status)) return current;
+      const current = await client.paymentIntents.retrieve(row.id, { expand: ['latest_charge'] });
+      if (REUSABLE_INTENT_STATUSES.has(current.status)) found.set(current.id, current);
     }
   }
   const gte = Math.floor(Date.now() / 1000) - days * 86400;
@@ -102,15 +218,20 @@ const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20, ad
   for (let page = 0; page < maxPages; page++) {
     const res = await client.paymentIntents.list({ created: { gte }, limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) });
     const data = (res && res.data) || [];
-    const hit = data.find((p) => p.status === 'processing' && p.metadata && p.metadata.invoice_id
-      && String(p.metadata.invoice_id).split(/[\s,]+/).some((v) => realIds.includes(v)));
-    if (hit) return hit;
-    if (!res || !res.has_more || !data.length) return null;
+    for (const candidate of data) {
+      if (REUSABLE_INTENT_STATUSES.has(candidate.status) && candidate.metadata && candidate.metadata.invoice_id
+          && String(candidate.metadata.invoice_id).split(/[\s,]+/).some((v) => realIds.includes(v))) {
+        found.set(candidate.id, candidate);
+      }
+    }
+    if (!res || !res.has_more || !data.length) return [...found.values()];
     startingAfter = data[data.length - 1].id;
   }
   throw new Error('Bank payment verification exceeded its scan limit');
 };
+const findInFlightIntent = async (...args) => (await findInFlightIntents(...args))[0] || null;
 exports.findInFlightIntent = findInFlightIntent;
+exports.findInFlightIntents = findInFlightIntents;
 
 exports.handler = async (event) => {
   // Handle CORS preflight
@@ -157,171 +278,230 @@ exports.handler = async (event) => {
     }
 
     if (action === 'create_intent') {
-      // Create a PaymentIntent for invoice payment.
-      // Public by necessity (coach portal + storefront pay without accounts), so the
-      // guardrails live here: floor + ceiling, an idempotency key so client retries
-      // can't mint duplicate intents, and — when the ids resolve to real invoices —
-      // a server-side cap at the open balance so a tampered client can't set the price.
+      // Public by necessity (coach portal pays without an account), so every
+      // identity and dollar used below is reloaded from the database. The caller's
+      // idempotency key is deliberately ignored.
       const { amount_cents, customer_name, customer_email, invoice_id, invoice_memo, alpha_tag } = body;
-
-      if (!amount_cents || amount_cents < 50) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount must be at least $0.50' }) };
-      }
-      if (amount_cents > MAX_AMOUNT_CENTS) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: `Amount exceeds the $${Math.floor(MAX_AMOUNT_CENTS / 100).toLocaleString()} per-payment limit — please contact NSA to pay this invoice.` }) };
+      const method = body.method === 'bank' ? 'bank' : body.method === 'card' ? 'card' : null;
+      if (!method) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Choose card or bank payment.' }) };
+      const requestedCents = Number(amount_cents);
+      if (!Number.isSafeInteger(requestedCents)) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount must be whole cents.' }) };
       }
 
       // Partial pay link: the REQUEST sets the price. Fail closed — a request that can't be verified
       // never falls back to the balance checks below.
+      const admin = getSupabaseAdmin();
       let payRequest = null;
-      let invoiceBaseCents = null;
+      let invoiceBaseCents;
       if (body.pay_request_id) {
-        const r = await loadOpenPayRequest(getSupabaseAdmin(), body.pay_request_id);
+        const r = await loadOpenPayRequest(admin, body.pay_request_id);
         if (r.error) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: r.error }) };
-        const reqCents = Math.round(Number(r.req.amount) * 100);
-        invoiceBaseCents = reqCents;
-        if (String(invoice_id || '').trim() !== String(r.req.invoice_id) || amount_cents < reqCents || amount_cents > Math.ceil(reqCents * 1.05) + 100) {
+        invoiceBaseCents = Math.round(Number(r.req.amount) * 100);
+        if (String(invoice_id || '').trim() !== String(r.req.invoice_id)) {
           return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match this payment link. Please reload the page and try again.' }) };
         }
-        let inFlight = null;
-        inFlight = await findInFlightIntent(client, [String(r.req.invoice_id)], { admin: getSupabaseAdmin() });
-        if (inFlight) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing. Please don’t pay again — contact NSA if you believe this is an error.' }) };
         payRequest = r.req;
       }
 
-      // Invoice-balance validation. invoice_id may be a comma-joined list
-      // (multi-invoice portal payments) or a webstore slug (no invoice rows — skipped;
-      // webstore carts get verified when checkout moves server-side). Failing open on DB
-      // errors is unsafe: verification failures must stop a new debit.
-      if (!payRequest) try {
-        const ids = String(invoice_id || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-        if (ids.length) {
-          const admin = getSupabaseAdmin();
-          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
-          if (invErr) {
-            throw new Error('Invoice balance verification is unavailable');
-          } else if (invRows && invRows.length) {
-            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
-            // Headroom for the CC surcharge the portal adds on top (3%) + rounding.
-            invoiceBaseCents = balanceCents;
-            const maxCents = Math.ceil(balanceCents * 1.05) + 100;
-            if (balanceCents <= 0 || amount_cents > maxCents) {
-              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice. Please reload the page and try again.' }) };
-            }
-            // In-flight ACH guard — REAL invoices only (ids that resolved to rows). A
-            // bank debit settles in 1–4 business days, and nothing marks the invoice
-            // "pending" while it does — the balance still shows open, so a payer
-            // returning the next day could start a SECOND real debit for the same
-            // invoice. Refuse (any method) while a 'processing' intent overlaps these
-            // invoice ids. Scoped inside the invRows branch so a non-invoice
-            // identifier (e.g. a legacy webstore slug shared across buyers) can never
-            // block one buyer on another's in-flight payment. Paginated 7-day scan
-            // (see findInFlightIntent); fail closed when the check is incomplete.
-            const realIds = invRows.map((r) => String(r.id));
-            const inFlight = await findInFlightIntent(client, realIds, { admin });
-            if (inFlight) {
-              return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
-            }
-          }
-        }
+      const invoiceIds = sortedUnique(String(invoice_id || '').split(/[\s,]+/));
+      if (!invoiceIds.length) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'A valid invoice is required.' }) };
+      }
+      let invRows;
+      let feePct;
+      try {
+        const [{ data, error }, loadedFeePct] = await Promise.all([
+          admin.from('invoices').select('id,total,paid,status,deleted_at,customer_id,so_id').in('id', invoiceIds),
+          loadCardFeePct(admin),
+        ]);
+        if (error) throw error;
+        invRows = data || [];
+        feePct = loadedFeePct;
       } catch (e) {
         return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment verification is temporarily unavailable. Please try again later; no new payment was started.' }) };
       }
+      if (invRows.length !== invoiceIds.length || sortedUnique(invRows.map((r) => r.id)).join('|') !== invoiceIds.join('|')) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'One or more invoices could not be verified.' }) };
+      }
+      if (invRows.some((row) => row.status === 'void' || row.deleted_at != null)) {
+        return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A void or deleted invoice cannot be paid.' }) };
+      }
+      const customerIds = sortedUnique(invRows.map((r) => r.customer_id));
+      if (!customerIds.length || customerIds.length !== 1) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Invoices must belong to one verified customer.' }) };
+      }
+      if (!payRequest) {
+        invoiceBaseCents = Math.round(invRows.reduce(
+          (sum, row) => sum + Math.max(0, (Number(row.total) || 0) - (Number(row.paid) || 0)), 0,
+        ) * 100);
+      }
+      if (!Number.isSafeInteger(invoiceBaseCents) || invoiceBaseCents < 50) {
+        return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This invoice no longer has an open payable balance.' }) };
+      }
+      const feeCents = method === 'card' ? Math.round(invoiceBaseCents * feePct) : 0;
+      const serverAmountCents = invoiceBaseCents + feeCents;
+      if (serverAmountCents > MAX_AMOUNT_CENTS) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: `Amount exceeds the $${Math.floor(MAX_AMOUNT_CENTS / 100).toLocaleString()} per-payment limit — please contact NSA to pay this invoice.` }) };
+      }
+      if (requestedCents !== serverAmountCents) {
+        return {
+          statusCode: 409,
+          headers: corsHeaders(),
+          body: JSON.stringify({
+            error: 'Payment amount changed. Please reload and review the updated total.',
+            subtotal: invoiceBaseCents / 100,
+            fee: feeCents / 100,
+          }),
+        };
+      }
 
-      // Same payer + same invoice(s) + same amount on the same day → same intent
-      // (Stripe replays the original response for ~24h on a matching key). The leading version token
-      // scopes the key to the current create-params; bump it whenever those params change (e.g.
-      // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
-      // Stripe rejects that with "idempotent requests can only be used with the same parameters."
-      const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi_v3', body.method || '', invoice_id || '', payRequest ? payRequest.id : '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
-        .digest('hex');
-
-      const intent = await client.paymentIntents.create({
-        amount: Math.round(amount_cents),
+      const facts = {
+        customerIds,
+        invoiceIds,
+        salesOrderIds: sortedUnique(invRows.map((r) => r.so_id)),
+        payRequestId: payRequest ? payRequest.id : null,
+        amountCents: serverAmountCents,
         currency: 'usd',
-        // The buyer picked card or bank up front (body.method), so restrict the intent to that one
-        // method. This hard-disables Link and guarantees the method charged matches the chosen price
-        // (card carries the surcharge, bank/ACH does not). Falls back to both if method is unspecified.
-        payment_method_types: body.method === 'bank' ? ['us_bank_account'] : body.method === 'card' ? ['card'] : ['card', 'us_bank_account'],
-        metadata: {
-          invoice_id: invoice_id || '',
-          invoice_memo: invoice_memo || '',
-          customer_name: customer_name || '',
-          alpha_tag: alpha_tag || '',
-          source: 'nsa_coach_portal',
-          ...(invoiceBaseCents !== null ? { invoice_base_cents: String(invoiceBaseCents) } : {}),
-          ...(payRequest ? { pay_request_id: payRequest.id } : {}),
-        },
-        ...(customer_email ? { receipt_email: customer_email } : {}),
-        description: `NSA Invoice ${invoice_id || ''} — ${customer_name || 'Customer'}`,
-      }, { idempotencyKey: idemKey });
+        method,
+      };
+      let attempt;
+      try {
+        attempt = await claimPaymentAttempt(admin, facts);
+      } catch (e) {
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: e.message + '. No new payment was started.' }) };
+      }
+
+      let intent = null;
+      const desiredPayableKey = paymentAttemptKey(facts);
+      if (!attempt.stripe_intent_id && attempt.payable_key !== desiredPayableKey) {
+        return {
+          statusCode: 409,
+          headers: corsHeaders(),
+          body: JSON.stringify({ error: 'Another payment setup for this invoice is still starting. Please wait a moment and try again; no new payment was started.' }),
+        };
+      }
+      if (attempt.stripe_intent_id) {
+        intent = await client.paymentIntents.retrieve(attempt.stripe_intent_id, { expand: ['latest_charge'] });
+        if (!intentMatchesAttempt(intent, attempt)) throw new Error('Recorded payment intent no longer matches its payable item');
+        if (attempt.payable_key !== desiredPayableKey) {
+          let terminalStatus;
+          if (isFullyRefunded(intent)) terminalStatus = 'refunded';
+          else if (intent.status === 'succeeded') terminalStatus = 'succeeded';
+          else if (intent.status === 'canceled') terminalStatus = 'canceled';
+          else if (['requires_payment_method', 'requires_confirmation', 'requires_action', 'requires_capture'].includes(intent.status)) {
+            intent = await client.paymentIntents.cancel(intent.id);
+            terminalStatus = 'canceled';
+          } else {
+            throw new Error('A payment for the prior amount is already processing; contact NSA before paying again');
+          }
+          attempt = await supersedePaymentAttempt(admin, attempt, intent, terminalStatus, facts);
+          intent = attempt.stripe_intent_id
+            ? await client.paymentIntents.retrieve(attempt.stripe_intent_id, { expand: ['latest_charge'] })
+            : null;
+        } else if (isFullyRefunded(intent) || intent.status === 'canceled') {
+          attempt = await supersedePaymentAttempt(
+            admin, attempt, intent, isFullyRefunded(intent) ? 'refunded' : 'canceled', facts,
+          );
+          intent = attempt.stripe_intent_id
+            ? await client.paymentIntents.retrieve(attempt.stripe_intent_id, { expand: ['latest_charge'] })
+            : null;
+        } else if (!REUSABLE_INTENT_STATUSES.has(intent.status)) {
+          throw new Error('The existing payment attempt is not reusable; contact NSA before paying again');
+        }
+      }
+
+      // Backfill an open/succeeded pre-migration intent when it exactly matches
+      // this payable. This prevents a migration rollout from orphaning a debit
+      // that Stripe already knows about.
+      if (!intent) {
+        const listedIntents = await findInFlightIntents(client, invoiceIds, { admin });
+        const legacyIntents = await Promise.all(listedIntents.map((listed) => listed.latest_charge === undefined
+          ? client.paymentIntents.retrieve(listed.id, { expand: ['latest_charge'] })
+          : listed));
+        const exactLegacy = [];
+        for (const legacy of legacyIntents) {
+          const legacyIds = sortedUnique(String(legacy.metadata?.invoice_id || '').split(/[\s,]+/));
+          const legacyMethod = legacy.payment_method_types?.length === 1
+            ? (legacy.payment_method_types[0] === 'us_bank_account' ? 'bank' : legacy.payment_method_types[0] === 'card' ? 'card' : null)
+            : null;
+          const exact = Number(legacy.amount) === serverAmountCents && legacy.currency === 'usd'
+            && legacyIds.join('|') === invoiceIds.join('|') && legacyMethod === method
+            && String(legacy.metadata?.pay_request_id || '') === String(facts.payRequestId || '');
+          if (exact) {
+            if (!isFullyRefunded(legacy)) exactLegacy.push(legacy);
+            continue;
+          }
+          if (isFullyRefunded(legacy)) continue;
+          if (['requires_payment_method', 'requires_confirmation', 'requires_action', 'requires_capture'].includes(legacy.status)) {
+            await client.paymentIntents.cancel(legacy.id);
+            continue;
+          }
+          throw new Error('An earlier payment for this invoice is still processing or succeeded; contact NSA before paying again');
+        }
+        if (exactLegacy.length) {
+          const rank = (candidate) => candidate.status === 'succeeded' ? 4
+            : candidate.status === 'processing' ? 3
+              : candidate.status === 'requires_action' ? 2 : 1;
+          exactLegacy.sort((a, b) => rank(b) - rank(a));
+          intent = exactLegacy[0];
+          for (const duplicate of exactLegacy.slice(1)) {
+            if (duplicate.status === 'succeeded') {
+              throw new Error('Multiple succeeded payments already exist for this invoice; contact NSA for reconciliation');
+            }
+            try {
+              await client.paymentIntents.cancel(duplicate.id);
+            } catch (cancelError) {
+              throw new Error('An earlier payment intent could not be retired safely; contact NSA before paying again');
+            }
+          }
+          attempt = await attachPaymentIntent(admin, attempt, intent);
+        }
+      }
+
+      if (!intent) {
+        intent = await client.paymentIntents.create({
+          amount: serverAmountCents,
+          currency: 'usd',
+          payment_method_types: method === 'bank' ? ['us_bank_account'] : ['card'],
+          metadata: {
+            invoice_id: invoiceIds.join(','),
+            invoice_memo: invoice_memo || '',
+            customer_name: customer_name || '',
+            customer_ids: customerIds.join(','),
+            alpha_tag: alpha_tag || '',
+            source: 'nsa_coach_portal',
+            invoice_base_cents: String(invoiceBaseCents),
+            payment_attempt_key: attempt.payable_key,
+            payment_attempt_version: String(attempt.attempt_version),
+            ...(payRequest ? { pay_request_id: payRequest.id } : {}),
+          },
+          ...(customer_email ? { receipt_email: customer_email } : {}),
+          description: `NSA Invoice ${invoiceIds.join(', ')} — ${customer_name || 'Customer'}`,
+        }, { idempotencyKey: attempt.idempotency_key });
+        attempt = await attachPaymentIntent(admin, attempt, intent);
+      }
 
       return {
         statusCode: 200,
         headers: corsHeaders(),
-        body: JSON.stringify({ clientSecret: intent.client_secret, intentId: intent.id }),
+        body: JSON.stringify({
+          clientSecret: intent.client_secret,
+          intentId: intent.id,
+          subtotal: invoiceBaseCents / 100,
+          fee: feeCents / 100,
+          alreadyPaid: intent.status === 'succeeded',
+          status: intent.status,
+        }),
       };
     }
 
     if (action === 'update_intent') {
-      // Re-price an existing (not-yet-confirmed) PaymentIntent — used to drop the 2.9% card surcharge
-      // when the buyer selects bank/ACH, which NSA does not surcharge. PUBLIC (the portal is anonymous);
-      // safe because the new amount is re-validated against the invoice's open balance + ceiling using
-      // the invoice id stored in the intent's OWN metadata (never client-supplied), so it can't be
-      // abused to set an arbitrary amount.
-      const { intent_id, amount_cents } = body;
-      if (!intent_id || !amount_cents || amount_cents < 50) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'intent_id and amount_cents (>= $0.50) required' }) };
-      }
-      if (amount_cents > MAX_AMOUNT_CENTS) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the per-payment limit.' }) };
-      }
-      let intent0;
-      try {
-        intent0 = await client.paymentIntents.retrieve(intent_id);
-      } catch (e) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment intent not found' }) };
-      }
-      // Only adjust before the buyer has confirmed/paid.
-      if (!intent0 || (intent0.status !== 'requires_payment_method' && intent0.status !== 'requires_confirmation')) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment can no longer be modified.' }) };
-      }
-      // SECURITY (audit #1): re-pricing is only legitimate for INVOICE PaymentIntents (the ACH
-      // surcharge-drop flow), where the new amount is validated against the invoice's open
-      // balance using the invoice id in the intent's OWN metadata. A PI with no invoice_id —
-      // notably a webstore PI (metadata.webstore_order_id) — has no server-side balance to
-      // validate against, so re-pricing it would let a buyer set an arbitrary amount (e.g. $0.50
-      // for a $500 order). Refuse. And fail CLOSED: if the balance can't be confirmed, reject
-      // rather than accept the client-supplied amount.
-      const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      if (!ids.length || (intent0.metadata && intent0.metadata.webstore_order_id)) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'This payment cannot be re-priced.' }) };
-      }
-      if (intent0.metadata && intent0.metadata.pay_request_id) {
-        // A partial pay link re-prices only within its own request (bank drops the card fee).
-        const r = await loadOpenPayRequest(getSupabaseAdmin(), intent0.metadata.pay_request_id);
-        const reqCents = r.req ? Math.round(Number(r.req.amount) * 100) : 0;
-        if (r.error || amount_cents < reqCents || amount_cents > Math.ceil(reqCents * 1.05) + 100) {
-          return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match this payment link.' }) };
-        }
-        const updatedReq = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
-        return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updatedReq.amount }) };
-      }
-      let balanceCents = null;
-      try {
-        const admin = getSupabaseAdmin();
-        const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
-        if (!invErr && invRows && invRows.length) {
-          balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
-        }
-      } catch (e) { /* balanceCents stays null -> reject below */ }
-      const maxCents = balanceCents == null ? 0 : Math.ceil(balanceCents * 1.05) + 100; // headroom for CC surcharge + rounding
-      if (balanceCents == null || balanceCents <= 0 || amount_cents > maxCents) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
-      }
-      const updated = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updated.amount }) };
+      // No current client calls this legacy action. Mutating an existing intent
+      // would invalidate the authoritative amount and durable attempt fingerprint.
+      // Method/amount changes must start through create_intent, which retires the
+      // prior open intent under the invoice lease before creating a replacement.
+      return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment details cannot be changed in place. Start a new payment setup.' }) };
     }
 
     if (action === 'finalize_invoice') {

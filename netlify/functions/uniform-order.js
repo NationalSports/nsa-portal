@@ -60,6 +60,28 @@ async function createUniformPaymentIntent(order, method) {
   const subtotalCents = Math.round(Math.max(0, Number(order.total) || 0) * 100);
   const feeCents = paymentMethod === 'card' ? Math.round(subtotalCents * 0.029) : 0;
   const amount = subtotalCents + feeCents;
+  let attemptVersion = Math.max(1, Math.floor(Number(order.pricing_breakdown?.paymentAttemptVersion) || 1));
+  if (order.stripe_intent_id) {
+    const existing = await stripe.paymentIntents.retrieve(order.stripe_intent_id, { expand: ['latest_charge'] });
+    const existingMethod = existing.payment_method_types?.length === 1
+      ? (existing.payment_method_types[0] === 'us_bank_account' ? 'bank' : existing.payment_method_types[0] === 'card' ? 'card' : null)
+      : null;
+    const received = Number(existing.amount_received) || 0;
+    const refunded = Number(existing.latest_charge?.amount_refunded) || 0;
+    const terminal = existing.status === 'canceled' || (received > 0 && refunded >= received);
+    const exact = existing.currency === 'usd' && Number(existing.amount) === amount && existingMethod === paymentMethod;
+    if (!terminal && exact
+        && ['requires_payment_method', 'requires_confirmation', 'requires_action', 'processing', 'succeeded'].includes(existing.status)) {
+      return { intent: existing, paymentMethod, subtotalCents, feeCents, amount, attemptVersion, alreadyPaid: existing.status === 'succeeded' };
+    }
+    if (terminal) {
+      if (order.payment_status !== 'refunded' && order.payment_status !== 'void') attemptVersion += 1;
+    } else if (['requires_payment_method', 'requires_confirmation', 'requires_action', 'requires_capture'].includes(existing.status)) {
+      await stripe.paymentIntents.cancel(existing.id);
+    } else {
+      throw new Error('The prior payment is already processing or succeeded. Contact NSA before starting another charge.');
+    }
+  }
   const intent = await stripe.paymentIntents.create({
     amount,
     currency: 'usd',
@@ -72,10 +94,11 @@ async function createUniformPaymentIntent(order, method) {
     },
     receipt_email: order.contact_email,
     description: `NSA custom uniform ${order.order_number || order.id} - ${order.team_name}`,
-    // The amount is part of the key: a coach who edits the order and retries
-    // checkout gets a fresh intent instead of a Stripe idempotency_error.
-  }, { idempotencyKey: `uniform-${order.id}-${paymentMethod}-${amount}-v1` });
-  return { intent, paymentMethod, subtotalCents, feeCents, amount };
+    // The order and DB-tracked version are server-owned. Amount/method changes
+    // advance the version first; concurrent variants then share one Stripe key,
+    // so Stripe accepts at most one parameter set instead of creating two intents.
+  }, { idempotencyKey: `uniform-${order.id}-v${attemptVersion}` });
+  return { intent, paymentMethod, subtotalCents, feeCents, amount, attemptVersion, alreadyPaid: false };
 }
 
 async function recordEvent(sb, orderId, eventType, actorType, actorName, message, metadata = {}) {
@@ -244,6 +267,15 @@ async function prepareCardOrder(sb, body) {
     // A retry reuses the permanent order but refreshes its authoritative quote
     // and its latest garment snapshot while it is still unpaid. Once paid, the
     // production record is immutable.
+    const priorAttemptVersion = Math.max(1, Math.floor(Number(order.pricing_breakdown?.paymentAttemptVersion) || 1));
+    const nextSubtotalCents = Math.round(Math.max(0, Number(quote.coachTotal) || 0) * 100);
+    const nextAmountCents = nextSubtotalCents + (method === 'card' ? Math.round(nextSubtotalCents * 0.029) : 0);
+    const priorAmountCents = Math.round(Number(order.pricing_breakdown?.paymentChargeTotal || 0) * 100);
+    const priorMethod = order.pricing_breakdown?.paymentMethod;
+    const paymentAttemptVersion = order.payment_status === 'refunded'
+      || (priorAmountCents > 0 && priorAmountCents !== nextAmountCents)
+      || (priorMethod && priorMethod !== method)
+      ? priorAttemptVersion + 1 : priorAttemptVersion;
     const updated = await sb.from('uniform_order_requests').update({
       contact_name: name,
       team_name: cleanText(body.team_name, 160) || 'Team',
@@ -253,7 +285,7 @@ async function prepareCardOrder(sb, body) {
       unit_price: quote.coachUnit, total: quote.coachTotal,
       public_unit_price: quote.publicUnit, discount_percent: quote.discountPercent,
       discount_total: quote.savingsTotal,
-      pricing_breakdown: { ...quote, policySource: 'uniform_settings/pricing_policy', pricedAt: new Date().toISOString() },
+      pricing_breakdown: { ...quote, policySource: 'uniform_settings/pricing_policy', pricedAt: new Date().toISOString(), paymentAttemptVersion },
       config: body.config && typeof body.config === 'object' ? body.config : {},
       spec: body.spec && typeof body.spec === 'object' ? body.spec : {},
       bottom_spec: body.bottom_spec && typeof body.bottom_spec === 'object' ? body.bottom_spec : null,
@@ -265,13 +297,24 @@ async function prepareCardOrder(sb, body) {
     order = updated.data;
   }
 
+  const priorStripeIntentId = order.stripe_intent_id || null;
   const payment = await createUniformPaymentIntent(order, method);
   const pricing = {
     ...(order.pricing_breakdown || {}), paymentMethod: payment.paymentMethod,
     processingFee: payment.feeCents / 100, paymentChargeTotal: payment.amount / 100,
+    paymentAttemptVersion: payment.attemptVersion,
   };
-  const saved = await sb.from('uniform_order_requests').update({ stripe_intent_id: payment.intent.id, pricing_breakdown: pricing }).eq('id', order.id).select(STAFF_ORDER_FIELDS).single();
-  if (saved.error) throw saved.error;
+  let saveQuery = sb.from('uniform_order_requests').update({
+    stripe_intent_id: payment.intent.id,
+    pricing_breakdown: pricing,
+    payment_status: 'pending',
+    status: 'pending_payment',
+  }).eq('id', order.id);
+  saveQuery = priorStripeIntentId
+    ? saveQuery.eq('stripe_intent_id', priorStripeIntentId)
+    : saveQuery.is('stripe_intent_id', null);
+  const saved = await saveQuery.select(STAFF_ORDER_FIELDS).single();
+  if (saved.error || !saved.data) throw saved.error || new Error('Payment checkout changed while it was being saved. Reload before trying again.');
   return response(200, {
     ok: true,
     order: publicOrder(saved.data),
@@ -280,6 +323,8 @@ async function prepareCardOrder(sb, body) {
     subtotal: quote.coachTotal,
     fee: payment.feeCents / 100,
     chargeTotal: payment.amount / 100,
+    alreadyPaid: payment.alreadyPaid,
+    status: payment.intent.status,
     quote,
   });
 }

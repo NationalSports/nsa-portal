@@ -47,9 +47,9 @@ test('matches comma-joined multi-invoice metadata', async () => {
   expect(found?.id).toBe('pi_multi');
 });
 
-test('ignores non-processing and other-invoice intents; stops at has_more=false', async () => {
+test('ignores terminal and other-invoice intents; stops at has_more=false', async () => {
   const client = mkClient([
-    { data: [intent('pi_a', 'succeeded', 'INV-9'), intent('pi_b', 'processing', 'INV-8'), intent('pi_c', 'processing', null)], has_more: false },
+    { data: [intent('pi_a', 'canceled', 'INV-9'), intent('pi_b', 'processing', 'INV-8'), intent('pi_c', 'processing', null)], has_more: false },
   ]);
   expect(await findInFlightIntent(client, ['INV-9'])).toBeNull();
   expect(client.calls.length).toBe(1);
