@@ -17,12 +17,18 @@
 //      BILL_ANOMALY_EMAILS (comma list; default accounting@ + Steve), PORTAL_PUBLIC_URL.
 
 const { billAnomalyFlags, isAdidasUaVendor, FREIGHT_PCT_CAP } = require('../../src/lib/billAnomalies');
+const { withCronAlert } = require('./_cronAlert');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-exports.handler = async () => {
+// A failure (query error, missing mail key with anomalies found, exception) emails accounting +
+// Steve once; until 2026-10-17 it returned 200 or a console-only 502, so a dead digest looked
+// like a clean day.
+exports.handler = withCronAlert('Bill anomaly digest',
+  'Pushed supplier bills with price, freight or overage anomalies are not being reported, so the after-the-fact review net for auto-pushed bills is down.',
+  async () => {
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const brevoKey = process.env.REACT_APP_BREVO_API_KEY;
@@ -51,7 +57,7 @@ exports.handler = async () => {
   });
 
   if (!pushed.length && !incoming.length) return { statusCode: 200, body: 'No anomalies — no email' };
-  if (!brevoKey) return { statusCode: 200, body: 'Anomalies found but REACT_APP_BREVO_API_KEY not set' };
+  if (!brevoKey) return { statusCode: 500, body: 'Anomalies found but REACT_APP_BREVO_API_KEY is not set — digest not sent' };
 
   const recipients = (process.env.BILL_ANOMALY_EMAILS || 'accounting@nationalsportsapparel.com,steve@nationalsportsapparel.com')
     .split(',').map((e) => e.trim()).filter(Boolean);
@@ -103,4 +109,4 @@ exports.handler = async () => {
   }
   console.log('[bill-anomaly-digest] emailed', n, 'anomalies to', recipients.join(', '));
   return { statusCode: 200, body: 'Emailed ' + n + ' anomalies' };
-};
+});

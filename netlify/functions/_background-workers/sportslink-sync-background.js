@@ -29,8 +29,13 @@ const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
 const round2 = (n) => Math.round(n * 100) / 100;
 const dateOnly = (iso) => { const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[1]}-${m[2]}-${m[3]}` : null; };
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const { withCronAlert } = require('../_cronAlert');
 
-exports.handler = async () => {
+// Any failure (API error, upsert error, thrown exception) emails accounting + Steve once;
+// until 2026-10-17 a dead feed was a console line nobody read, indistinguishable from a quiet day.
+exports.handler = withCronAlert('Sports Inc bill feed',
+  'New Sports Inc invoices are not being copied into the Portal, so nothing new reaches Supplier Bills or Set aside, and no digest email goes out.',
+  async () => {
   const apiKey = process.env.SPORTSLINK_API_KEY;
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -122,7 +127,7 @@ exports.handler = async () => {
   try { await sendDigest(sbUrl, sbKey); } catch (e) { console.error('[sportslink-sync] digest', e.message); }
 
   return { statusCode: 200, body: 'Synced ' + upserted + ' Sports Inc documents since ' + since };
-};
+});
 
 async function sendDigest(sbUrl, sbKey) {
   const brevoKey = process.env.REACT_APP_BREVO_API_KEY;
@@ -161,7 +166,7 @@ async function sendDigest(sbUrl, sbKey) {
         <tr><td style="padding:8px 0"><b>${money(total)}</b> total</td></tr>
       </table>
       ${link ? `<div style="margin-top:20px"><a href="${link}" style="background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Open the Sports Inc queue →</a></div>` : ''}
-      <div style="color:#94a3b8;font-size:11px;margin-top:20px">Nothing is applied automatically — these wait for your review and approval.</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:20px">Clean, exact matches push themselves to the Portal at the daily pull (and to QuickBooks when auto-send is on); everything else waits in Set aside for your review. Spot-check the day's auto-pushed bills in Bill History.</div>
     </div>`;
 
   await fetch('https://api.brevo.com/v3/smtp/email', {

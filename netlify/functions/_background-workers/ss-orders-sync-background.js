@@ -11,7 +11,7 @@
 // resolved_* / applied_* / notes are intentionally OMITTED from the payload, so an upsert
 // on an existing row leaves a human decision untouched while new rows arrive as 'new'.
 // PO matching, review and the push to Billed tracking happen in the browser (Import &
-// Review → Pull from S&S). Nothing is applied automatically.
+// Review → Pull from S&S). Clean, exact matches auto-push at the daily pull; the rest waits in Set aside.
 //
 // Triggered daily by ss-orders-sync-cron; can also be POSTed manually.
 //
@@ -65,7 +65,12 @@ const mapOrderToRow = (o) => {
   };
 };
 
-exports.handler = async () => {
+const { withCronAlert } = require('../_cronAlert');
+
+// Any failure emails accounting + Steve once (see _cronAlert.js).
+exports.handler = withCronAlert('S&S Activewear bill feed',
+  'New S&S invoices are not being copied into the Portal, so nothing new from S&S reaches Supplier Bills, and no digest email goes out.',
+  async () => {
   const account = process.env.SS_ACCOUNT_NUMBER;
   const apiKey = process.env.SS_API_KEY;
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
@@ -166,7 +171,7 @@ exports.handler = async () => {
   try { await sendDigest(sbUrl, sbKey); } catch (e) { console.error('[ss-orders-sync] digest', e.message); }
 
   return { statusCode: 200, body: 'Synced ' + upserted + ' S&S orders' };
-};
+});
 
 async function sendDigest(sbUrl, sbKey) {
   const brevoKey = process.env.REACT_APP_BREVO_API_KEY;
@@ -202,7 +207,7 @@ async function sendDigest(sbUrl, sbKey) {
         <tr><td style="padding:8px 0"><b>${money(total)}</b> total</td></tr>
       </table>
       ${link ? `<div style="margin-top:20px"><a href="${link}" style="background:#0891b2;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Open Import &amp; Review →</a></div>` : ''}
-      <div style="color:#94a3b8;font-size:11px;margin-top:20px">Nothing is applied automatically — these wait for your review and push in the portal.</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:20px">Clean, exact matches push themselves to the Portal at the daily pull (and to QuickBooks when auto-send is on); everything else waits in Set aside for your review. Spot-check the day's auto-pushed bills in Bill History.</div>
     </div>`;
 
   await fetch('https://api.brevo.com/v3/smtp/email', {
