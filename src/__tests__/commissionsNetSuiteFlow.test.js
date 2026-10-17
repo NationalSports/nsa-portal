@@ -45,10 +45,10 @@ const deferred = () => {
 const adminId = '00000000-0000-0000-0000-000000000001';
 const kevin = DEFAULT_REPS.find(r => r.name === 'Kevin McCormack');
 
-function mountPage() {
+function mountPage(tab = 'adminDash') {
   mockData.current = {
     REPS: DEFAULT_REPS,
-    commMonth: '2026-09', commOverrides: {}, commRep: 'all', commTab: 'adminDash',
+    commMonth: '2026-09', commOverrides: {}, commRep: 'all', commTab: tab,
     cu: { id: adminId, name: 'Steve Peterson', role: 'admin' },
     cust: [], invs: [], sos: [],
     setCommMonth: jest.fn(), setCommOverrides: jest.fn(), setCommRep: jest.fn(), setCommTab: jest.fn(),
@@ -76,6 +76,12 @@ beforeEach(() => {
 });
 
 describe('Commissions NetSuite payout actions', () => {
+  test('monthly reports include imported and manual NetSuite commission', async () => {
+    mountPage('monthly');
+    await screen.findByText('Kevin McCormack');
+    expect(await screen.findAllByText('$4,665.86')).not.toHaveLength(0);
+  });
+
   test('Send & mark paid waits for the save and records Kevin’s September payout', async () => {
     const save = deferred();
     mockRpc.mockReturnValue(save.promise);

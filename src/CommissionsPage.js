@@ -120,7 +120,7 @@ export default function CommissionsPage({adminReports=false}={}){
       return()=>{c=true};
     },[isSteve]);
     useEffect(()=>{let cancelled=false;
-      if(!supabase||!isSteve)return;
+      if(!supabase||!isAdmin)return;
       supabase.from('app_state').select('value,version').eq('id','comm_rep_comp').maybeSingle().then(({data,error})=>{
         if(cancelled)return;
         if(error){console.warn('[Comm] rep comp settings load failed — payout panel disabled:',error.message);return}
@@ -129,7 +129,7 @@ export default function CommissionsPage({adminReports=false}={}){
         setRepComp(v);
       });
       return()=>{cancelled=true};
-    },[isSteve]);
+    },[isAdmin]);
     const saveRepComp=async(change)=>{
       if(!supabase||_repCompCurrent.current===null){alert('Commission settings are not loaded. Please retry after loading.');return false}
       if(_compSaving.current){alert('A commission save is in progress. Please wait and retry.');return false}
@@ -256,7 +256,7 @@ export default function CommissionsPage({adminReports=false}={}){
     };
 
     // Build commission line items from paid invoices
-    // Commission: 30% of GP if paid within 90 days, 15% if paid after 90 days
+    // Commission: each payment earns 30% of its GP share through day 90, then 15%.
     const buildCommLines=(repFilter)=>{
       return invs.filter(inv=>{
         if(!isCommissionEarnedInvoice(inv,sos.find(s=>s.id===inv.so_id)))return false;
@@ -914,13 +914,17 @@ export default function CommissionsPage({adminReports=false}={}){
         const repReports=reportableReps.map(r=>{
           const lines=buildAllCommLines(r.id).filter(l=>{if(!l.paidDate)return false;const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');return ym===commMonth});
           const promo=buildPromoLines(r.id).filter(l=>l.soMonth===commMonth);
-          const earned=lines.reduce((a,l)=>a+l.commAmt,0);
+          const settings=(repComp||{})[r.id]||{};
+          const nsInvoices=Object.values(settings.nsInvoices||{}).filter(i=>i.month===commMonth);
+          const nsManual=safeNum(settings.nsComm?.[commMonth]);
+          const nsImported=nsInvoices.reduce((a,i)=>a+safeNum(i.commission),0);
+          const earned=lines.reduce((a,l)=>a+l.commAmt,0)+nsImported+nsManual;
           const promoCost=promo.reduce((a,l)=>a+l.totalCost,0);
           const net=Math.round((earned-promoCost)*100)/100;
-          const rev=lines.reduce((a,l)=>a+safeNum(l.inv.total),0);
-          const gp=lines.reduce((a,l)=>a+l.gp.gp,0);
-          return{rep:r,lines,promo,earned,promoCost,net,rev,gp};
-        }).filter(rr=>rr.lines.length>0||rr.promo.length>0).sort((a,b)=>b.net-a.net);
+          const rev=lines.reduce((a,l)=>a+safeNum(l.inv.total),0)+nsInvoices.reduce((a,i)=>a+safeNum(i.revenue),0);
+          const gp=lines.reduce((a,l)=>a+l.gp.gp,0)+nsInvoices.reduce((a,i)=>a+safeNum(i.gp),0);
+          return{rep:r,lines,promo,nsInvoices,nsManual,nsImported,earned,promoCost,net,rev,gp};
+        }).filter(rr=>rr.lines.length>0||rr.promo.length>0||rr.nsInvoices.length>0||rr.nsManual!==0).sort((a,b)=>b.net-a.net);
         const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
         const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
@@ -928,7 +932,11 @@ export default function CommissionsPage({adminReports=false}={}){
           const w=window.open('','_blank','width=900,height=1100');
           if(!w){alert('Popup blocked — please allow popups for this site.');return}
           const css=`body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:24px;max-width:780px;margin:0 auto}h1{margin:0 0 4px;font-size:22px}h2{margin:0 0 16px;font-size:14px;color:#64748b;font-weight:500}table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}th{text-align:left;padding:8px 6px;border-bottom:2px solid #1e293b;background:#f8fafc;font-size:11px;text-transform:uppercase;color:#475569}td{padding:8px 6px;border-bottom:1px solid #e2e8f0}tfoot td{border-top:2px solid #1e293b;font-weight:700}.tr{text-align:right}.tc{text-align:center}.muted{color:#64748b;font-size:10px}.pos{color:#166534}.neg{color:#dc2626}.box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin:8px 0}.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.tile{padding:12px;border-radius:8px;text-align:center}.tile .v{font-size:20px;font-weight:800}.tile .l{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}.t1{background:#f0f9ff;color:#1e40af}.t2{background:#fef2f2;color:#dc2626}.t3{background:#f0fdf4;color:#166534}.t4{background:#f5f3ff;color:#6d28d9}@media print{button{display:none}}`;
-          const earnedRows=rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(l.gp.rev)}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${commissionRateLabel(l.commRate)}</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`).join('');
+          const earnedRows=[
+            ...rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(l.gp.rev)}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${commissionRateLabel(l.commRate)}</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`),
+            ...rr.nsInvoices.map(i=>`<tr><td><strong>${i.id}</strong><div class="muted">NetSuite · ${i.invoiceDate||''}</div></td><td>${String(i.customer||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(safeNum(i.revenue))}</td><td class="tr neg">${fmt0(safeNum(i.cost))}</td><td class="tr pos">${fmt0(safeNum(i.gp))}</td><td class="tc">${safeNum(i.revenue)>0?Math.round(safeNum(i.gp)/safeNum(i.revenue)*100):0}%</td><td class="tc">${i.daysToPay??'—'}d</td><td class="tc">${commissionRateLabel(i.rate)}${i.commissionBasis==='revenue'?' of sale':''}</td><td class="tr"><strong>${fmt(safeNum(i.commission))}</strong></td></tr>`),
+            ...(rr.nsManual!==0?[`<tr><td><strong>NetSuite adjustment</strong></td><td colspan="7" class="muted">Manual commission adjustment</td><td class="tr"><strong>${fmt(rr.nsManual)}</strong></td></tr>`]:[]),
+          ].join('');
           const promoRows=rr.promo.map(l=>`<tr><td><strong>${l.so.id}</strong><div class="muted">${l.soDate||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr neg">${fmt(l.productCost)}</td><td class="tr neg">${fmt(l.decoCost)}</td><td class="tr neg">${fmt(l.shipCost)}</td><td class="tr neg">${fmt(l.manualCost)}</td><td class="tr neg"><strong>−${fmt(l.totalCost)}</strong></td></tr>`).join('');
           w.document.write(`<!doctype html><html><head><title>Commission — ${rr.rep.name} — ${monthLabel}</title><style>${css}</style></head><body>
             <h1>Commission Statement</h1>
@@ -939,7 +947,7 @@ export default function CommissionsPage({adminReports=false}={}){
               <div class="tile t3"><div class="l">Net Commission</div><div class="v">${fmt(rr.net)}</div></div>
               <div class="tile t4"><div class="l">GP%</div><div class="v">${rr.rev>0?Math.round(rr.gp/rr.rev*100):0}%</div></div>
             </div>
-            ${rr.lines.length>0?`<h3 style="margin-top:20px;font-size:13px">Earned — Paid Invoices</h3>
+            ${earnedRows?`<h3 style="margin-top:20px;font-size:13px">Earned — Paid Invoices</h3>
             <table><thead><tr><th>Invoice</th><th>Customer</th><th class="tr">Revenue</th><th class="tr">Cost</th><th class="tr">GP</th><th class="tc">GP%</th><th class="tc">Days</th><th class="tc">Rate</th><th class="tr">Comm</th></tr></thead>
             <tbody>${earnedRows}</tbody>
             <tfoot><tr><td colspan="2">TOTAL EARNED</td><td class="tr">${fmt0(rr.rev)}</td><td colspan="2"></td><td colspan="3"></td><td class="tr pos">${fmt(rr.earned)}</td></tr></tfoot></table>`:''}
@@ -948,7 +956,7 @@ export default function CommissionsPage({adminReports=false}={}){
             <tbody>${promoRows}</tbody>
             <tfoot><tr><td colspan="6">TOTAL PROMO COSTS</td><td class="tr neg">−${fmt(rr.promoCost)}</td></tr></tfoot></table>`:''}
             <div class="box"><strong>Net Commission for ${monthLabel}: <span class="${rr.net>=0?'pos':'neg'}">${fmt(rr.net)}</span></strong></div>
-            <div style="margin-top:24px;font-size:10px;color:#64748b"><strong>Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days. Promo costs are deducted from net commission.</div>
+            <div style="margin-top:24px;font-size:10px;color:#64748b"><strong>Policy:</strong> GP-basis reps earn 30% on each payment made within 90 days of invoice date and 15% on each later payment. Revenue-basis reps earn their configured percent of sale. Promo costs are deducted from net commission.</div>
             <div style="margin-top:16px;text-align:center"><button onclick="window.print()" style="padding:8px 24px;font-size:13px;background:#1e40af;color:white;border:none;border-radius:6px;cursor:pointer">Print this report</button></div>
           </body></html>`);
           w.document.close();
@@ -980,7 +988,7 @@ export default function CommissionsPage({adminReports=false}={}){
                     <div style={{padding:8,background:'#f0f9ff',borderRadius:6,textAlign:'center'}}>
                       <div style={{fontSize:9,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Earned</div>
                       <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{fmt(rr.earned)}</div>
-                      <div style={{fontSize:10,color:'#64748b'}}>{rr.lines.length} invoice{rr.lines.length!==1?'s':''}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{rr.lines.length+rr.nsInvoices.length} invoice{rr.lines.length+rr.nsInvoices.length!==1?'s':''}{rr.nsManual!==0?' + adjustment':''}</div>
                     </div>
                     <div style={{padding:8,background:rr.promoCost>0?'#fef2f2':'#f8fafc',borderRadius:6,textAlign:'center'}}>
                       <div style={{fontSize:9,fontWeight:700,color:rr.promoCost>0?'#dc2626':'#94a3b8',textTransform:'uppercase'}}>Promo Cost</div>
@@ -1164,7 +1172,7 @@ export default function CommissionsPage({adminReports=false}={}){
         // The adjustment is added to imported and portal commission before the draw.
         const editNsComm=(p)=>{
           if(repComp===null||_compSaving.current)return;
-          const raw=window.prompt('Manual NetSuite commission adjustment for '+repName(p.b)+' — '+monthLabel+'\n\nEnter an additional commission amount in dollars. Imported invoices calculate their own 30% or 15% commission separately.\n\nBlank or 0 removes the manual adjustment.',p.nsManual?String(p.nsManual):'');
+          const raw=window.prompt('Manual NetSuite commission adjustment for '+repName(p.b)+' — '+monthLabel+'\n\nEnter an additional commission amount in dollars. Imported invoices use this rep’s configured commission basis and rate.\n\nBlank or 0 removes the manual adjustment.',p.nsManual?String(p.nsManual):'');
           if(raw==null)return;
           const t=String(raw).trim();
           const v=t===''?0:parseFloat(t.replace(/[$,\s]/g,''));
@@ -1282,7 +1290,7 @@ export default function CommissionsPage({adminReports=false}={}){
               </tr></thead><tbody>${summary}
                 <tr><td style="${td};font-weight:800" colspan="4">TOTAL</td><td style="${td};text-align:right;font-weight:800">${fmt(selTotNet)}</td>${anyComp?`<td style="${td}" colspan="2"></td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(selTotPay)}</td></tr>
               </tbody></table>
-              <p style="margin:16px 0 0;font-size:11px;color:#64748b">Policy: 30% of GP paid within 90 days, 15% after. Promo order costs deduct from net commission. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise).</p>
+              <p style="margin:16px 0 0;font-size:11px;color:#64748b">Policy: GP-basis reps earn 30% on each payment made within 90 days and 15% on each later payment; revenue-basis reps keep their configured percent of sale. Promo order costs deduct from net commission. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise).</p>
             </div>`;
             const b64=btoa(unescape(encodeURIComponent('\ufeff'+csvString(selIds))));
             const singleName=emailModal.single&&selIds.size===1?repName((selPay[0]||{}).b||{repId:emailModal.single}):'';
@@ -1517,7 +1525,7 @@ export default function CommissionsPage({adminReports=false}={}){
                 </tbody></table>}
               </div>
               <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-                <span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying. <span style={{background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#1e40af'}}>Blue</span> = paid after 90 days (15% unless you pick 30%). 🔒 = frozen at payment.
+                <span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying. <span style={{background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#1e40af'}}>Blue</span> = at least one payment arrived after 90 days; the shown rate blends each payment’s 30% or 15% bracket. 🔒 = frozen at payment.
               </div>
             </div>
           </>;
@@ -1651,9 +1659,9 @@ export default function CommissionsPage({adminReports=false}={}){
               <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
                 <h2>⏰ Paid after 90 days — {monthLabel}</h2>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <span style={{fontSize:11,color:'#64748b'}}>{open.length} still at 15% · <strong style={{color:'#dc2626'}}>{fmt(withheld)}</strong> of commission withheld</span>
-                  {open.length>0&&<button className="btn btn-sm btn-primary" title="Restore the full 30% rate on every invoice listed below that is still at 15%" onClick={()=>{
-                    if(!window.confirm('Approve the full 30% rate on all '+open.length+' invoice'+(open.length===1?'':'s')+' paid after 90 days in '+monthLabel+'?\n\nThis pays out '+fmt(withheld)+' more in commission.'))return;
+                  <span style={{fontSize:11,color:'#64748b'}}>{open.length} below full rate · <strong style={{color:'#dc2626'}}>{fmt(withheld)}</strong> of commission withheld</span>
+                  {open.length>0&&<button className="btn btn-sm btn-primary" title="Restore the full 30% rate on every invoice listed below with one or more late payments" onClick={()=>{
+                    if(!window.confirm('Approve the full 30% rate on all '+open.length+' invoice'+(open.length===1?'':'s')+' with payments after 90 days in '+monthLabel+'?\n\nThis pays out '+fmt(withheld)+' more in commission.'))return;
                     setCommOverrides(p=>{const n={...p};open.forEach(x=>{n[x.l.inv.id]=true});return n});
                     open.forEach(x=>_applyOvrToSnap(x.l.inv.id,true));
                   }}>✓ Pay all in full</button>}
@@ -1819,7 +1827,7 @@ export default function CommissionsPage({adminReports=false}={}){
 
       {/* Commission policy note */}
       <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice or set a custom rate per invoice via <em>Edit %</em>. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Manual PO Costs &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping, and manual PO costs) are deducted from monthly commission as they represent real costs with no customer revenue.
+        <strong>Commission Policy:</strong> GP-basis reps earn 30% on each payment made within 90 days of invoice date and 15% on each later payment. Revenue-basis reps earn their configured percent of sale. Admin may restore full 30% on an invoice with late payments or set a custom rate via <em>Edit %</em>. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Manual PO Costs &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping, and manual PO costs) are deducted from monthly commission as they represent real costs with no customer revenue.
       </div>
     </>);
   }

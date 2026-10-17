@@ -40,14 +40,13 @@ describe('buildNetSuiteInvoices', () => {
     const rows = [
       line({
         'Internal ID': 'split-1', 'Invoice #': 'INV-SPLIT', 'Invoice Date': '2026-01-01',
-        'Date of Full Payment': '2026-05-01', 'Invoice Amount': '500', 'PO Amount': '0',
+        'Date of Full Payment': '2026-05-01', 'Invoice Amount': '1000', 'PO Amount': '0',
         'Payment Internal ID': 'pay-1', 'Payment Date': '2026-01-31', 'Payment Amount': '500',
       }),
       line({
-        'Internal ID': 'split-2', 'Invoice #': 'INV-SPLIT', 'Invoice Date': '2026-01-01',
-        'Date of Full Payment': '2026-05-01', 'Invoice Amount': '500', 'PO Amount': '0',
+        'Internal ID': 'split-1', 'Invoice #': 'INV-SPLIT', 'Invoice Date': '2026-01-01',
+        'Date of Full Payment': '2026-05-01', 'Invoice Amount': '1000', 'PO Amount': '0',
         'Payment Internal ID': 'pay-2', 'Payment Date': '2026-05-01', 'Payment Amount': '500',
-        Item: 'Shorts',
       }),
     ];
     const invoice = buildNetSuiteInvoices(rows).invoices[0];
@@ -57,6 +56,42 @@ describe('buildNetSuiteInvoices', () => {
     ]);
     expect(invoice.rate).toBe(0.225);
     expect(invoice.commission).toBe(225);
+  });
+
+  test('deduplicates item × payment joins without collapsing distinct payments', () => {
+    const item = (id, name, paymentId, paymentDate) => line({
+      'Internal ID': id, 'Invoice #': 'INV-JOIN', 'Invoice Date': '2026-01-01',
+      'Date of Full Payment': '2026-05-01', Item: name, Quantity: '1',
+      'Invoice Amount': '500', 'PO Amount': '250',
+      'Payment Internal ID': paymentId, 'Payment Date': paymentDate, 'Payment Amount': '500',
+    });
+    const invoice = buildNetSuiteInvoices([
+      item('item-1', 'Jersey', 'pay-1', '2026-01-31'),
+      item('item-1', 'Jersey', 'pay-2', '2026-05-01'),
+      item('item-2', 'Shorts', 'pay-1', '2026-01-31'),
+      item('item-2', 'Shorts', 'pay-2', '2026-05-01'),
+    ]).invoices[0];
+    expect(invoice).toMatchObject({ revenue: 1000, cost: 500, gp: 500, rate: 0.225, commission: 112.5 });
+    expect(invoice.items).toHaveLength(2);
+    expect(invoice.payments).toHaveLength(2);
+  });
+
+  test('requires payment ids so identical legitimate payments are never guessed away', () => {
+    const noId = buildNetSuiteInvoices([line({
+      'Payment Date': '2026-01-31', 'Payment Amount': '100',
+    })]);
+    expect(noId.invoices).toEqual([]);
+    expect(noId.errors.join(' ')).toMatch(/Payment Internal ID is required/i);
+
+    const rows = [
+      ['pay-1', '2026-01-31'], ['pay-2', '2026-01-31'], ['pay-3', '2026-05-01'],
+    ].map(([id, date]) => line({
+      'Internal ID': 'same-item', 'Invoice #': 'INV-SAME-PAY',
+      'Invoice Date': '2026-01-01', 'Date of Full Payment': '2026-05-01',
+      'Invoice Amount': '300', 'PO Amount': '0',
+      'Payment Internal ID': id, 'Payment Date': date, 'Payment Amount': '100',
+    }));
+    expect(buildNetSuiteInvoices(rows).invoices[0].rate).toBe(0.25);
   });
 
   test('a single payment keeps the prior invoice-level result', () => {

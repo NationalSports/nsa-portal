@@ -66,6 +66,7 @@ const firstValue = (row, names) => {
 const PAYMENT_DATE_FIELDS = ['Payment Date', 'Date of Payment'];
 const PAYMENT_AMOUNT_FIELDS = ['Payment Amount', 'Amount Paid'];
 const PAYMENT_ID_FIELDS = ['Payment Internal ID', 'Payment ID', 'Payment #'];
+const PAYMENT_FIELDS = new Set([...PAYMENT_DATE_FIELDS, ...PAYMENT_AMOUNT_FIELDS, ...PAYMENT_ID_FIELDS]);
 
 /** Convert paid-in-full NetSuite invoice line exports into invoice-level commission rows. */
 export function buildNetSuiteInvoices(rawRows) {
@@ -139,24 +140,58 @@ export function buildNetSuiteInvoices(rawRows) {
   groups.forEach(group => {
     if (group.invalid || !group.rows.length) return;
     const first = group.rows[0];
-    const revenue = cents(group.rows.reduce((sum, line) => sum + line.revenue, 0));
-    const cost = cents(group.rows.reduce((sum, line) => sum + line.cost, 0));
-    const gp = cents(revenue - cost);
     const daysToPay = dayDiff(first.normalized.invoiceDate, first.normalized.paidDate);
     const hasExplicitPayments = group.rows.some(line => line.payment);
     if (hasExplicitPayments && group.rows.some(line => !line.payment)) {
       errors.push(`Invoice ${group.invoice}: payment detail is incomplete; invoice excluded.`);
       return;
     }
-    // A payment join can repeat one payment across several item rows. Prefer the payment's
-    // NetSuite id; otherwise de-duplicate the same date+amount pair. Reports without payment
-    // detail remain a single-payment invoice on Date of Full Payment, preserving old results.
+    if (hasExplicitPayments && group.rows.some(line => !line.payment.id)) {
+      errors.push(`Invoice ${group.invoice}: Payment Internal ID is required with payment detail; invoice excluded.`);
+      return;
+    }
+    // A payment join can repeat one payment across several item rows. Its immutable
+    // NetSuite id distinguishes that repetition from two legitimate same-day/same-amount
+    // payments, which cannot safely be inferred from date and amount alone.
     const paymentMap = new Map();
     group.rows.forEach(line => {
       if (!line.payment) return;
-      const key = line.payment.id || `${line.payment.date}|${line.payment.amount}`;
-      if (!paymentMap.has(key)) paymentMap.set(key, line.payment);
+      const prior = paymentMap.get(line.payment.id);
+      if (prior && (prior.date !== line.payment.date || prior.amount !== line.payment.amount)) {
+        group.invalid = true;
+        return;
+      }
+      if (!prior) paymentMap.set(line.payment.id, line.payment);
     });
+    if (group.invalid) {
+      errors.push(`Invoice ${group.invoice}: one Payment Internal ID has conflicting date or amount; invoice excluded.`);
+      return;
+    }
+    // Payment detail is a NetSuite item × payment join: every payment must carry the
+    // same complete item-row set. Sum one payment's item partition exactly once instead
+    // of guessing which visually-identical rows are duplicates.
+    let itemRows = group.rows;
+    if (hasExplicitPayments) {
+      const byPayment = new Map();
+      group.rows.forEach(line => {
+        if (!byPayment.has(line.payment.id)) byPayment.set(line.payment.id, []);
+        byPayment.get(line.payment.id).push(line);
+      });
+      const itemKey = line => JSON.stringify(Object.keys(line.source).filter(name => !PAYMENT_FIELDS.has(name)).sort().map(name => [
+        name,
+        line.source[name] instanceof Date ? line.source[name].toISOString() : line.source[name],
+      ]));
+      const partitions = [...byPayment.values()];
+      const expected = partitions[0].map(itemKey).sort();
+      if (partitions.some(rows => JSON.stringify(rows.map(itemKey).sort()) !== JSON.stringify(expected))) {
+        errors.push(`Invoice ${group.invoice}: each payment must include the same invoice item rows; invoice excluded.`);
+        return;
+      }
+      itemRows = partitions[0];
+    }
+    const revenue = cents(itemRows.reduce((sum, line) => sum + line.revenue, 0));
+    const cost = cents(itemRows.reduce((sum, line) => sum + line.cost, 0));
+    const gp = cents(revenue - cost);
     const payments = hasExplicitPayments
       ? [...paymentMap.values()]
       : [{ date: first.normalized.paidDate, amount: Math.abs(revenue) || 1 }];
@@ -186,12 +221,24 @@ export function buildNetSuiteInvoices(rawRows) {
       payments,
       rate,
       commission: commissionAmountAtRate(gp, rate),
-      items: group.rows.map(line => ({
+      items: itemRows.map(line => ({
         item: text(line.source.Item), quantity: line.quantity, revenue: cents(line.revenue), cost: cents(line.cost), poNumber: text(line.source['Purchase Order']),
       })),
     });
   });
   return { invoices, errors };
+}
+
+export function rateNetSuiteInvoiceForRep(invoice, rep) {
+  if (rep?.commission_basis !== 'revenue') return { ...invoice, commissionBasis: 'gp' };
+  const configured = Number(rep.commission_rate);
+  const rate = Number.isFinite(configured) && configured > 0 ? configured : 0.01;
+  return {
+    ...invoice,
+    commissionBasis: 'revenue',
+    rate,
+    commission: commissionAmountAtRate(invoice.revenue, rate),
+  };
 }
 
 export { parseDate as parseNetSuiteCommissionDate };

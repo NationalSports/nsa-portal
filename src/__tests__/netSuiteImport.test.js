@@ -27,6 +27,18 @@ test('manual replacement only clears affected rep/months', () => {
   expect(next.b).toEqual(current.b);
 });
 
+test('mapping to a revenue-basis rep recalculates imported commission from revenue', () => {
+  const revenueInvoice = { ...invoice, revenue: 10000, cost: 6000, gp: 4000, rate: 0.3, commission: 1200 };
+  const next = mergeNetSuiteImport({}, [revenueInvoice], { Alex: 'a' }, {
+    reps: [{ id: 'a', name: 'Alex', commission_basis: 'revenue', commission_rate: 0.01 }],
+  });
+  expect(next.a.nsInvoices.INV1).toMatchObject({
+    commissionBasis: 'revenue',
+    rate: 0.01,
+    commission: 100,
+  });
+});
+
 test('CSV preview requires an explicit choice for existing manual commission before saving', async () => {
   const current = { a: { nsComm: { '2026-09': 138.11 } } };
   const onSave = jest.fn(async change => { const next = change(current);expect(next.a.nsComm).toEqual({});expect(next.a.nsInvoices.INV1.commission).toBe(138.11);return true; });
