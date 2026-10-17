@@ -322,7 +322,22 @@ was matched against the portal's own tables.
 | 21 | **Clean the July double-posted bills**: delete one copy of each of the 14 open pairs ($7K); check the 25 paid pairs ($12.9K) with vendors for credits | overstated A/P, money possibly paid twice | Andrea, 2 hours |
 | 22 | **Pull QuickBooks payments into the portal on the server** (the browser-only pull, moved into the hourly job) | 17 paid invoices still showing open, wrong reminders | 1 day |
 
-Items 1–4 close the two live money gaps this week; item 15 closes the one silent-loss path. Item 5 is the structural fix and the largest
+Items 1–4 close the two live money gaps this week; item 15 closes the one silent-loss path.
+
+### Status after PR 2586 (same day)
+
+| Item | Status |
+|---|---|
+| 2 gate wipe | **Done in code.** A qb-api 409 is a message; 401 and connection_status:false keep the approval; only a different QuickBooks company or an explicit Disconnect resets it. |
+| 4 failure alerts | **Done.** The Sports Inc feed, S&S feed and anomaly digest email accounting + Steve once on any failure; the digest no longer returns success with no mail key. |
+| 14 digest wording | **Done.** |
+| 15 invoice chargebacks | **Done.** Dispute on an invoice payment is noted on the payment intent and emailed to accounting + Steve. |
+| 17 database refusals | **Done.** Stale payments, reconciliation hold and duplicate reference each give a plain "reload" message instead of the retry loop. |
+| 18 block delete of QuickBooks invoices | **Done.** Delete refuses and points to Void; deleting an order voids its unpaid QuickBooks-linked invoices. |
+| 1 unblock the 126 bills | **Needs an admin click** after deploy: QuickBooks page → preflight → Approve, then push in batches. |
+| 20 void 28 ghost invoices, 21 duplicate bills | **Needs your go-ahead**: these are writes in QuickBooks (Appendix A and C list every number). |
+| security leftovers | **Needs your go-ahead**: disable the three legacy token functions and the four unauthenticated runners. |
+| 3, 5–13, 16, 19, 22 | Not started. | Item 5 is the structural fix and the largest
 single reduction in daily accounting work; items 10 and 11 make everything after it cheaper.
 
 ---
