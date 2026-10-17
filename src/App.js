@@ -93,6 +93,7 @@ import GlobalSearch from './GlobalSearch';
 import { checkUpsTracking } from './lib/upsTracking';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,slimMatchedPO,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
+import { qboSupplierBillRequestId, supplierBillCoordinationKey } from './lib/supplierBillAutomation';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
@@ -26993,6 +26994,8 @@ export default function App(){
   // _docAlreadyApplied can answer cross-machine: a doc applied on ANY machine is a duplicate here,
   // even if this browser never saw it. Keys: 'd|<credit>|<doc#>' and 's|<credit>|<SI/S&S order#>', lowercased.
   const _billApplySession=React.useRef(null);
+  const _billPortalClaims=React.useRef(new Map());
+  const _billClaimOwner=React.useRef('browser:'+(cu?.id||cu?.email||'staff')+':'+Date.now().toString(36)+':'+Math.random().toString(36).slice(2));
   // QuickBooks bill sends from this browser run one at a time: 'manual' (Push
   // button) or 'auto' (auto-send after a Portal push). _qbAutoQueue holds rows
   // that arrive while an auto run is in flight; _qbCfgRef lets that async run
@@ -31338,13 +31341,32 @@ export default function App(){
     // ledger's unique-doc# constraint refuses re-pushes forever, so recording "applied" while the
     // SO save later failed would permanently strand the bill's costs off the SO.
     const _confirmPortalBill=async(b,{retry=false,mutate}={})=>{
+      let claimToken=null;
       try{
         const p=b.parsed;
         const key=billingAttemptKey(b);
         const session=_billApplySession.current;
         let recordBill;
-        if(!session.hasPending(key)&&!retry&&portalBillAlreadyApplied(p,_docAlreadyApplied)){
-          b.portalStatus='success';b.portalMsg='Already applied to Portal';return true;
+        // First-write lease shared with the scheduled processor. The applied_bills
+        // ledger is written after order costs, so by itself it cannot stop a browser
+        // and cron run from starting together.
+        claimToken=_billPortalClaims.current.get(key)||null;
+        if(!claimToken){
+          if(!supabase)throw new Error('Server bill claim is unavailable — no costs were applied.');
+          const billKey=supplierBillCoordinationKey(p);
+          if(!billKey)throw new Error('Bill has no stable document identity.');
+          const{data:claim,error:claimError}=await supabase.rpc('claim_supplier_bill',{
+            p_bill_key:billKey,p_doc_norm:String(p.doc_number||'').trim().toLowerCase(),
+            p_vendor:p.vendor||p.supplier||'',p_is_credit:!!p.is_credit,p_source:p.source||b.source||'browser',
+            p_source_id:String(p.si_doc_number||p.doc_number||b.id||''),
+            p_owner:_billClaimOwner.current,p_allow_review:true,
+          });
+          if(claimError)throw new Error('Could not reserve this bill: '+claimError.message);
+          if(claim?.state==='applied'){b.portalStatus='success';b.portalMsg='Already applied to Portal by another processor';return true}
+          if(claim?.state==='collision')throw new Error(claim.reason||'This document number is already applied under a different supplier; review is required.');
+          if(claim?.state==='busy')throw new Error('Another bill processor is applying this document. Reload in a moment.');
+          if(claim?.state!=='claimed'||!claim.token)throw new Error('This bill could not be reserved for a safe apply.');
+          claimToken=claim.token;_billPortalClaims.current.set(key,claimToken);
         }
         await session.run(key,{
           retry,
@@ -31362,14 +31384,31 @@ export default function App(){
             recordBill=JSON.parse(JSON.stringify({...b,parsed:{...p,...metadata},portalStatus:'success'}));
             return writes;
           },
-          record:()=>_recordAppliedBills([recordBill]),
+          record:async()=>{
+            if(!(await _recordAppliedBills([recordBill])))return false;
+            const{data,error}=await supabase.rpc('finish_supplier_bill_claim',{
+              p_claim_token:claimToken,p_status:'applied',p_code:null,p_reason:null,
+              p_payload:recordBill.parsed,p_match_plan:recordBill.parsed?._lineMappings||[],
+            });
+            if(error||data!==true)return false;
+            _billPortalClaims.current.delete(key);
+            return true;
+          },
           complete:(priorMetadata)=>{
             const metadata=priorMetadata||(recordBill?.parsed?{_credit_applied:recordBill.parsed._credit_applied}:{});
             Object.assign(p,metadata,{_applied:true});b.portalStatus='success';b.portalMsg='Applied to Portal (save confirmed)';return metadata;
           },
         });
         return true;
-      }catch(e){b.portalStatus='error';b.portalMsg=e.message||'Portal save failed';return false}
+      }catch(e){
+        const key=(()=>{try{return billingAttemptKey(b)}catch{return null}})();
+        // No prepared write means the lease can be released immediately. A
+        // partial/uncertain save keeps the lease for Retry save (then expires).
+        if(claimToken&&key&&!_billApplySession.current.hasPending(key)&&supabase){
+          try{await supabase.rpc('finish_supplier_bill_claim',{p_claim_token:claimToken,p_status:'pending',p_code:null,p_reason:e.message||'Portal save failed',p_payload:null,p_match_plan:null});_billPortalClaims.current.delete(key)}catch(_){}
+        }
+        b.portalStatus='error';b.portalMsg=e.message||'Portal save failed';return false
+      }
     };
     const _applyBillsToPortal=async(bills,opts={})=>{
       let applied=0;
@@ -31510,10 +31549,35 @@ export default function App(){
 
       let success=0,failed=0;
       const qbResults={};
+      const qboClaims=new Map();
       for(let bi=0;bi<rows.length;bi++){
         const b=rows[bi];
         const bill=b.parsed||{};
+        let qboClaimToken=null;
         try{
+          if(!supabase)throw new Error('Server QBO claim is unavailable; no bill was sent.');
+          const billKey=supplierBillCoordinationKey(bill);
+          if(!billKey)throw new Error('Bill has no stable document identity; no QBO bill was sent.');
+          const{data:qboClaim,error:qboClaimError}=await supabase.rpc('claim_supplier_bill_qbo',{
+            p_bill_key:billKey,p_doc_norm:String(bill.doc_number||'').trim().toLowerCase(),
+            p_vendor:bill.vendor||bill.supplier||'',p_is_credit:!!bill.is_credit,
+            p_owner:_billClaimOwner.current,p_allow_review:true,
+          });
+          if(qboClaimError)throw new Error('Could not reserve this QBO bill: '+qboClaimError.message);
+          if(qboClaim?.state==='applied'){
+            Object.assign(qbResults,setRowResult(bi,b,'success','Already sent to QuickBooks by another processor'));
+            success++;continue;
+          }
+          if(qboClaim?.state==='busy')throw new Error('Another processor is sending this bill to QuickBooks. Reload in a moment.');
+          if(qboClaim?.state==='collision'){
+            const reason=qboClaim.reason||'This document number is claimed under a different supplier; no QBO bill was sent.';
+            bill._server_review_code='document_vendor_collision';
+            bill._auto_hold=[reason];
+            _parkBillsForLater([b]);// durable supplier_bill_holds row — visible on every device
+            throw new Error(reason);
+          }
+          if(qboClaim?.state!=='claimed'||!qboClaim.token)throw new Error('This bill could not be reserved for a safe QuickBooks send.');
+          qboClaimToken=qboClaim.token;qboClaims.set(b.id,qboClaimToken);
           if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
           const vendorName=billVendorMatchName(bill);
           if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
@@ -31609,7 +31673,7 @@ export default function App(){
             if(b._qbCanaryRecoveryOnly||bill._qbCanaryRecoveryOnly){
               throw new Error('Canary recovery stopped: the exact existing QBO bill was not found; no replacement bill was created.');
             }
-            const billRes=await qbApi('upsert_bill',{bill:qbBill});
+            const billRes=await qbApi('upsert_bill',{bill:qbBill,request_id:qboSupplierBillRequestId(qbConfig.realm_id,bill)});
             // "Unknown QBO bill error" hid the real reason on 40 bills in the
             // first production backfill: a throttled or 5xx response carries no
             // Fault, and its body was dropped here. qbResponseErrorDetail reads
@@ -31711,6 +31775,9 @@ export default function App(){
           if(portalWarning)failed++;else success++;
         }catch(e){
           const msg=e.message||'Bill sync failed';
+          if(qboClaimToken&&supabase){
+            try{await supabase.rpc('finish_supplier_bill_qbo_claim',{p_claim_token:qboClaimToken,p_status:'pending',p_reason:msg});qboClaims.delete(b.id)}catch(_){}
+          }
           Object.assign(qbResults,setRowResult(bi,b,'error',msg));
           failed++;
         }
@@ -31719,10 +31786,23 @@ export default function App(){
       const sourceRows=new Map(rows.map(row=>[row.id,row]));
       const receiptOutcome=await _recordQboBillReceipts(Object.entries(qbResults).map(([id,result])=>{
         const source=sourceRows.get(id);const p=source?.parsed||{};
-        if(!result.qbBillId||!source)return null;
+        // A QBO record can exist while the Portal save is still incomplete.
+        // Do not let that partial outcome create a portal-success ledger row;
+        // the exact-QBO duplicate check will reuse it on the next safe retry.
+        if(!result.qbBillId||!source||result.portalStatus==='error')return null;
         const rawMeta={...p};delete rawMeta.rawText;delete rawMeta._wizard;delete rawMeta._applyKey;delete rawMeta._qbBackfill;
         return{doc_number:p.doc_number,si_doc_number:p.si_doc_number,is_credit:!!p.is_credit,vendor:p.vendor||p.supplier||'',po_number:p.po_number||'',doc_total:safeNum(p.doc_total)||null,source:p.source||source.source||'',applied_by:cu?.name||cu?.email||'',raw_meta:rawMeta,qb_bill_id:result.qbBillId,qb_message:result.qbMsg,qb_synced_at:result.qbSyncedAt};
       }).filter(Boolean));
+      if(supabase){
+        for(const [id,token] of qboClaims){
+          try{
+            const result=qbResults[id]||{};
+            const complete=!!result.qbBillId&&result.portalStatus!=='error';
+            const{data,error}=await supabase.rpc('finish_supplier_bill_qbo_claim',{p_claim_token:token,p_status:complete?'applied':'pending',p_reason:complete?null:(result.portalMsg||result.qbMsg||'Portal save incomplete')});
+            if(!error&&data===true)qboClaims.delete(id);
+          }catch(_){}
+        }
+      }
       setSavedBills(prev=>{
         const persistedIds=new Set();
         const updated=prev.map(sb=>{

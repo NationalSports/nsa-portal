@@ -136,9 +136,13 @@ exports.handler = async (event) => {
 
     // ── CREATE/UPDATE BILL (vendor bill) ──
     if (action === 'upsert_bill') {
-      const { bill } = body;
+      const { bill, request_id } = body;
       // bill: { VendorRef, Line[], TxnDate, DocNumber, etc. }
-      const res = await qbRequest('POST', `${basePath}/bill`, access_token, bill, sandbox);
+      if (request_id != null && !/^[A-Za-z0-9-]{1,50}$/.test(String(request_id))) {
+        return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Invalid QBO request id' }) };
+      }
+      const requestQuery = request_id ? `?requestid=${encodeURIComponent(String(request_id))}` : '';
+      const res = await qbRequest('POST', `${basePath}/bill${requestQuery}`, access_token, bill, sandbox);
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 

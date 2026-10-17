@@ -6,6 +6,7 @@ import vm from 'vm';
 import { createBillApplySession, billingAttemptKey, sameBillingSnapshot } from '../billApplySession';
 import { portalBillAlreadyApplied } from '../appliedBillsLedger';
 import { duplicateBillDetail } from '../lib/billAnomalies';
+import { supplierBillCoordinationKey } from '../lib/supplierBillAutomation';
 
 const source=fs.readFileSync(path.join(__dirname,'../App.js'),'utf8');
 const fn=name=>{
@@ -14,8 +15,9 @@ const fn=name=>{
   return source.slice(start,source.indexOf('\n    };',start)+7);
 };
 const context=(orders=[],inventory=[],batches=[])=>{
-  const c={sos:orders,invPOs:inventory,submittedBatches:batches,createBillApplySession,billingAttemptKey,sameBillingSnapshot,portalBillAlreadyApplied,
+  const c={sos:orders,invPOs:inventory,submittedBatches:batches,createBillApplySession,billingAttemptKey,sameBillingSnapshot,portalBillAlreadyApplied,supplierBillCoordinationKey,
     _billApplySession:{current:createBillApplySession()},_billApplyData:{current:{sos:orders,invPOs:inventory,submittedBatches:batches}},
+    _billPortalClaims:{current:new Map()},_billClaimOwner:{current:'browser:test:one-tab'},
     _initialLoadDone:{current:true},_dbLoadSuccess:{current:true},
     safeNum:n=>Number(n)||0,cu:{name:'Test'},setTimeout,nf:jest.fn(),
     setBillImport:jest.fn(),setSavedBills:jest.fn(),_lsSet:jest.fn(),
@@ -28,7 +30,12 @@ const context=(orders=[],inventory=[],batches=[])=>{
   c.setInvPOs=update=>{c.invPOs=typeof update==='function'?update(c.invPOs):update};
   c.setSubmittedBatches=update=>{c.submittedBatches=typeof update==='function'?update(c.submittedBatches):update};
   c._dbSaveSO=jest.fn(async()=>true);c._recordAppliedBills=jest.fn(async()=>true);
-  c.appSave=jest.fn(async()=>({error:null}));c.supabase={from:()=>({upsert:c.appSave})};
+  c.appSave=jest.fn(async()=>({error:null}));
+  c.supabase={from:()=>({upsert:c.appSave}),rpc:jest.fn(async(name)=>{
+    if(name==='claim_supplier_bill')return{data:{state:'claimed',token:'claim-1'},error:null};
+    if(name==='finish_supplier_bill_claim')return{data:true,error:null};
+    return{data:null,error:null};
+  })};
   vm.createContext(c);
   const stageStart=source.indexOf('    const _billStages=');
   const stageEnd=source.indexOf('    // Apply parsed bill data',stageStart);
