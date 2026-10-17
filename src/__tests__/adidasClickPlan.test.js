@@ -53,7 +53,7 @@ describe('adidas CLICK size resolution', () => {
 });
 
 describe('adidas CLICK planning', () => {
-  test('splits current stock and next-restock quantity for each-size-when-ready', () => {
+  test('splits against projected future ATP without adding it to current stock', () => {
     const plan = planAdidasClickOrder({
       lines: [{ sku: 'TOP1', sizes: { S: 8, M: 2, unit_cost: 10 } }],
       inventoryRows: inventory,
@@ -65,22 +65,42 @@ describe('adidas CLICK planning', () => {
     expect(plan.customer_po).toBe('PO 60852');
     expect(plan.import_rows).toEqual([
       { article: 'TOP1', rdd: '2026-10-17', click_size: 'S', qty: 4 },
-      { article: 'TOP1', rdd: '2026-10-20', click_size: 'S', qty: 4 },
+      { article: 'TOP1', rdd: '2026-10-20', click_size: 'S', qty: 2 },
       { article: 'TOP1', rdd: '2026-10-17', click_size: 'M', qty: 2 },
     ]);
+    expect(plan.sku_plans[0]).toMatchObject({
+      status: 'partial',
+      unfilled: [{ click_size: 'S', qty: 2 }],
+    });
   });
 
   test('puts every size of a complete SKU on its latest required date', () => {
     const plan = planAdidasClickOrder({
-      lines: [{ sku: 'TOP1', sizes: { S: 8, M: 2 } }],
+      lines: [{ sku: 'TOP1', sizes: { S: 6, M: 2 } }],
       inventoryRows: inventory,
       defaultChoice: ADIDAS_CLICK_CHOICES.COMPLETE_SKU,
       ...headers,
     });
 
     expect(plan.import_rows).toEqual([
-      { article: 'TOP1', rdd: '2026-10-20', click_size: 'S', qty: 8 },
+      { article: 'TOP1', rdd: '2026-10-20', click_size: 'S', qty: 6 },
       { article: 'TOP1', rdd: '2026-10-20', click_size: 'M', qty: 2 },
+    ]);
+  });
+
+  test('does not add current stock to projected ATP for a complete SKU', () => {
+    const plan = planAdidasClickOrder({
+      lines: [{ sku: 'TOP1', sizes: { S: 8 } }],
+      inventoryRows: inventory,
+      defaultChoice: ADIDAS_CLICK_CHOICES.COMPLETE_SKU,
+      ...headers,
+    });
+    expect(plan.import_rows).toEqual([]);
+    expect(plan.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'insufficient_inventory', sku: 'TOP1' }),
+    ]));
+    expect(plan.sku_plans[0].unfilled).toEqual([
+      expect.objectContaining({ click_size: 'S', qty: 8, available: 6 }),
     ]);
   });
 

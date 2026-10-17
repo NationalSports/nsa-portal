@@ -137,26 +137,43 @@ $function$;
 
 revoke all on function public.capture_adidas_inventory_freshness() from public, anon, authenticated;
 
+create or replace function public.refresh_adidas_inventory_freshness()
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $function$
+begin
+  -- Dynamic SQL keeps this migration valid before PR #2526's older-dated
+  -- reliability migration is present. The cron backstop begins working as
+  -- soon as adidas_inventory_sync_runs exists.
+  if to_regclass('public.adidas_inventory_sync_runs') is null then return; end if;
+  execute $sql$
+    insert into public.adidas_inventory_freshness (source, last_success_at)
+    select distinct on (source) source, finished_at
+      from public.adidas_inventory_sync_runs
+     where status in ('success', 'completed')
+       and error_count = 0
+       and finished_at is not null
+     order by source, finished_at desc
+    on conflict (source) do update
+      set last_success_at = greatest(
+        public.adidas_inventory_freshness.last_success_at,
+        excluded.last_success_at
+      )
+  $sql$;
+end;
+$function$;
+
+revoke all on function public.refresh_adidas_inventory_freshness() from public, anon, authenticated;
+
 -- PR #2526 owns this service-only table and has already been applied in
--- production. Keep this migration usable before that PR merges into a fresh
--- checkout; once both files are present its earlier timestamp runs first.
+-- production. Install the immediate trigger when available; the scheduled
+-- refresh above removes migration-order dependence when it is not available yet.
 do $block$
 begin
   if to_regclass('public.adidas_inventory_sync_runs') is not null then
-    execute $sql$
-      insert into public.adidas_inventory_freshness (source, last_success_at)
-      select distinct on (source) source, finished_at
-        from public.adidas_inventory_sync_runs
-       where status in ('success', 'completed')
-         and error_count = 0
-         and finished_at is not null
-       order by source, finished_at desc
-      on conflict (source) do update
-        set last_success_at = greatest(
-          public.adidas_inventory_freshness.last_success_at,
-          excluded.last_success_at
-        )
-    $sql$;
+    perform public.refresh_adidas_inventory_freshness();
     execute 'drop trigger if exists trg_adidas_inventory_run_freshness on public.adidas_inventory_sync_runs';
     execute $sql$
       create trigger trg_adidas_inventory_run_freshness
@@ -172,6 +189,12 @@ select cron.schedule(
   'requeue-ready-adidas-click-tasks',
   '17 * * * *',
   $cron$select public.requeue_ready_adidas_click_tasks()$cron$
+);
+
+select cron.schedule(
+  'refresh-adidas-inventory-freshness',
+  '*/15 * * * *',
+  $cron$select public.refresh_adidas_inventory_freshness()$cron$
 );
 
 commit;

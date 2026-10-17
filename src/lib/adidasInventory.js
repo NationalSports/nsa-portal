@@ -61,7 +61,10 @@ export function aggregateAdidasInventoryRows(rows, freshnessBySource = {}) {
     if (row.last_synced && (!fallbackLastSynced || new Date(row.last_synced) > new Date(fallbackLastSynced))) {
       fallbackLastSynced = row.last_synced;
     }
-    const runFinishedAt = row.source && freshnessBySource[row.source];
+    // inventory_unified preserves the legacy source name "click" for rows
+    // whose sync-run orchestration source is "api-materials".
+    const freshnessSource = row.source === 'click' ? 'api-materials' : row.source;
+    const runFinishedAt = freshnessSource && freshnessBySource[freshnessSource];
     if (runFinishedAt) relevantFreshness.push(runFinishedAt);
   });
 

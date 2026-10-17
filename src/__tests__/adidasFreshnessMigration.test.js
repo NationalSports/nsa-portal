@@ -16,6 +16,9 @@ test('projects only successful adidas sync finish times to the browser-readable 
   expect(sql).toContain('new.error_count = 0');
   expect(sql).toContain('new.finished_at is not null');
   expect(sql).toContain('trg_adidas_inventory_run_freshness');
+  expect(sql).toContain('create or replace function public.refresh_adidas_inventory_freshness()');
+  expect(sql).toContain("'refresh-adidas-inventory-freshness'");
+  expect(sql).toContain("'*/15 * * * *'");
   expect(sql).toContain('grant select on table public.adidas_inventory_freshness to anon, authenticated');
   expect(sql).not.toContain('grant select on table public.adidas_inventory_sync_runs to anon');
 });

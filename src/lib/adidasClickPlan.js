@@ -256,7 +256,9 @@ export function planAdidasClickOrder({
         ...r,
         stock: Math.max(0, Number(inv.stock) || 0),
         restock_date: inv.date || null,
-        restock_qty: Math.max(0, Number(inv.future_qty) || 0),
+        // CLICK's future quantity is projected ATP at that date, not inbound
+        // units to add to today's stock.
+        future_atp: Math.max(0, Number(inv.future_qty) || 0),
       };
     });
 
@@ -279,10 +281,10 @@ export function planAdidasClickOrder({
         if (!scheduledFor || candidate < scheduledFor) scheduledFor = candidate;
       }
     } else if (choice === ADIDAS_CLICK_CHOICES.COMPLETE_SKU) {
-      const unavailable = supply.filter((r) => r.stock < r.qty && (!r.restock_date || r.stock + r.restock_qty < r.qty));
+      const unavailable = supply.filter((r) => r.stock < r.qty && (!r.restock_date || r.future_atp < r.qty));
       if (unavailable.length) {
         unavailable.forEach((r) => skuPlan.unfilled.push({
-          click_size: r.click_size, qty: r.qty, available: r.stock + r.restock_qty, restock_date: r.restock_date,
+          click_size: r.click_size, qty: r.qty, available: Math.max(r.stock, r.future_atp), restock_date: r.restock_date,
         }));
         skuPlan.status = 'unfillable';
         issues.push({ code: 'insufficient_inventory', sku, message: `${sku} cannot be filled completely from current and next-restock inventory.` });
@@ -298,8 +300,9 @@ export function planAdidasClickOrder({
         const nowQty = Math.min(r.qty, r.stock);
         const remaining = r.qty - nowQty;
         if (nowQty > 0) skuPlan.import_rows.push({ article: sku, rdd: today, click_size: r.click_size, qty: nowQty });
-        if (remaining > 0 && r.restock_date && r.restock_qty > 0) {
-          const laterQty = Math.min(remaining, r.restock_qty);
+        const laterCapacity = Math.max(0, r.future_atp - nowQty);
+        if (remaining > 0 && r.restock_date && laterCapacity > 0) {
+          const laterQty = Math.min(remaining, laterCapacity);
           skuPlan.import_rows.push({ article: sku, rdd: r.restock_date, click_size: r.click_size, qty: laterQty });
           if (laterQty < remaining) skuPlan.unfilled.push({ click_size: r.click_size, qty: remaining - laterQty, available: 0, restock_date: null });
         } else if (remaining > 0) {

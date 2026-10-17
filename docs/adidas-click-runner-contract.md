@@ -88,4 +88,5 @@ Portal/CLICK comparisons normalize equivalent names (`2XS`/`XXS`,
 the exact CLICK label in import rows. Tall-2 labels such as `LT2`, `XLT2`, and
 `2XT2` remain distinct sizes. Inventory age comes from the browser-safe
 `adidas_inventory_freshness` projection of successful sync runs, with row
-`last_synced` as a fallback.
+`last_synced` as a fallback. A 15-minute database refresh keeps that projection
+working regardless of whether PR #2526's run table or this PR migrates first.

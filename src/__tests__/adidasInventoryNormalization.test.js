@@ -45,7 +45,7 @@ describe('adidas inventory size normalization', () => {
 describe('adidas inventory freshness and future stock', () => {
   test('uses the latest successful source run instead of unchanged row timestamps', () => {
     const aggregated = aggregateAdidasInventoryRows([
-      { sku: 'KB0712', size: '2XS3', stock_qty: 64, source: 'api-materials', last_synced: '2026-10-14T12:00:00Z' },
+      { sku: 'KB0712', size: '2XS3', stock_qty: 64, source: 'click', last_synced: '2026-10-14T12:00:00Z' },
     ], { 'api-materials': '2026-10-17T13:30:00Z' });
     expect(aggregated.lastSynced).toBe('2026-10-17T13:30:00Z');
   });

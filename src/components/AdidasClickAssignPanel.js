@@ -133,7 +133,7 @@ export default function AdidasClickAssignPanel({
               const enough = inv && inv.stock >= request.qty;
               return <span key={request.portal_size} title={request.click_size ? `CLICK: ${request.click_size}` : (request.candidates || []).join(', ')}
                 style={{ fontSize: 10, padding: '2px 6px', borderRadius: 6, background: !request.click_size ? '#fee2e2' : enough ? '#dcfce7' : '#fef3c7', color: !request.click_size ? '#b91c1c' : enough ? '#166534' : '#92400e' }}>
-                {request.portal_size}:{request.qty} → {request.click_size || 'choose variant'}{inv ? ` · now ${inv.stock}${inv.date ? ` · ${inv.date} +${inv.future_qty || 0}` : ''}` : ''}
+                {request.portal_size}:{request.qty} → {request.click_size || 'choose variant'}{inv ? ` · now ${inv.stock}${inv.date ? ` · ${inv.date} ATP ${inv.future_qty || 0}` : ''}` : ''}
               </span>;
             })}
           </div>
