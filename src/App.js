@@ -10241,6 +10241,8 @@ export default function App(){
     ];
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
     const _dashActionSource=(isAdmin?adminTodos:myTodos).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+    // Art to-dos live in the homepage's Art tab (new UI) instead of the priority list, so nothing shows twice.
+    const _DASH_ART_TYPES=['art','coach_followup','art_rejected','items_received_needs_art','prod_files','order_dtf'];
     const _dashPriorityItems=[
       ..._dashActionSource.map(t=>({...t,_priorityKind:'generated'})),
       ...myAssignedTodos.map(t=>({
@@ -10412,11 +10414,17 @@ export default function App(){
       jobs={sos.flatMap(so=>safeJobs(so).filter(job=>!isOutsideArtJob(job)).map(job=>({...job,_soId:so.id})))}
       actionCount={_dashPriorityItems.length}
       unreadCount={unreadMsgs.length}
-      priorityItems={_dashPriorityItems.slice(0,5)}
+      priorityItems={_dashPriorityItems.filter(t=>!_DASH_ART_TYPES.includes(t.type)).slice(0,5)}
+      priorityTotal={_dashPriorityItems.filter(t=>!_DASH_ART_TYPES.includes(t.type)).length}
+      artItems={_dashPriorityItems.filter(t=>_DASH_ART_TYPES.includes(t.type))}
+      onOpenOrder={so=>{setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id)||null);setPg('orders')}}
+      onOpenInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}}
       calcStatus={calcSOStatus}
       calcMargin={calcOrderMargin}
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
+      onOpenEstimate={est=>{setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id)||null);setPg('estimates')}}
+      onOpenCustomer={c2=>{setSelC(c2);setPg('customers')}}
     />}
     {uiMode==='new'&&dashView!=='admin'&&_renderWorkspace()}
 
@@ -10447,16 +10455,6 @@ export default function App(){
       const _artWaiting=_art.filter(t=>t.type==='coach_followup').length;
       const _due=_live.filter(t=>t.type==='deadline').length;
       const _n2=(n)=>String(n).padStart(2,'0');
-      // Billings by day, last 30 days → dot-matrix chart
-      const days=[];for(let i=29;i>=0;i--)days.push({d:new Date(_nowD.getFullYear(),_nowD.getMonth(),_nowD.getDate()-i),v:0});
-      const d0=days[0].d,dEnd=new Date(_nowD.getFullYear(),_nowD.getMonth(),_nowD.getDate()+1);
-      _eachBill((dt,amt)=>{if(dt<d0||dt>=dEnd)return;const idx=Math.floor((dt-d0)/864e5);if(days[idx])days[idx].v+=amt});
-      const tot30=days.reduce((a,x)=>a+x.v,0);
-      const ROWS=16,CW=16,RH=11,DR=3.2,PADL=48,PADT=8,PADB=22;
-      const maxV=Math.max(...days.map(x=>x.v),1);
-      const W=PADL+days.length*CW+8,H=PADT+ROWS*RH+PADB;
-      const _$k2=(n)=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
-      const _fd=(d)=>(d.getMonth()+1)+'/'+d.getDate();
       return<>
       <div className="dash2-grid dash2-actions">
         <div className={`dash2-action-card ${dashActionOpen==='art'?'is-open':''}`} role="button" tabIndex={0} onClick={()=>setDashActionOpen(p=>p==='art'?null:'art')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setDashActionOpen(p=>p==='art'?null:'art')}}}><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#fdf1e3'}}>🎨</span>Art awaiting approval<span className="dash2-caret">{dashActionOpen==='art'?'▾':'▸'}</span></div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(_art.length)}</span><span className="dash2-unit">job{_art.length!==1?'s':''}</span><div className="dash2-sub">🕐 {_artWaiting} waiting on a coach</div></div><button className="dash2-btn" onClick={e=>{e.stopPropagation();openActivityCenter('todos')}}>Open queue</button></div></div>
@@ -10637,21 +10635,7 @@ export default function App(){
         {_kpi('🧾','Orders',sNow.n+'',sNow.n,sPrev.n,false,sPrev.n+'')}
         {_kpi('🛒','Avg order',sNow.n?_$2(sNow.rev/sNow.n):'—',sNow.n?sNow.rev/sNow.n:0,sPrev.n?sPrev.rev/sPrev.n:0,true,sPrev.n?_$2(sPrev.rev/sPrev.n):'—')}
       </div>
-      <div className="card" style={{marginBottom:16}}>
-        <div className="card-body" style={{padding:'16px 18px 10px'}}>
-          <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap',marginBottom:4}}>
-            <span style={{fontSize:14,fontWeight:700,color:'#181b24'}}>Billings over time</span>
-            <span style={{fontSize:22,fontWeight:700,color:'#14161d',letterSpacing:-0.5}}>{_$2(tot30)}</span>
-            <span style={{fontSize:12,color:'#8b90a0'}}>{_$2(tot30/30)} avg/day</span>
-            <span style={{marginLeft:'auto',fontSize:11.5,fontWeight:600,color:'#4b5162',border:'1px solid #e7e9ef',borderRadius:999,padding:'3px 10px',whiteSpace:'nowrap'}}><span style={{color:'#0e8345'}}>●</span> Portal + NetSuite, last 30 days</span>
-          </div>
-          <svg viewBox={'0 0 '+W+' '+H} style={{width:'100%',height:'auto',display:'block'}} role="img" aria-label="Daily billings, last 30 days">
-            {[[maxV,PADT+DR],[maxV/2,PADT+(ROWS/2)*RH],[0,PADT+ROWS*RH-DR]].map(([v,y],i)=><text key={i} x={PADL-8} y={y+3} textAnchor="end" fontSize="9.5" fill="#9aa0af">{_$k2(v)}</text>)}
-            {days.map((x,ci)=>{const fill=x.v>0?Math.max(1,Math.round(x.v/maxV*ROWS)):0;return Array.from({length:ROWS},(_,ri)=><circle key={ci+'-'+ri} cx={PADL+ci*CW+CW/2} cy={PADT+(ROWS-1-ri)*RH+RH/2} r={DR} fill={ri<fill?'#E8A13C':'#ECEDF1'}><title>{_fd(x.d)+': '+_$2(x.v)}</title></circle>)})}
-            {[0,15,29].map(ci=><text key={ci} x={PADL+ci*CW+CW/2} y={H-6} textAnchor="middle" fontSize="9.5" fill="#9aa0af">{_fd(days[ci].d)}</text>)}
-          </svg>
-        </div>
-      </div>
+      {/* The 30-day dot-matrix "Billings over time" chart was removed — the overview above carries the sales-vs-last-year chart. */}
       </>})()}
     {/* Reminders & notes — kept high on the page: monthly sales, to-dos, KPIs and reminders are the priority views */}
     {uiMode==='new'&&_renderWorkspace()}
@@ -16286,8 +16270,10 @@ export default function App(){
 .nsa-rpt.num,.nsa-rpt .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 .nsa-rpt-hit{cursor:pointer}.nsa-row{cursor:pointer}.nsa-row:hover{background:#F7F9FC!important}
 .nsa-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.nsa-kpi-link{transition:border-color .15s,box-shadow .15s,transform .15s}.nsa-kpi-link:hover,.nsa-kpi-link:focus-visible{border-color:#C3CBDA!important;box-shadow:0 8px 22px rgba(16,26,64,.09)!important;transform:translateY(-1px);outline:none}
 .nsa-2col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @keyframes nsaRowIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:560px){.nsa-kpis{grid-template-columns:1fr!important}}
 @media(max-width:940px){.nsa-kpis{grid-template-columns:repeat(2,1fr)}.nsa-2col{grid-template-columns:1fr}.nsa-scorecard{grid-template-columns:1fr!important}.nsa-score-right{border-left:none!important;padding-left:0!important;border-top:1px solid rgba(255,255,255,.12);padding-top:16px;margin-top:4px}.nsa-monthly{grid-template-columns:1fr!important}.nsa-monthly-bd{border-left:none!important;padding-left:0!important;border-top:1px solid #EEF1F6;padding-top:14px;margin-top:4px}}`;
       document.head.appendChild(s);
     }
@@ -16604,14 +16590,7 @@ export default function App(){
     const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:(_rptRepLocked?(cu?.name||'My Numbers'):'All Reps'));
     const _scopeSub=rptRep==='all'?'Team total':(_rptRepLocked?'Your view':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view'));
 
-    // KPI set (Sales group) — YTD billed carries the real YoY delta; the rest are live pipeline snapshots
     const _activeSOs=pipeline.filter(s=>s._status!=='complete').length;
-    const _kpis=[
-      {label:'YTD Billed',value:_bill$(_ytdThis),topbar:RED,spark:_histIncomplete?null:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_histIncomplete?null:_ytdDelta,sub:_histPending?'loading invoice history…':(_histFailed?'invoice history unavailable':'vs '+_fmtK1(_ytdLast)+' last year')},
-      {label:'Pipeline Rev',value:_fmtK1(totalRev),topbar:NAVY,sub:_activeSOs+' active sales orders'},
-      {label:'Total Units',value:(totalUnits||0).toLocaleString(),topbar:NAVY,sub:'across the pipeline'},
-      {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:pipeline.length+' orders'},
-    ];
 
     // Overview derivations
     const _stLabel={need_order:'Need Order',waiting_receive:'Waiting Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
@@ -16632,6 +16611,15 @@ export default function App(){
     const _funnelRows=[['Open',fDraft,'Estimates open'],['Sent',fSent,'Out to customer'],['Approved',fApproved,'Customer approved'],['Converted',fConverted,'Became a sales order']];
     const _funnelMax=Math.max(1,fDraft,fSent,fApproved,fConverted);
     const _funnelRate=funnelEsts.length>0?Math.round(fConverted/funnelEsts.length*100):0;
+    // KPI set (Sales group) — what a rep acts on: billed YTD (real YoY), money still open on orders,
+    // money still open in quotes, and how often quotes close. Each tile opens the tab behind it.
+    const _openQuotes=funnelEsts.filter(e=>['draft','open','sent','approved'].includes(e.status));
+    const _kpis=[
+      {label:'YTD Billed',value:_bill$(_ytdThis),topbar:RED,spark:_histIncomplete?null:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_histIncomplete?null:_ytdDelta,sub:_histPending?'loading invoice history…':(_histFailed?'invoice history unavailable':'vs '+_fmtK1(_ytdLast)+' last year'),tab:'reps'},
+      {label:'Open Orders',value:_fmtK1(_openPipeTotal),topbar:NAVY,sub:_activeSOs+' sales order'+(_activeSOs===1?'':'s')+' not yet complete',tab:'pipeline'},
+      {label:'Quote Win Rate',value:_funnelRate+'%',topbar:NAVY,sub:fConverted+' of '+funnelEsts.length+' quotes became orders · '+_openQuotes.length+' still open',tab:'pipeline'},
+      {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:'across '+pipeline.length+' order'+(pipeline.length===1?'':'s'),tab:'products'},
+    ];
     // Promo-only orders (promo dollars applied, or every line a free/promo garment) are
     // giveaways priced at or below cost on purpose — they'd sit at the top of every
     // low-margin list forever and bury the real pricing misses. They still count in the
@@ -16669,7 +16657,7 @@ export default function App(){
       <span style={{flex:1,minWidth:240}}>{_histPending?'Loading NetSuite invoice history — the totals below are portal invoices only until it finishes.':'NetSuite invoice history unavailable — the totals below are portal invoices only.'}</span>
       {_histFailed&&<button className="nsa-rpt-hit" onClick={()=>_retryHistInvoices()} style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:.5,textTransform:'uppercase',padding:'4px 11px',borderRadius:5,border:'1px solid #92400E',background:'transparent',color:'#92400E',cursor:'pointer'}}>Retry</button>}
     </div>:null;
-    const RKpi=(k,i)=><div key={i} className="num" style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
+    const RKpi=(k,i)=><div key={i} className={'num'+(k.tab?' nsa-rpt-hit nsa-kpi-link':'')} role={k.tab?'button':undefined} tabIndex={k.tab?0:undefined} onClick={k.tab?()=>setRptTab(k.tab):undefined} onKeyDown={k.tab?(e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setRptTab(k.tab)}}):undefined} title={k.tab?('Open '+(_tabLabels[k.tab]||k.tab)):undefined} style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
       <span style={{position:'absolute',top:0,left:0,width:'100%',height:3,background:k.topbar}}/>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <span style={{fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:1.3,textTransform:'uppercase',color:'#818BA1'}}>{k.label}</span>
