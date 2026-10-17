@@ -21,8 +21,11 @@ export const isBotOwner = (cu) =>
 // Values for assigned_todos.bot_status (the worker's own progress).
 export const BOT_STATUS = {
   QUEUED: 'queued',
+  SCHEDULED: 'scheduled',
   IN_PROGRESS: 'in_progress',
+  NEEDS_INPUT: 'needs_input',
   NEEDS_REVIEW: 'needs_review', // cart filled — stop before submit, await human OK
+  BLOCKED: 'blocked',
   DONE: 'done',
   FAILED: 'failed',
 };

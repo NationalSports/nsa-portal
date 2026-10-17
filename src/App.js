@@ -57,6 +57,8 @@ import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
+import AdidasClickAssignPanel, { getAdidasClickConfig } from './components/AdidasClickAssignPanel';
+import { ADIDAS_CLICK_TASK_TYPE, isAdidasClickPayload, planAdidasClickOrder } from './lib/adidasClickPlan';
 import { normalizeOmgSize } from './lib/omgReport';
 import { parseOmgDollar } from './lib/omgDollarReport';
 import { createClient } from '@supabase/supabase-js';
@@ -65,6 +67,7 @@ import { _sbAuthLock } from './lib/supabase';
 import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
+import { adidasInventorySizeEntry, aggregateAdidasInventoryRows } from './lib/adidasInventory';
 import { startDeployReloadWatcher, startStaleTabReload } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -1034,44 +1037,21 @@ let _lastFullSyncAt=0;
 const _SO_DELTA_MAX=25;
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
-// Adidas Cowork publishes sizes with garment-specific suffixes that don't match
-// our canonical size-grid labels — e.g. shorts carry an inseam ("S 3\"", "XL4\"",
-// "M11\""), and Adidas uses "2XS"/"2XL" where the grid uses "XXS"/"2XL". A plain
-// string match (adidasInv.sizes[sz]) therefore finds nothing for those styles and
-// the B2B badge renders blank. Collapse each raw code to its base grid label so the
-// quantities actually surface.
-const adidasCanonSize = (raw) => {
-  if (!raw) return raw;
-  let s = String(raw).trim();
-  const footwearSize = normalizeFootwearSize(s);
-  if (footwearSize !== s) return footwearSize;
-  // Strip a trailing inseam/length token ("S 3\"", "XL3\"", "2XS4", "M11\"") — but
-  // only when an alpha size prefix survives, so purely numeric sizes (28, 200, 8.5)
-  // are left untouched.
-  const stripped = s.replace(/\s*\d+"?$/, '');
-  if (stripped && /[A-Za-z]/.test(stripped)) s = stripped;
-  const u = s.toUpperCase();
-  return SZ_NORM[u] || u;
-};
-
-// Aggregate raw adidas_inventory rows into a { sizes, lastSynced } map keyed by
-// canonical grid label, summing all variants that fold onto the same label and
-// keeping a per-code breakdown for the hover tooltip.
-const aggregateAdidasRows = (rows) => {
-  const sizes = {};
-  let lastSynced = null;
-  (rows || []).forEach(row => {
-    const label = adidasCanonSize(row.size);
-    if (!label) return;
-    const qty = row.stock_qty || 0;
-    const e = sizes[label] || (sizes[label] = { qty: 0, futureDate: null, futureQty: null, breakdown: [] });
-    e.qty += qty;
-    if (row.future_delivery_qty) e.futureQty = (e.futureQty || 0) + row.future_delivery_qty;
-    if (row.future_delivery_date && (!e.futureDate || new Date(row.future_delivery_date) < new Date(e.futureDate))) e.futureDate = row.future_delivery_date;
-    e.breakdown.push({ code: String(row.size).trim(), qty });
-    if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
-  });
-  return { sizes, lastSynced };
+// Sync-run freshness is projected into a safe public table by the migration in
+// this PR. Cache briefly because order editors request inventory per SKU.
+let _adidasFreshnessCache={at:0,value:null,promise:null};
+const fetchAdidasRunFreshness=async(force=false)=>{
+  if(!supabase)return{};
+  const now=Date.now();
+  if(!force&&_adidasFreshnessCache.value&&now-_adidasFreshnessCache.at<60000)return _adidasFreshnessCache.value;
+  if(!force&&_adidasFreshnessCache.promise)return _adidasFreshnessCache.promise;
+  const request=supabase.from('adidas_inventory_freshness').select('source,last_success_at').then(({data,error})=>{
+    if(error){console.warn('[Adidas B2B] Run-freshness fetch unavailable; using row timestamps:',error.message);_adidasFreshnessCache={at:Date.now(),value:{},promise:null};return{}}
+    const value={};(data||[]).forEach(row=>{if(row.source&&row.last_success_at)value[row.source]=row.last_success_at});
+    _adidasFreshnessCache={at:Date.now(),value,promise:null};return value;
+  }).catch(error=>{console.warn('[Adidas B2B] Run-freshness fetch failed; using row timestamps:',error?.message||error);_adidasFreshnessCache={at:Date.now(),value:{},promise:null};return{}});
+  _adidasFreshnessCache.promise=request;
+  return request;
 };
 
 // Reads the synced B2B inventory union (adidas Cowork CLICK + Agron + Under
@@ -1081,15 +1061,17 @@ const aggregateAdidasRows = (rows) => {
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
-    const data = await fetchPublicInventory([sku]);
+    const [data,freshness] = await Promise.all([fetchPublicInventory([sku]),fetchAdidasRunFreshness()]);
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
-    return aggregateAdidasRows(data);
+    return aggregateAdidasInventoryRows(data,freshness);
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
 };
 
-const fetchAdidasGlobalLastSync = async () => {
+const fetchAdidasGlobalLastSync = async (force=false) => {
   if (!supabase) return null;
   try {
+    const freshness=await fetchAdidasRunFreshness(force);
+    if(freshness['api-materials'])return freshness['api-materials'];
     const { data, error } = await supabase.from('adidas_inventory').select('last_synced').order('last_synced', { ascending: false }).limit(1);
     if (error) { console.warn('[Adidas B2B] Last-sync fetch error:', error.message); return null; }
     return data?.[0]?.last_synced || null;
@@ -1099,6 +1081,7 @@ const fetchAdidasGlobalLastSync = async () => {
 const fetchAdidasInventoryBulk = async (skus) => {
   if (!supabase || !skus || skus.length === 0) return {};
   try {
+    const freshness=await fetchAdidasRunFreshness();
     // A single .in() with the whole Adidas catalog overflows the request URL
     // (→ 400 Bad Request) and can exceed PostgREST's row cap. Fetch in small
     // batches (each ~600 rows, URL-safe) with limited concurrency, then merge.
@@ -1120,7 +1103,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
       results.forEach(rows => rows.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); }));
     }
     const result = {};
-    Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasRows(rows); });
+    Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasInventoryRows(rows,freshness); });
     return result;
   } catch (e) { console.error('[Adidas B2B] Bulk fetch failed:', e); return {}; }
 };
@@ -1146,9 +1129,8 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
     <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2,borderLeft:'3px solid #059669',paddingLeft:4}}>Adidas B2B:</div>
     <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
       {(displaySizes||[]).map(sz => {
-        const v = ai.sizes[sz]?.qty || 0;
-        const ft = ai.sizes[sz]?.futureDate;
-        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+        const cell=adidasInventorySizeEntry(ai.sizes,sz);const v=cell?.qty||0;const ft=cell?.futureDate;
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (cell?.futureQty || 0) + ' units)' : ''}>
           <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
         </div>;
       })}
@@ -2675,8 +2657,8 @@ export default function App(){
   const adidasBulkFetched=useRef(false);
   const[adidasSyncUploading,setAdidasSyncUploading]=useState(false);
   const[adidasSyncLog,setAdidasSyncLog]=useState([]);// [{ts,rows,skus,status,error}]
-  const[adidasGlobalLastSync,setAdidasGlobalLastSync]=useState(null);// most recent last_synced across whole adidas_inventory table
-  const refreshAdidasLastSync=React.useCallback(()=>{fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync refresh error:',e))},[]);
+  const[adidasGlobalLastSync,setAdidasGlobalLastSync]=useState(null);// latest successful api-materials run; row timestamp fallback
+  const refreshAdidasLastSync=React.useCallback(()=>{fetchAdidasGlobalLastSync(true).then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync refresh error:',e))},[]);
   // ShipStation integration state
   const[ssConnected,setSSConnected]=useState(false);
   const[ssShipping,setSSShipping]=useState(false);
@@ -2951,20 +2933,34 @@ export default function App(){
   // already syncs per-size stock + restock dates (adidas_inventory), so show
   // them at assign time and ship the snapshot in the payload — the bot starts
   // informed instead of discovering everything by hovering the vendor site.
-  const[botAvail,setBotAvail]=useState(null);// {map:{sku:{size:{stock,date,fqty}}},synced}
+  const[botAvail,setBotAvail]=useState(null);// {rows,map,synced,preferences}
   React.useEffect(()=>{
     if(!todoModal.open||!supabase){setBotAvail(null);return}
+    // adidas_inventory contains some non-adidas catalog rows whose source tag is
+    // "click"; vendor identity, not inventory_source, is the ordering boundary.
+    if(!isAdidasClickPayload(todoModal.bot_payload)){setBotAvail(null);return}
     const skus=[...new Set((todoModal.bot_payload?.lines||[]).map(l=>l.sku).filter(Boolean))];
     if(!skus.length){setBotAvail(null);return}
     let dead=false;
-    supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus).then(r=>{
+    Promise.all([
+      supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source').in('sku',skus),
+      supabase.from('adidas_click_size_preferences').select('sku,variant').in('sku',skus),
+      fetchAdidasRunFreshness(),
+    ]).then(([r,prefs,freshness])=>{
       if(dead||r.error||!r.data||!r.data.length){if(!dead)setBotAvail(null);return}
       const map={};let synced=null;
       r.data.forEach(row=>{(map[row.sku]=map[row.sku]||{})[row.size]={stock:row.stock_qty??0,date:row.future_delivery_date||null,fqty:row.future_delivery_qty??null};if(row.last_synced&&(!synced||row.last_synced>synced))synced=row.last_synced});
-      setBotAvail({map,synced});
+      synced=freshness?.['api-materials']||synced;
+      const preferences={};if(!prefs.error)(prefs.data||[]).forEach(row=>{preferences[row.sku]=row.variant});
+      setBotAvail({rows:r.data,map,synced,preferences});
     });
     return()=>{dead=true};
   },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
+  const saveAdidasClickPreference=(sku,variant)=>{
+    if(!supabase||!sku||!variant)return;
+    setBotAvail(prev=>prev?{...prev,preferences:{...(prev.preferences||{}),[sku]:variant}}:prev);
+    _dbSavingGuard(()=>supabase.from('adidas_click_size_preferences').upsert({sku,variant,updated_by:cu?.id||null,updated_at:new Date().toISOString()},{onConflict:'sku'}).then(r=>{if(r.error)nf('Could not save the CLICK size preference: '+r.error.message,'error')}));
+  };
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -13086,7 +13082,7 @@ export default function App(){
           return<div style={{marginTop:3,paddingLeft:2,borderLeft:'3px solid #059675'}}>
             <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:1}}>B2B:</div>
             <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
-            {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
+            {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||((adidasInventorySizeEntry(ai.sizes,sz)?.qty||0)>0)).map(sz=>{const v=adidasInventorySizeEntry(ai.sizes,sz)?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
             <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
           </div></div>})()}
@@ -15788,7 +15784,13 @@ export default function App(){
                     ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_botSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
                     :resolveShipToClient(_botSoId,sos,cust);
                   const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
-                  assignBotTask({title,description,priority:1,bot_payload});
+                  if(bot_payload.target==='adidas_click'){
+                    const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+                    const so=sos.find(row=>row.id===_botSoId);
+                    setTodoModal({open:true,title,description,assigned_to:bot?.id||'',so_id:_botSoId||'',customer_id:so?.customer_id||'',priority:1,due_date:'',doc_label:poNum,po_id:poNum,wh_only:false,bot_payload});
+                  }else{
+                    assignBotTask({title,description,priority:1,bot_payload});
+                  }
                 }}>🤖 Assign to Claude</button>}
               </div>
             </div>
@@ -39602,6 +39604,12 @@ export default function App(){
               </div>
             </div>;
           }
+          if(bp.target==='adidas_click'){
+            return <AdidasClickAssignPanel payload={bp} inventoryRows={botAvail?.rows||[]} freshnessAt={botAvail?.synced||null} savedPreferences={botAvail?.preferences||{}}
+              value={todoModal.bot_click_config}
+              onChange={bot_click_config=>setTodoModal(m=>({...m,bot_click_config}))}
+              onSavePreference={saveAdidasClickPreference}/>;
+          }
           const lines=Array.isArray(bp.lines)?bp.lines:[];
           const totQty=bp.totals?.qty??lines.reduce((a,l)=>a+(l.qty||0),0);
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
@@ -39665,7 +39673,7 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&<>
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&todoModal.bot_payload?.target!=='adidas_click'&&<>
           <div style={{marginBottom:12}}>
             <label className="form-label">📅 Requested delivery date (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -39780,34 +39788,51 @@ export default function App(){
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           // Bot task: queue it for the worker. Attach structured payload when present
           // (batch button); otherwise queue from the title/description alone.
+          let newTodos=[newTodo];
           if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
-            if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
-            _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
-            // Ship the portal's availability snapshot (needed sizes only) + the rep's
-            // long-backorder decision so the bot starts informed and doesn't round-trip.
-            if(botAvail?.map){
-              const _avNeeded={};
-              (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
-              if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+            if(_bp.target==='adidas_click'){
+              const _cfg=getAdidasClickConfig(_bp,todoModal.bot_click_config);
+              const _preferences={...(botAvail?.preferences||{}),...(_cfg.preferences||{})};
+              const _plan=planAdidasClickOrder({lines:_bp.lines||[],inventoryRows:botAvail?.rows||[],preferences:_preferences,defaultChoice:_cfg.default_choice,skuChoices:_cfg.sku_choices,customerPo:_cfg.customer_po,shipMethod:_cfg.ship_method,deliveryLocation:_cfg.delivery_location});
+              if(_plan.issues.length){nf('Fix the CLICK plan before assigning: '+_plan.issues.map(i=>i.message).join(' '),'error');return}
+              const _scheduledSkus=new Set(_plan.sku_plans.filter(p=>p.status==='scheduled').map(p=>p.sku));
+              const _subset=(scheduled)=>{
+                const skuPlans=_plan.sku_plans.filter(p=>_scheduledSkus.has(p.sku)===scheduled);
+                const skus=new Set(skuPlans.map(p=>p.sku));
+                return{..._plan,sku_plans:skuPlans,import_rows:_plan.import_rows.filter(r=>skus.has(r.article)),scheduled_for:scheduled?_plan.scheduled_for:null};
+              };
+              const _payloadFor=(scheduled)=>({..._bp,task_type:ADIDAS_CLICK_TASK_TYPE,contract_version:2,lines:(_bp.lines||[]).filter(l=>_scheduledSkus.has(l.sku)===scheduled),resolved_plan:_subset(scheduled),customer_po:_plan.customer_po,ship_method:_plan.ship_method,delivery_location:_plan.delivery_location,...(scheduled?{scheduled_for:_plan.scheduled_for}:{})});
+              const _hasReady=_plan.sku_plans.some(p=>p.status!=='scheduled');
+              const _hasScheduled=_scheduledSkus.size>0;
+              if(_hasReady)newTodo.bot_payload=_payloadFor(false);
+              if(!_hasReady&&_hasScheduled){newTodo.bot_status='scheduled';newTodo.bot_payload=_payloadFor(true)}
+              if(_hasReady&&_hasScheduled){
+                const held={...newTodo,id:newTodo.id+'-hold',title:newTodo.title+' · hold & re-check',bot_status:'scheduled',bot_payload:_payloadFor(true)};
+                newTodos=[newTodo,held];
+              }
+            }else{
+              if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
+              _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
+              // Legacy Mac Mini path remains available for existing add_to_cart tasks.
+              if(botAvail?.map){
+                const _avNeeded={};
+                (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
+                if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+              }
+              if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
+              const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
+              if(Object.keys(_ls).length)_bp.line_schedule=_ls;
+              const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
+              if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
+              if(_bp.ship_to){const _att=todoModal.bot_attention!==undefined?String(todoModal.bot_attention).trim():(_bp.ship_to.attention||'');_bp.ship_to={..._bp.ship_to,attention:_att||null}}
+              if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
             }
-            if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
-            // Per-item schedule: only ship real decisions ('auto' rows follow the rules;
-            // a date pick without a date is meaningless and dropped).
-            const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
-            if(Object.keys(_ls).length)_bp.line_schedule=_ls;
-            // Drop ship: make sure the delivery address travels with the payload so the
-            // worker never has to guess where the order actually goes.
-            const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
-            if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
-            // Attention line 2 rides on the ship-to address (only place it can render).
-            if(_bp.ship_to){const _att=todoModal.bot_attention!==undefined?String(todoModal.bot_attention).trim():(_bp.ship_to.attention||'');_bp.ship_to={..._bp.ship_to,attention:_att||null}}
-            if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
-          setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+          setAssignedTodos(prev=>[...newTodos,...prev]);
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{},bot_click_config:null});
+          nf((newTodos.length>1?'Tasks':'Task')+' assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
     </div></div>}
